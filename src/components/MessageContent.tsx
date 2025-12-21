@@ -37,23 +37,8 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, role }) => {
           h1: ({node, ...props}) => <h1 className="text-xl font-bold mt-6 mb-3 text-gray-900" {...props} />,
           h2: ({node, ...props}) => <h2 className="text-lg font-semibold mt-5 mb-2 text-gray-900" {...props} />,
           h3: ({node, ...props}) => <h3 className="text-base font-semibold mt-4 mb-2 text-gray-900" {...props} />,
-          // 段落样式 - 保持换行
+          // 段落样式 - 彻底移除检测逻辑，统一使用p标签
           p: ({node, children, ...props}: any) => {
-            // 检查是否包含代码块（pre或code元素），如果是则使用div而不是p
-            const hasCodeBlock = React.Children.toArray(children).some((child: any) => {
-              if (React.isValidElement(child)) {
-                const childType = child.type;
-                return childType === 'pre' || childType === 'code' || 
-                       (typeof childType === 'function' && (childType.name === 'pre' || childType.name === 'code'));
-              }
-              return false;
-            });
-
-
-            if (hasCodeBlock) {
-              // 对于代码块，不使用 whitespace-pre-wrap，让代码块自己控制换行
-              return <div className="mb-3 leading-relaxed text-gray-900" style={{ wordBreak: 'normal', overflowWrap: 'normal' }} {...props}>{children}</div>;
-            }
             return <p className="mb-3 leading-relaxed text-gray-900 whitespace-pre-wrap" {...props}>{children}</p>;
           },
           // 列表样式
@@ -125,119 +110,18 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, role }) => {
             }
             
             // 其他代码块：只显示红色文字，不显示代码框，不自动换行
-            // 重构：使用简单的 div 结构，避免复杂的嵌套
-            // #region agent log
-            const logRedCodeBlockStyles = (element: HTMLDivElement | null) => {
-              if (!element) return;
-              
-              // 使用 setTimeout 确保 DOM 已完全渲染
-              setTimeout(() => {
-                const computedStyle = window.getComputedStyle(element);
-                const parentElement = element.parentElement;
-                const parentComputedStyle = parentElement ? window.getComputedStyle(parentElement) : null;
-                const grandParentElement = parentElement?.parentElement;
-                const grandParentComputedStyle = grandParentElement ? window.getComputedStyle(grandParentElement) : null;
-                const greatGrandParentElement = grandParentElement?.parentElement;
-                const greatGrandParentComputedStyle = greatGrandParentElement ? window.getComputedStyle(greatGrandParentElement) : null;
-                
-                fetch('http://127.0.0.1:7245/ingest/f1cd008e-c417-4a3f-893c-d13caab5074b', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    location: 'MessageContent.tsx:red-command-content',
-                    message: '红色代码块样式诊断',
-                    data: {
-                      codeString: codeString.substring(0, 100),
-                      codeStringLength: codeString.length,
-                      elementStyles: {
-                        whiteSpace: computedStyle.whiteSpace,
-                        wordBreak: computedStyle.wordBreak,
-                        overflowWrap: computedStyle.overflowWrap,
-                        wordWrap: computedStyle.wordWrap,
-                        width: computedStyle.width,
-                        maxWidth: computedStyle.maxWidth,
-                        display: computedStyle.display,
-                        color: computedStyle.color,
-                        className: element.className
-                      },
-                      parentStyles: parentComputedStyle ? {
-                        whiteSpace: parentComputedStyle.whiteSpace,
-                        wordBreak: parentComputedStyle.wordBreak,
-                        overflowWrap: parentComputedStyle.overflowWrap,
-                        wordWrap: parentComputedStyle.wordWrap,
-                        width: parentComputedStyle.width,
-                        maxWidth: parentComputedStyle.maxWidth,
-                        display: parentComputedStyle.display,
-                        className: parentElement.className
-                      } : null,
-                      grandParentStyles: grandParentComputedStyle ? {
-                        whiteSpace: grandParentComputedStyle.whiteSpace,
-                        wordBreak: grandParentComputedStyle.wordBreak,
-                        overflowWrap: grandParentComputedStyle.overflowWrap,
-                        wordWrap: grandParentComputedStyle.wordWrap,
-                        width: grandParentComputedStyle.width,
-                        maxWidth: grandParentComputedStyle.maxWidth,
-                        display: grandParentComputedStyle.display,
-                        className: grandParentElement.className
-                      } : null,
-                      greatGrandParentStyles: greatGrandParentComputedStyle ? {
-                        whiteSpace: greatGrandParentComputedStyle.whiteSpace,
-                        wordBreak: greatGrandParentComputedStyle.wordBreak,
-                        overflowWrap: greatGrandParentComputedStyle.overflowWrap,
-                        wordWrap: greatGrandParentComputedStyle.wordWrap,
-                        width: greatGrandParentComputedStyle.width,
-                        maxWidth: greatGrandParentComputedStyle.maxWidth,
-                        display: greatGrandParentComputedStyle.display,
-                        className: greatGrandParentElement.className
-                      } : null,
-                      elementOffsetWidth: element.offsetWidth,
-                      elementScrollWidth: element.scrollWidth,
-                      parentOffsetWidth: parentElement?.offsetWidth,
-                      parentScrollWidth: parentElement?.scrollWidth,
-                      isWrapping: element.offsetWidth < element.scrollWidth
-                    },
-                    timestamp: Date.now(),
-                    sessionId: 'debug-session',
-                    runId: 'run1',
-                    hypothesisId: 'A'
-                  })
-                }).catch(() => {});
-              }, 100);
-            };
-            // #endregion
+            // 使用span实现完全行内化，彻底消除换行问题
             return (
-              <div 
-                className="red-command-block"
-                style={{ 
-                  margin: '0.5rem 0',
-                  overflowX: 'auto',
-                  overflowY: 'visible',
-                  maxWidth: '100%',
-                  display: 'block'
+              <span 
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: '0.875rem',
+                  color: '#dc2626',
                 }}
+                {...props}
               >
-                <div
-                  ref={logRedCodeBlockStyles}
-                  className="red-command-content"
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: '0.875rem',
-                    color: '#dc2626',
-                    whiteSpace: 'pre',
-                    wordBreak: 'keep-all',
-                    overflowWrap: 'normal',
-                    wordWrap: 'normal',
-                    display: 'block',
-                    margin: 0,
-                    padding: 0,
-                    width: 'max-content',
-                    minWidth: '100%'
-                  }}
-                  {...props}
-                >
-                  {codeString}
-                </div>
-              </div>
+                {codeString}
+              </span>
             );
           },
           // 其他元素保持默认样式
