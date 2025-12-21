@@ -198,6 +198,12 @@ const LoginForm: React.FC<LoginFormProps> = ({ onSuccess }) => {
           <p>测试用户：user@example.com</p>
           <p>管理员：admin@example.com</p>
         </div>
+
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <p className="text-xs text-gray-400 text-center">
+            注意：本系统使用浏览器本地存储，数据仅保存在当前设备和浏览器中。请勿在隐身模式下使用，以免数据丢失。
+          </p>
+        </div>
       </div>
     </div>
   );

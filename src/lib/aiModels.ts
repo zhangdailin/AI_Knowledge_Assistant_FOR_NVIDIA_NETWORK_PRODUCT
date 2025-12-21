@@ -3,9 +3,10 @@
  * 集成多个免费AI模型，支持智能切换和降级
  */
 
-import { generateOptimizedSystemMessage, generateOptimizedUserMessage } from './optimizedPrompts';
 import { generateChineseSystemMessage, generateChineseUserMessage } from './chinesePrompts';
 
+const SILICONFLOW_BASE_URL = 'https://api.siliconflow.cn/v1';
+const SILICONFLOW_CHAT_URL = `${SILICONFLOW_BASE_URL}/chat/completions`;
 
 export interface AIModel {
   name: string;
@@ -42,7 +43,7 @@ export const FREE_AI_MODELS: AIModel[] = [
   {
     name: 'qwen3-32b',
     provider: '硅基流动',
-    apiEndpoint: 'https://api.siliconflow.cn/v1/chat/completions',
+    apiEndpoint: SILICONFLOW_CHAT_URL,
     maxTokens: 8192,
     description: '硅基流动 Qwen/Qwen3-32B，中文优化，性能优秀'
   }
@@ -51,7 +52,6 @@ export const FREE_AI_MODELS: AIModel[] = [
 class AIModelManager {
   private currentModel: string = 'qwen3-32b';
   private fallbackModels: string[] = ['qwen3-32b'];
-  private readonly SILICONFLOW_CHAT_URL = 'https://api.siliconflow.cn/v1/chat/completions';
   private readonly QWEN_MODEL = 'Qwen/Qwen3-32B';
 
   // 使用硅基流动 API 调用 Qwen3-32B 模型
@@ -168,7 +168,7 @@ class AIModelManager {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
       
-      const response = await fetch(this.SILICONFLOW_CHAT_URL, {
+      const response = await fetch(SILICONFLOW_CHAT_URL, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,

@@ -48,34 +48,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteConversation: (conversationId: string) => {
     const { currentConversation, conversations } = get();
+    
+    // 1. 获取 userId (用于重新加载列表)
+    const targetConv = conversations.find(c => c.id === conversationId);
+    const userId = targetConv?.userId;
+    
+    // 2. 执行物理删除
     localStorageManager.deleteConversation(conversationId);
     
-    // 重新加载对话列表
-    const userId = conversations.find(c => c.id === conversationId)?.userId;
-    if (userId) {
-      const updatedConversations = localStorageManager.getConversations(userId);
-      
-      // 如果删除的是当前对话，选择另一个对话或清空
-      if (currentConversation?.id === conversationId) {
-        if (updatedConversations.length > 0) {
-          const nextConversation = updatedConversations[0];
-          const messages = localStorageManager.getMessages(nextConversation.id);
-          set({ 
-            conversations: updatedConversations, 
-            currentConversation: nextConversation, 
-            messages 
-          });
-        } else {
-          set({ 
-            conversations: updatedConversations, 
-            currentConversation: null, 
-            messages: [] 
-          });
-        }
+    // 3. 无论如何，先从本地状态中移除，保证 UI 立即响应
+    const remainingConversations = conversations.filter(c => c.id !== conversationId);
+    
+    // 4. 如果删除的是当前对话，需要切换到其他对话或清空
+    if (currentConversation?.id === conversationId) {
+      if (remainingConversations.length > 0) {
+        const nextConversation = remainingConversations[0];
+        const messages = localStorageManager.getMessages(nextConversation.id);
+        set({ 
+          conversations: remainingConversations, 
+          currentConversation: nextConversation, 
+          messages 
+        });
       } else {
-        set({ conversations: updatedConversations });
+        set({ 
+          conversations: [], 
+          currentConversation: null, 
+          messages: [] 
+        });
       }
+    } else {
+      // 只是删除非当前对话
+      set({ conversations: remainingConversations });
     }
+    
+    // 5. 如果获取到了 userId，可以再次从 localStorage 同步（双重保险，但非必须，因为本地状态已经更新）
+    // 为了性能，这里省略，因为上面的逻辑已经足够保证一致性
   },
 
   sendMessage: async (content: string) => {

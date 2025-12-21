@@ -27,19 +27,37 @@ const ChatInterface: React.FC = () => {
     deleteConversation
   } = useChatStore();
 
-  // 初始化对话
+  // 初始化对话：加强版
   useEffect(() => {
     if (user) {
+      // 立即加载
       loadConversations(user.id);
       
-      // 如果没有当前对话，创建新对话
-      if (!currentConversation && conversations.length === 0) {
-        createConversation('新对话');
-      } else if (!currentConversation && conversations.length > 0) {
-        selectConversation(conversations[0].id);
-      }
+      // 双重保险：确保数据已加载（解决某些极端情况下的时序问题）
+      const timer = setTimeout(() => {
+        const currentConvs = useChatStore.getState().conversations;
+        if (currentConvs.length === 0) {
+          loadConversations(user.id);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [user, currentConversation, conversations.length]);
+  }, [user]); // 保持对 user 的依赖
+
+  // 自动选择或创建对话
+  useEffect(() => {
+    if (!user) return;
+
+    // 如果有对话但没有选中，选中第一个（最新的）
+    if (conversations.length > 0 && !currentConversation) {
+      const sorted = [...conversations].sort((a, b) => {
+        const timeA = new Date(a.updatedAt).getTime() || 0;
+        const timeB = new Date(b.updatedAt).getTime() || 0;
+        return timeB - timeA;
+      });
+      selectConversation(sorted[0].id);
+    }
+  }, [user, conversations, currentConversation]);
 
   useEffect(() => {
     scrollToBottom();
@@ -55,8 +73,8 @@ const ChatInterface: React.FC = () => {
     
     if (!inputValue.trim() || isLoading || isSending) return; // 增加发送状态检查
     
-    if (!currentConversation || !user) {
-      console.error('没有活动的对话或用户');
+    if (!user) {
+      console.error('没有用户');
       return;
     }
 
@@ -65,7 +83,15 @@ const ChatInterface: React.FC = () => {
     setIsSending(true); // 设置发送状态
     
     try {
+      // 如果没有当前对话，自动创建一个
+      if (!currentConversation) {
+        createConversation(user.id, '新对话');
+        // createConversation 是同步更新 store 的，sendMessage 内部通过 get() 获取最新状态
+      }
+      
       await sendMessage(messageContent);
+    } catch (error) {
+      console.error('发送消息失败:', error);
     } finally {
       setIsSending(false); // 重置发送状态
     }
@@ -104,15 +130,12 @@ const ChatInterface: React.FC = () => {
     );
   }
 
-  // 过滤掉空对话（保留当前对话，即使为空）
-  const filteredConversations = conversations.filter(conv => {
-    // 始终显示当前选中的对话
-    if (currentConversation?.id === conv.id) return true;
-    
-    // 对于其他对话，只显示有消息的
-    const convMessages = localStorageManager.getMessages(conv.id);
-    return convMessages.length > 0;
-  });
+  // 不再过滤空对话，直接显示所有对话，按更新时间倒序排列
+  const sortedConversations = React.useMemo(() => {
+    return [...conversations].sort((a, b) => 
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }, [conversations]);
 
   const getConversationPreview = (conversation: any) => {
     const convMessages = localStorageManager.getMessages(conversation.id);
@@ -141,7 +164,7 @@ const ChatInterface: React.FC = () => {
             AI知识助手
           </h2>
           <button
-            onClick={() => createConversation('新对话')}
+            onClick={() => createConversation(user.id, '新对话')}
             className="w-full bg-blue-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
           >
             新建对话
@@ -150,14 +173,14 @@ const ChatInterface: React.FC = () => {
 
         {/* 对话列表 */}
         <div className="flex-1 overflow-y-auto p-3">
-          {filteredConversations.length === 0 ? (
+          {sortedConversations.length === 0 ? (
             <div className="text-center text-gray-500 text-sm mt-4">
               <p>暂无对话记录</p>
               <p className="text-xs mt-1">点击上方按钮创建新对话</p>
             </div>
           ) : (
             <div className="space-y-1">
-              {filteredConversations.map((conversation) => {
+              {sortedConversations.map((conversation) => {
                 const preview = getConversationPreview(conversation);
                 const isActive = currentConversation?.id === conversation.id;
                 return (
