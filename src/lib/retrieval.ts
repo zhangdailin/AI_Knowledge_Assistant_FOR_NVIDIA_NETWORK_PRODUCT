@@ -8,6 +8,7 @@ import {
   deduplicateAndMergeChunks,
   calculateAdaptiveThreshold
 } from './retrievalEnhancements';
+import { advancedKeywordExtractor } from './advancedKeywordExtractor';
 
 const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
 const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
@@ -161,47 +162,14 @@ export async function ensureEmbeddingsForDocument(documentId: string) {
  */
 /**
  * 自动提取查询中的关键词
- * 使用启发式规则识别重要词汇，不依赖硬编码列表
+ * 使用高级语义分析识别网络配置、IP地址、命令等复杂技术信息
  */
 function extractKeywords(query: string): string[] {
-  const keywords: string[] = [];
+  // 使用高级关键词提取器
+  const extracted = advancedKeywordExtractor.extractKeywords(query);
   
-  // 1. 提取连续大写字母的缩写（如BGP, OSPF, VLAN等）
-  const acronyms = query.match(/\b[A-Z]{2,}\b/g);
-  if (acronyms) {
-    keywords.push(...acronyms.map(a => a.toLowerCase()));
-  }
-  
-  // 2. 提取大写字母开头的专有名词（如Nvidia, Cumulus, Linux等）
-  const properNouns = query.match(/\b[A-Z][a-z]+\b/g);
-  if (properNouns) {
-    keywords.push(...properNouns.map(n => n.toLowerCase()));
-  }
-  
-  // 3. 提取技术术语模式（如IPv4, IPv6, L2VPN等）
-  const techTerms = query.match(/\b(?:[A-Z]+[a-z]*|[a-z]+[A-Z]+)\d*\b/g);
-  if (techTerms) {
-    keywords.push(...techTerms.map(t => t.toLowerCase()));
-  }
-  
-  
-  // 5. 提取所有长度>=2的单词（过滤停用词），包括小写产品名称（如nvos, cumulus等）
-  const stopWords = new Set([
-    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-    '如何', '怎么', '怎样', '什么', '哪个', '哪些', '为什么', '是否', '能否', '可以', '应该',
-    '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '那', '些', '个', '只', '现在', '请', '问'
-  ]);
-  
-  const words = query
-    .toLowerCase()
-    .replace(/[^\u4e00-\u9fa5a-zA-Z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 2 && !stopWords.has(w)); // 降低长度要求到2，以捕获nvos等短产品名称
-  
-  keywords.push(...words);
-  
-  // 6. 去重并返回
-  return Array.from(new Set(keywords));
+  // 返回所有提取的关键词，包括网络地址、命令等
+  return extracted.keywords;
 }
 
 function extractCoreQuery(originalQuery: string): string {
