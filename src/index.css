@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 隐藏滚动条但保持滚动功能 */
+.hide-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 红色命令文本不换行样式 - 重构版本 */
+.red-command-block {
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  word-wrap: normal !important;
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+  max-width: 100% !important;
+  display: block !important;
+}
+
+.red-command-content {
+  white-space: pre !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  word-wrap: normal !important;
+  display: block !important;
+  font-family: monospace !important;
+  color: #dc2626 !important;
+  width: max-content !important;
+  min-width: 100% !important;
+}
+
+/* 覆盖所有可能的父容器样式 */
+.prose .red-command-block,
+.prose .red-command-content,
+.break-words .red-command-block,
+.break-words .red-command-content,
+* .red-command-block,
+* .red-command-content {
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  word-wrap: normal !important;
+  white-space: pre !important;
+}

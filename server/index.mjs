@@ -1,0 +1,397 @@
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import { createRequire } from 'node:module';
+import * as storage from './storage.mjs';
+import * as taskQueue from './taskQueue.mjs';
+
+// 直接使用 createRequire 加载 pdf-parse
+const require = createRequire(import.meta.url);
+const pdfParseModule = require('pdf-parse');
+
+// 直接保留模块引用，调用时选择合适的导出
+const pdfParse = pdfParseModule;
+import mammoth from 'mammoth';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '50mb' })); // 支持 JSON 请求体
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+app.post('/api/extract', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'no_file' });
+    const name = file.originalname.toLowerCase();
+    const mime = file.mimetype || '';
+    let text = '';
+    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+      let data;
+      try {
+        const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
+        if (typeof PdfParseClass !== 'function') {
+          throw new Error(`PdfParseClass not callable, type: ${typeof PdfParseClass}`);
+        }
+
+        if (typeof PdfParseClass.setWorker === 'function') {
+          PdfParseClass.setWorker(PdfParseClass.setWorker());
+        }
+
+        const parser = new PdfParseClass({ data: file.buffer });
+        if (typeof parser.getText !== 'function') {
+          throw new Error('PdfParse instance has no getText');
+        }
+
+        const result = await parser.getText({});
+        data = { text: result?.text || '', numpages: result?.total || result?.pages?.length || 0, info: result?.info || {} };
+
+        if (typeof parser.destroy === 'function') {
+          await parser.destroy();
+        }
+      } catch (callError) {
+        console.error('extract error', callError);
+        return res.status(500).json({ ok: false, error: 'extract_failed', detail: String(callError) });
+      }
+      text = (data.text || '').trim();
+      if (text.length === 0) {
+        return res.status(500).json({ ok: false, error: 'extract_empty', detail: 'PDF解析成功但未提取到文本内容，可能是扫描件或受保护文档' });
+      }
+      return res.json({ ok: true, text, meta: { pages: data.numpages, info: data.info } });
+    }
+    if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) {
+      const result = await mammoth.extractRawText({ buffer: file.buffer });
+      text = (result.value || '').trim();
+      return res.json({ ok: true, text, meta: {} });
+    }
+    // fallback to utf-8 text
+    text = Buffer.from(file.buffer).toString('utf-8');
+    return res.json({ ok: true, text, meta: {} });
+  } catch (e) {
+    console.error('extract error', e);
+    return res.status(500).json({ ok: false, error: 'extract_failed' });
+  }
+});
+
+app.post('/api/ocr', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'no_file' });
+    const endpoint = process.env.AZURE_VISION_ENDPOINT;
+    const key = process.env.AZURE_VISION_KEY;
+    if (!endpoint || !key) return res.status(400).json({ error: 'ocr_not_configured' });
+    const url = `${endpoint.replace(/\/$/, '')}/vision/v3.2/read/analyze`;
+    const init = {
+      method: 'POST',
+      headers: {
+        'Ocp-Apim-Subscription-Key': key,
+        'Content-Type': 'application/octet-stream'
+      },
+      body: file.buffer
+    };
+    const resp = await fetch(url, init);
+    if (!resp.ok) {
+      const text = await resp.text();
+      return res.status(500).json({ ok: false, error: 'ocr_submit_failed', detail: text });
+    }
+    const opLoc = resp.headers.get('operation-location');
+    if (!opLoc) return res.status(500).json({ ok: false, error: 'missing_operation_location' });
+    let result;
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      const r = await fetch(opLoc, {
+        headers: { 'Ocp-Apim-Subscription-Key': key }
+      });
+      if (!r.ok) continue;
+      result = await r.json();
+      if (result.status === 'succeeded' || result.status === 'failed') break;
+    }
+    if (!result || result.status !== 'succeeded') {
+      return res.status(500).json({ ok: false, error: 'ocr_timeout_or_failed', status: result?.status });
+    }
+    const pages = result.analyzeResult?.readResults || [];
+    const lines = [];
+    for (const pg of pages) {
+      for (const ln of pg.lines || []) {
+        if (ln.text) lines.push(ln.text);
+      }
+    }
+    const text = lines.join('\n');
+    return res.json({ ok: true, text, meta: { pages: pages.length } });
+  } catch (e) {
+    console.error('ocr error', e);
+    return res.status(500).json({ ok: false, error: 'ocr_exception' });
+  }
+});
+
+// ========== 知识库 API ==========
+
+// 获取所有文档
+app.get('/api/documents', async (req, res) => {
+  try {
+    const documents = await storage.getAllDocuments();
+    res.json({ ok: true, documents });
+  } catch (error) {
+    console.error('获取文档列表失败:', error);
+    res.status(500).json({ ok: false, error: '获取文档列表失败' });
+  }
+});
+
+// 获取单个文档
+app.get('/api/documents/:id', async (req, res) => {
+  try {
+    const document = await storage.getDocument(req.params.id);
+    if (!document) {
+      return res.status(404).json({ ok: false, error: '文档不存在' });
+    }
+    res.json({ ok: true, document });
+  } catch (error) {
+    console.error('获取文档失败:', error);
+    res.status(500).json({ ok: false, error: '获取文档失败' });
+  }
+});
+
+// 创建文档
+app.post('/api/documents', async (req, res) => {
+  try {
+    const document = await storage.createDocument(req.body);
+    res.json({ ok: true, document });
+  } catch (error) {
+    console.error('创建文档失败:', error);
+    res.status(500).json({ ok: false, error: '创建文档失败' });
+  }
+});
+
+// 更新文档
+app.put('/api/documents/:id', async (req, res) => {
+  try {
+    const document = await storage.updateDocument(req.params.id, req.body);
+    if (!document) {
+      return res.status(404).json({ ok: false, error: '文档不存在' });
+    }
+    res.json({ ok: true, document });
+  } catch (error) {
+    console.error('更新文档失败:', error);
+    res.status(500).json({ ok: false, error: '更新文档失败' });
+  }
+});
+
+// 删除文档
+app.delete('/api/documents/:id', async (req, res) => {
+  try {
+    console.log(`[API] 删除文档请求: ${req.params.id}`);
+    const deleted = await storage.deleteDocument(req.params.id);
+    console.log(`[API] 删除文档成功: ${req.params.id}, deleted=${deleted}`);
+    res.json({ ok: true, deleted });
+  } catch (error) {
+    console.error('[API] 删除文档失败:', error);
+    console.error('[API] 错误堆栈:', error.stack);
+    // 如果是 JSON 解析错误，尝试返回更友好的错误信息
+    if (error instanceof SyntaxError || error.message.includes('JSON')) {
+      res.status(500).json({ 
+        ok: false, 
+        error: '删除文档失败：数据文件可能已损坏，系统已尝试自动修复。请刷新页面后重试。',
+        detail: error.message 
+      });
+    } else {
+      res.status(500).json({ ok: false, error: '删除文档失败', detail: error.message });
+    }
+  }
+});
+
+// 获取文档的 chunks
+app.get('/api/documents/:id/chunks', async (req, res) => {
+  try {
+    const chunks = await storage.getChunks(req.params.id);
+    res.json({ ok: true, chunks });
+  } catch (error) {
+    console.error('获取 chunks 失败:', error);
+    res.status(500).json({ ok: false, error: '获取 chunks 失败' });
+  }
+});
+
+// 创建 chunks
+app.post('/api/documents/:id/chunks', async (req, res) => {
+  try {
+    const { chunks: chunksData } = req.body;
+    if (!Array.isArray(chunksData)) {
+      return res.status(400).json({ ok: false, error: 'chunks 必须是数组' });
+    }
+    
+    // 为每个 chunk 添加 documentId
+    const chunksWithDocId = chunksData.map(chunk => ({
+      ...chunk,
+      documentId: req.params.id
+    }));
+    
+    const newChunks = await storage.createChunks(chunksWithDocId);
+    res.json({ ok: true, chunks: newChunks });
+  } catch (error) {
+    console.error('创建 chunks 失败:', error);
+    res.status(500).json({ ok: false, error: '创建 chunks 失败' });
+  }
+});
+
+// 更新 chunk 的 embedding
+app.put('/api/chunks/:id/embedding', async (req, res) => {
+  try {
+    const { embedding } = req.body;
+    if (!Array.isArray(embedding)) {
+      return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
+    }
+    
+    const updated = await storage.updateChunkEmbedding(req.params.id, embedding);
+    if (!updated) {
+      return res.status(404).json({ ok: false, error: 'chunk 不存在' });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('更新 embedding 失败:', error);
+    res.status(500).json({ ok: false, error: '更新 embedding 失败' });
+  }
+});
+
+// 搜索 chunks
+app.get('/api/chunks/search', async (req, res) => {
+  try {
+    const { q, limit = 30 } = req.query;
+    if (!q) {
+      return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
+    }
+    
+    const chunks = await storage.searchChunks(q, parseInt(limit));
+    res.json({ ok: true, chunks });
+  } catch (error) {
+    console.error('搜索 chunks 失败:', error);
+    res.status(500).json({ ok: false, error: '搜索 chunks 失败' });
+  }
+});
+
+// 获取所有 chunks（用于语义搜索）
+app.get('/api/chunks', async (req, res) => {
+  try {
+    const chunks = await storage.getAllChunks();
+    res.json({ ok: true, chunks });
+  } catch (error) {
+    console.error('获取所有 chunks 失败:', error);
+    res.status(500).json({ ok: false, error: '获取所有 chunks 失败' });
+  }
+});
+
+// ========== 设置 API ==========
+
+// 获取设置
+app.get('/api/settings', async (req, res) => {
+  try {
+    const settings = await storage.getSettings();
+    res.json({ ok: true, settings });
+  } catch (error) {
+    console.error('获取设置失败:', error);
+    res.status(500).json({ ok: false, error: '获取设置失败' });
+  }
+});
+
+// 更新设置
+app.put('/api/settings', async (req, res) => {
+  try {
+    const settings = await storage.updateSettings(req.body);
+    res.json({ ok: true, settings });
+  } catch (error) {
+    console.error('更新设置失败:', error);
+    res.status(500).json({ ok: false, error: '更新设置失败' });
+  }
+});
+
+// 获取 API Key
+app.get('/api/settings/api-key/:provider', async (req, res) => {
+  try {
+    const apiKey = await storage.getApiKey(req.params.provider);
+    if (!apiKey) {
+      return res.status(404).json({ ok: false, error: 'API Key 未配置' });
+    }
+    res.json({ ok: true, apiKey });
+  } catch (error) {
+    console.error('获取 API Key 失败:', error);
+    res.status(500).json({ ok: false, error: '获取 API Key 失败' });
+  }
+});
+
+// ========== 任务队列 API ==========
+
+// 创建 embedding 生成任务
+app.post('/api/documents/:id/generate-embeddings', async (req, res) => {
+  try {
+    const documentId = req.params.id;
+    // #region agent log
+    console.log(`[API] [DEBUG] 创建 embedding 任务，文档 ID: ${documentId}`);
+    // #endregion
+    console.log(`[API] 创建 embedding 任务，文档 ID: ${documentId}`);
+    
+    const task = taskQueue.createTask('generate_embeddings', documentId);
+    // #region agent log
+    console.log(`[API] [DEBUG] 任务已创建: ${task.id}, status=${task.status}, type=${task.type}`);
+    // #endregion
+    console.log(`[API] 任务已创建: ${task.id}, status=${task.status}`);
+    
+    // 异步处理任务（不阻塞响应）
+    // #region agent log
+    console.log(`[API] [DEBUG] 准备异步处理任务 ${task.id}`);
+    // #endregion
+    taskQueue.processEmbeddingTask(task.id, documentId).catch(error => {
+      // #region agent log
+      console.error(`[API] [DEBUG] 处理 embedding 任务 ${task.id} 失败:`, error);
+      console.error(`[API] [DEBUG] 错误堆栈:`, error.stack);
+      // #endregion
+      console.error(`[API] 处理 embedding 任务 ${task.id} 失败:`, error);
+      console.error(`[API] 错误堆栈:`, error.stack);
+    });
+    
+    // 添加日志以确认任务已启动
+    // #region agent log
+    console.log(`[API] [DEBUG] 任务 ${task.id} 已提交异步处理`);
+    // #endregion
+    console.log(`[API] 任务 ${task.id} 已提交异步处理`);
+    
+    res.json({ ok: true, taskId: task.id, task });
+  } catch (error) {
+    // #region agent log
+    console.error('[API] [DEBUG] 创建任务失败:', error);
+    // #endregion
+    console.error('[API] 创建任务失败:', error);
+    res.status(500).json({ ok: false, error: '创建任务失败', detail: error.message });
+  }
+});
+
+// 获取任务状态
+app.get('/api/tasks/:taskId', async (req, res) => {
+  try {
+    const task = taskQueue.getTask(req.params.taskId);
+    if (!task) {
+      return res.status(404).json({ ok: false, error: '任务不存在' });
+    }
+    res.json({ ok: true, task });
+  } catch (error) {
+    console.error('获取任务状态失败:', error);
+    res.status(500).json({ ok: false, error: '获取任务状态失败' });
+  }
+});
+
+// 获取文档的所有任务
+app.get('/api/documents/:id/tasks', async (req, res) => {
+  try {
+    const documentId = req.params.id; // 修复：使用 id 而不是 documentId
+    console.log(`[API] 获取文档任务，文档 ID: ${documentId}`);
+    const documentTasks = taskQueue.getDocumentTasks(documentId);
+    console.log(`[API] 找到 ${documentTasks.length} 个任务`);
+    res.json({ ok: true, tasks: documentTasks });
+  } catch (error) {
+    console.error('[API] 获取文档任务失败:', error);
+    res.status(500).json({ ok: false, error: '获取文档任务失败' });
+  }
+});
+
+const port = process.env.PORT || 8787;
+app.listen(port, () => {
+  console.log(`Extractor server listening at http://localhost:${port}`);
+});

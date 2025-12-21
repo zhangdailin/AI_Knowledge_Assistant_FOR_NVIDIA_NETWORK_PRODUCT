@@ -1,0 +1,9 @@
+{
+  "apiKeys": {
+    "openai": "",
+    "anthropic": "",
+    "google": "AIzaSyBbDJPgZm8FRzXndiaKcI4h3ShTXLLUptk",
+    "openrouter": "6421f4c1de708d753d72945d06f760143bd1fee5d146d0a097da01d3c6a1ef8c",
+    "siliconflow": "sk-vfiiyizfqtxlhsfurukjvjdhhjoujoziniixmskejftkcqfn"
+  }
+}
