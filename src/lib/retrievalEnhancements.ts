@@ -18,8 +18,8 @@ export function detectQueryIntent(query: string): QueryIntent {
   const queryLower = query.toLowerCase();
   
   // 检测网络配置意图（包含网络技术术语）
-  const networkTechTerms = ['pfc', 'ecn', 'roce', 'qos', 'priority flow control', 'explicit congestion notification', 
-                           'rdma', 'traffic control', 'congestion control', 'flow control'];
+  const networkTechTerms = ['pfc', 'ecn', 'roce', 'qos', 'bgp', 'routing', 'priority flow control', 'explicit congestion notification', 
+                           'rdma', 'traffic control', 'congestion control', 'flow control', 'border gateway protocol'];
   const hasNetworkTerms = networkTechTerms.some(term => queryLower.includes(term.toLowerCase()));
   
   // 检测网络配置命令
@@ -100,6 +100,7 @@ export function extractCoreQueryEnhanced(query: string, intent: QueryIntent): st
   const queryLower = query.toLowerCase();
   const isNetworkConfig = queryLower.includes('pfc') || queryLower.includes('ecn') || 
                          queryLower.includes('roce') || queryLower.includes('qos') ||
+                         queryLower.includes('bgp') || queryLower.includes('routing') ||
                          queryLower.includes('配置') || queryLower.includes('configure');
   
   if (isNetworkConfig) {

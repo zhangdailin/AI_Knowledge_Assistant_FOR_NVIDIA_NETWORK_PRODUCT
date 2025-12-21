@@ -5,7 +5,6 @@
 
 import { generateOptimizedSystemMessage, generateOptimizedUserMessage } from './optimizedPrompts';
 import { generateChineseSystemMessage, generateChineseUserMessage } from './chinesePrompts';
-import { optimizeChineseResponse } from './completeChineseOptimization';
 
 
 export interface AIModel {
@@ -109,7 +108,7 @@ class AIModelManager {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const response = await this.callSiliconFlow(userMessage, usedModel, attempt, systemMessage, request.deepThinking);
+        const response = await this.callSiliconFlow(userMessage, usedModel, attempt, systemMessage, request.deepThinking, request.references);
         return {
           answer: response.answer,
           model: response.model,
@@ -133,7 +132,7 @@ class AIModelManager {
 
     // 所有尝试都失败，返回模拟回答以提升用户体验
     console.warn('所有模型调用失败，返回模拟回答');
-    const mock = this.generateEnhancedMockAnswer(userMessage, usedModel || this.currentModel, request.references);
+    const mock = this.generateEnhancedMockAnswer(userMessage, usedModel || this.currentModel, request.references, request.question);
       return {
         ...mock,
         references: buildReferences()
@@ -141,7 +140,14 @@ class AIModelManager {
   }
 
 
-  private async callSiliconFlow(context: string, model?: string, attempt: number = 0, systemMessage?: string, deepThinking?: boolean): Promise<ChatResponse> {
+  private async callSiliconFlow(
+    context: string, 
+    model?: string, 
+    attempt: number = 0, 
+    systemMessage?: string, 
+    deepThinking?: boolean,
+    references?: string[]
+  ): Promise<ChatResponse> {
     // 使用硅基流动 API
     const { unifiedStorageManager } = await import('./localStorage');
     const apiKey = await unifiedStorageManager.getApiKey('siliconflow') || import.meta.env.VITE_SILICONFLOW_API_KEY;
@@ -204,11 +210,8 @@ class AIModelManager {
         console.warn(`[SiliconFlow] 响应被截断，finishReason: ${finishReason}，answer长度: ${answer.length}`);
       }
       
-      // 优化中文语言，确保回答使用自然的中文表达
-      const optimizedAnswer = optimizeChineseResponse(answer, request.references);
-      
       return {
-        answer: optimizedAnswer,
+        answer: answer,
         model: data.model || this.QWEN_MODEL,
         usage: {
           tokens: data.usage?.total_tokens || 0
@@ -223,9 +226,25 @@ class AIModelManager {
     }
   }
 
-  private generateEnhancedMockAnswer(context: string, model: string, references?: string[]): ChatResponse {
+  private generateEnhancedMockAnswer(context: string, model: string, references?: string[], originalQuestion?: string): ChatResponse {
     // 严格的模拟回答生成 - 防止幻觉
-    const hasReferences = references && references.length > 0;
+    let hasReferences = references && references.length > 0;
+    
+    // 如果提供了原始问题，检查参考内容的相关性
+    if (hasReferences && originalQuestion) {
+      const keywords = this.extractKeywords(originalQuestion);
+      // 检查是否有任何关键词在任何参考内容中出现（不区分大小写）
+      const isRelevant = references!.some(ref => {
+        const refLower = ref.toLowerCase();
+        return keywords.some(kw => refLower.includes(kw.toLowerCase()));
+      });
+      
+      // 如果没有匹配的关键词，视为无参考内容，避免显示不相关的文档
+      if (!isRelevant) {
+        console.warn('参考内容与问题关键词不匹配，降级为无参考内容模式');
+        hasReferences = false;
+      }
+    }
     
     let answer = '';
     
@@ -243,11 +262,7 @@ class AIModelManager {
       answer += `1. 上传相关的技术文档到知识库\n`;
       answer += `2. 确保文档包含具体的配置命令和步骤\n`;
       answer += `3. 可以上传厂商官方配置指南或CLI参考手册\n\n`;
-      answer += `对于网络配置问题，建议上传包含以下内容的文档：\n`;
-      answer += `• PFC（Priority Flow Control）配置命令\n`;
-      answer += `• ECN（Explicit Congestion Notification）设置步骤\n`;
-      answer += `• RoCE（RDMA over Converged Ethernet）配置指南\n`;
-      answer += `• 相关验证和故障排除命令`;
+      answer += `建议上传与您问题主题相关的具体技术文档（例如：BGP、路由、接口配置等）。`;
     }
     
     return {

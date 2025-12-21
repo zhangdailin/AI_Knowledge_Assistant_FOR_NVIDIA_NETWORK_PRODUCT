@@ -13,10 +13,14 @@ export class EnhancedNetworkKeywordExtractor {
     roce: ['roce', 'rdma over converged ethernet', 'rdma', 'lossless ethernet'],
     // QoS相关术语
     qos: ['qos', 'quality of service', 'traffic class', 'traffic priority', 'cos', 'dscp'],
+    // BGP相关术语
+    bgp: ['bgp', 'border gateway protocol', 'ebgp', 'ibgp', 'neighbor', 'peer', 'as', 'autonomous system', 'asn'],
+    // 路由相关
+    routing: ['route', 'router', 'routing', 'ip route', 'static route'],
     // 厂商相关
-    vendors: ['nvidia', 'mellanox', 'cumulus', 'broadcom', '思科', 'cisco'],
+    vendors: ['nvidia', 'mellanox', 'cumulus', 'broadcom', '思科', 'cisco', 'nv', 'nvos'],
     // 配置相关
-    config: ['configure', 'configuration', 'setup', 'enable', 'disable', 'show', 'set', 'apply']
+    config: ['configure', 'configuration', 'setup', 'enable', 'disable', 'show', 'set', 'apply', 'nv']
   };
 
   extractKeywords(query: string) {
@@ -31,7 +35,7 @@ export class EnhancedNetworkKeywordExtractor {
     Object.entries(this.networkTechTerms).forEach(([category, terms]) => {
       terms.forEach(term => {
         if (queryLower.includes(term.toLowerCase())) {
-          if (category === 'pfc' || category === 'ecn' || category === 'roce' || category === 'qos') {
+          if (['pfc', 'ecn', 'roce', 'qos', 'bgp', 'routing'].includes(category)) {
             techTerms.push(term.toLowerCase());
           } else if (category === 'vendors') {
             vendors.push(term.toLowerCase());
@@ -45,6 +49,10 @@ export class EnhancedNetworkKeywordExtractor {
     // 2. 提取数字和参数（如优先级、阈值等）
     const numberPattern = /\b\d+\b/g;
     const numbers = queryLower.match(numberPattern) || [];
+
+    // 提取IPv4地址
+    const ipv4Pattern = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
+    const ips = query.match(ipv4Pattern) || [];
     
     // 3. 提取中文关键词（去除停用词）
     const stopWords = new Set(['的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '那', '些', '个', '只', '现在', '请', '问', '怎么', '如何', '怎样', '什么', '哪个', '哪些', '为什么', '是否', '能否', '可以', '应该', '给出', '完整']);
@@ -57,7 +65,7 @@ export class EnhancedNetworkKeywordExtractor {
     const filteredEnglish = englishWords.filter(word => word.length >= 2);
 
     // 5. 合并所有关键词
-    keywords.push(...techTerms, ...vendors, ...configTerms, ...numbers, ...filteredChinese, ...filteredEnglish);
+    keywords.push(...techTerms, ...vendors, ...configTerms, ...ips, ...numbers, ...filteredChinese, ...filteredEnglish);
 
     return {
       keywords: [...new Set(keywords)],
@@ -67,6 +75,8 @@ export class EnhancedNetworkKeywordExtractor {
       hasPFC: techTerms.includes('pfc') || techTerms.includes('priority flow control'),
       hasECN: techTerms.includes('ecn') || techTerms.includes('explicit congestion notification'),
       hasRoCE: techTerms.includes('roce') || techTerms.includes('rdma'),
+      hasBGP: techTerms.includes('bgp') || techTerms.includes('border gateway protocol'),
+      hasQoS: techTerms.includes('qos') || techTerms.includes('quality of service'),
       intent: this.detectIntent(techTerms, vendors, configTerms)
     };
   }
@@ -99,8 +109,14 @@ export class EnhancedNetworkKeywordExtractor {
       queryParts.push('roce', 'rdma', 'rdma over converged ethernet', 'lossless ethernet');
     }
 
-    // 添加QoS相关术语
-    queryParts.push('qos', 'quality of service', 'traffic class', 'traffic priority');
+    if (extracted.hasBGP) {
+      queryParts.push('bgp', 'border gateway protocol', 'ebgp', 'ibgp', 'neighbor', 'router bgp');
+    }
+
+    // 添加QoS相关术语（仅当检测到QoS或相关流量控制意图时）
+    if (extracted.hasQoS || extracted.hasPFC || extracted.hasECN || extracted.hasRoCE) {
+      queryParts.push('qos', 'quality of service', 'traffic class', 'traffic priority');
+    }
 
     // 添加厂商信息
     if (extracted.vendors.includes('nvidia')) {

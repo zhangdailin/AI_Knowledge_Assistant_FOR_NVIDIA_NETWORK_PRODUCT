@@ -104,8 +104,12 @@ const ChatInterface: React.FC = () => {
     );
   }
 
-  // 过滤掉空对话
+  // 过滤掉空对话（保留当前对话，即使为空）
   const filteredConversations = conversations.filter(conv => {
+    // 始终显示当前选中的对话
+    if (currentConversation?.id === conv.id) return true;
+    
+    // 对于其他对话，只显示有消息的
     const convMessages = localStorageManager.getMessages(conv.id);
     return convMessages.length > 0;
   });
@@ -187,16 +191,7 @@ const ChatInterface: React.FC = () => {
           )}
         </div>
 
-        {/* 底部链接 */}
-        <div className="p-3 border-t border-gray-200 flex-shrink-0">
-          <Link 
-            to="/admin/history" 
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-          >
-            <History className="w-4 h-4" />
-            历史记录
-          </Link>
-        </div>
+        {/* 底部链接 - 已删除 */}
       </div>
 
       {/* 右侧主内容区 */}
@@ -220,19 +215,6 @@ const ChatInterface: React.FC = () => {
             </Link>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setDeepThinking(!deepThinking)}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold transition-colors rounded-lg ${
-                deepThinking
-                  ? 'bg-purple-600 text-white hover:bg-purple-700'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-              title={deepThinking ? '关闭深度思考模式' : '开启深度思考模式'}
-            >
-              <Brain className={`w-4 h-4 ${deepThinking ? 'animate-pulse' : ''}`} />
-              <span>深度思考</span>
-            </button>
             <Link
               to="/admin/settings"
               className="p-2 text-gray-600 hover:text-blue-600 hover:bg-blue-50 transition-colors rounded-lg"
@@ -270,15 +252,13 @@ const ChatInterface: React.FC = () => {
                   
                   <div className={`max-w-3xl ${
                     message.role === 'user' 
-                      ? 'order-1 bg-blue-600 text-white rounded-2xl' 
+                      ? 'order-1 bg-blue-100 text-gray-900 rounded-2xl' 
                       : 'order-2 bg-white rounded-2xl shadow-sm'
                   } px-6 py-4`}>
                     <MessageContent content={message.content} role={message.role} />
                     
-                    {message.metadata?.model && (
-                      <div className={`text-xs mt-2 ${
-                        message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
-                      }`}>
+                    {message.role === 'assistant' && message.metadata?.model && (
+                      <div className="text-xs mt-2 text-gray-500">
                         {message.metadata.model}
                         {message.metadata.deepThinking && (
                           <span className="ml-2 inline-flex items-center gap-1">
@@ -300,28 +280,34 @@ const ChatInterface: React.FC = () => {
               
               {/* 加载状态 */}
               {isLoading && (
-                <div className="flex items-start space-x-4">
+                <div className="flex items-start gap-4">
                   <div className="w-10 h-10 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0">
                     <Bot className="w-5 h-5 text-purple-600" />
                   </div>
-                  <div className="bg-white rounded-2xl p-6 shadow-sm">
-                    <div className="flex items-center space-x-3">
-                      <div className="flex space-x-1.5">
-                        <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
-                        <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-                        <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                  <div className="flex flex-col gap-2 max-w-3xl w-full">
+                    {/* 状态栏：深度思考中 + 停止按钮 */}
+                    <div className="flex items-center gap-3 text-sm text-gray-500">
+                      <div className="flex items-center gap-2">
+                        <Brain className="w-4 h-4 animate-pulse text-purple-600" />
+                        <span>深度思考中...</span>
                       </div>
-                      <span className="text-sm text-gray-700 font-medium">正在思考中...</span>
-                      {/* 新增：中断按钮 */}
-                      {isLoading && (
-                        <button
-                          onClick={handleStop}
-                          className="ml-2 p-1 text-gray-500 hover:text-red-600 transition-colors"
-                          title="中断处理"
-                        >
-                          <Square className="w-4 h-4" />
-                        </button>
-                      )}
+                      <button
+                        onClick={handleStop}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
+                        title="停止响应"
+                      >
+                        <Square className="w-3 h-3 fill-current" />
+                        <span className="text-xs">停止响应</span>
+                      </button>
+                    </div>
+                    
+                    {/* 占位气泡 */}
+                    <div className="bg-white rounded-2xl p-6 shadow-sm min-h-[100px] flex items-center justify-center">
+                       <div className="flex space-x-2">
+                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
+                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -333,58 +319,44 @@ const ChatInterface: React.FC = () => {
         </div>
 
         {/* 输入区域 */}
-        <div className="px-6 py-4 bg-gray-50">
-          <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-            <div className="flex items-center gap-3 mb-3">
-              <button
-                type="button"
-                onClick={() => setDeepThinking(!deepThinking)}
-                className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold transition-colors rounded-lg ${
-                  deepThinking
-                    ? 'bg-purple-600 text-white hover:bg-purple-700'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-                title={deepThinking ? '关闭深度思考模式' : '开启深度思考模式'}
-              >
-                <Brain className={`w-4 h-4 ${deepThinking ? 'animate-pulse' : ''}`} />
-                <span>深度思考</span>
-              </button>
-              {deepThinking && (
-                <span className="text-xs text-gray-500 font-medium">AI将进行更深入的分析和推理</span>
-              )}
+        <div className="px-6 pb-6 pt-2 bg-gray-50">
+          <form onSubmit={handleSubmit} className="max-w-4xl mx-auto relative">
+            {/* 深度思考默认开启，UI已隐藏 */}
+            <div className="absolute -top-10 left-0 flex items-center gap-3">
+              <span className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-full shadow-sm bg-purple-100 text-purple-700">
+                <Brain className="w-3.5 h-3.5" />
+                <span>深度思考模式</span>
+              </span>
             </div>
-            <div className="flex items-center bg-white rounded-2xl shadow-md px-4 py-3">
+
+            <div className="flex items-end bg-white rounded-[2rem] shadow-lg border border-gray-100 px-4 py-3 transition-shadow hover:shadow-xl">
               <textarea
                 ref={textareaRef}
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder={isLoading ? 'AI正在处理中...' : '请输入您的问题...'} // 修改：动态占位符
-                className="flex-1 bg-transparent border-0 resize-none focus:outline-none text-sm text-gray-900 placeholder-gray-500 pr-3 overflow-y-auto"
+                placeholder={isLoading ? 'AI正在思考中...' : '和 智能助手 - "小张" 聊天'} 
+                className="flex-1 bg-transparent border-0 resize-none focus:outline-none text-sm text-gray-900 placeholder-gray-400 pr-3 overflow-y-auto py-2"
                 rows={1}
-                disabled={isLoading || isSending} // 修改：增加发送状态禁用
+                disabled={isLoading || isSending} 
                 style={{ minHeight: '24px', maxHeight: '120px' }}
               />
-              {/* 修改：发送按钮状态 */}
-              {isLoading ? (
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  className="w-10 h-10 bg-red-600 text-white hover:bg-red-700 transition-colors rounded-lg flex items-center justify-center flex-shrink-0"
-                  title="中断处理"
-                >
-                  <Square className="w-5 h-5" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={!inputValue.trim() || isSending} // 修改：使用发送状态
-                  className="w-10 h-10 bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors rounded-lg flex items-center justify-center flex-shrink-0"
-                  title={isSending ? '发送中...' : '发送消息'} // 修改：动态标题
-                >
-                  <Send className={`w-5 h-5 ${isSending ? 'animate-pulse' : ''}`} />
-                </button>
-              )}
+              <button
+                type="submit"
+                disabled={!inputValue.trim() || isSending || isLoading} 
+                className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 transition-all duration-200 ${
+                  !inputValue.trim() || isSending || isLoading
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg transform hover:-translate-y-0.5'
+                }`}
+                title={isSending ? '发送中...' : '发送消息'} 
+              >
+                {isSending || isLoading ? (
+                  <div className="w-5 h-5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5 ml-0.5" />
+                )}
+              </button>
             </div>
           </form>
         </div>

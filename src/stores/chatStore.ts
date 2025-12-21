@@ -28,7 +28,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isLoading: false,
   currentModel: 'qwen3-32b',
-  deepThinking: false, // 默认关闭深度思考
+  deepThinking: true, // 默认开启深度思考
 
   loadConversations: (userId: string) => {
     const conversations = localStorageManager.getConversations(userId);
@@ -95,6 +95,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'user',
         content,
         metadata: { model: currentModel }
+      });
+
+      // 立即更新UI显示用户消息，并刷新对话列表（确保新对话能立即显示）
+      const userId = currentConversation.userId;
+      const updatedConversations = localStorageManager.getConversations(userId);
+      
+      set({ 
+        conversations: updatedConversations,
+        messages: [...get().messages, userMessage],
+        isLoading: true 
       });
 
       // 多路召回检索 + Rerank 重排（top k = 20）
@@ -170,7 +180,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const maxScore = searchResults.length > 0 
         ? Math.max(...searchResults.map(r => r.score))
         : 0;
-      const relevanceThreshold = 0.5; // 相关性阈值，低于此值视为未命中
+      const relevanceThreshold = 0.35; // 降低相关性阈值，避免过滤掉相关但分数稍低的文档
       const isLowRelevance = searchResults.length > 0 && maxScore < relevanceThreshold;
 
       // 如果知识库未命中或相关性太低，直接使用 Qwen 8B 模型
@@ -198,7 +208,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           });
           
-          const msgs = [...get().messages, userMessage, assistantMessage];
+          const msgs = [...get().messages, assistantMessage];
           set({ messages: msgs, isLoading: false });
           return;
         } catch (qwenError) {
@@ -213,7 +223,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               content: '未在知识库命中文本片段，且 AI 模型调用失败。建议：\n1. 上传/粘贴 TXT 或 MD 文本到知识库\n2. 在知识库页面的文档卡片中添加"可检索的文本片段"\n3. 检查 API 密钥配置',
               metadata: { hint: true, error: true, errorMessage: errorMessage.substring(0, 200) }
             });
-            const msgs = [...get().messages, userMessage, tipMessage];
+            const msgs = [...get().messages, tipMessage];
             set({ messages: msgs, isLoading: false });
             return;
           } catch (storageError) {
@@ -227,7 +237,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               metadata: { hint: true, error: true, errorMessage: errorMessage.substring(0, 200) },
               createdAt: new Date().toISOString()
             };
-            const msgs = [...get().messages, userMessage, tipMessage];
+            const msgs = [...get().messages, tipMessage];
             set({ messages: msgs, isLoading: false });
             return;
           }
@@ -264,7 +274,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       // 更新当前消息列表
-      const messages = [...get().messages, userMessage, assistantMessage];
+      const messages = [...get().messages, assistantMessage];
       set({ messages, isLoading: false });
 
     } catch (error) {

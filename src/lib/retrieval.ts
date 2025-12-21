@@ -8,7 +8,7 @@ import {
   deduplicateAndMergeChunks,
   calculateAdaptiveThreshold
 } from './retrievalEnhancements';
-import { advancedKeywordExtractor } from './advancedKeywordExtractor';
+import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
 
 const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
 const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
@@ -165,8 +165,8 @@ export async function ensureEmbeddingsForDocument(documentId: string) {
  * 使用高级语义分析识别网络配置、IP地址、命令等复杂技术信息
  */
 function extractKeywords(query: string): string[] {
-  // 使用高级关键词提取器
-  const extracted = advancedKeywordExtractor.extractKeywords(query);
+  // 使用增强的网络关键词提取器
+  const extracted = enhancedNetworkKeywordExtractor.extractKeywords(query);
   
   // 返回所有提取的关键词，包括网络地址、命令等
   return extracted.keywords;
@@ -340,17 +340,31 @@ export async function semanticSearch(
     .slice(0, limit * 3); // 召回 3 倍候选
   
   // 路2：关键词检索（BM25 简化版）- 召回更多候选
+  const CONFIG_VERBS = ['configure', 'config', 'set', 'add', 'create', 'enable', 'apply', '配置', '创建', '设置', '建立', '启动'];
   
   const keywordRecall = chunksWithEmbedding.map((c: Chunk) => {
     const contentLower = c.content.toLowerCase();
     let keywordScore = 0;
     let matchedKeywords = 0;
     
+    // 检查查询是否包含配置动词
+    const hasConfigIntent = queryWordsLower.some(w => CONFIG_VERBS.some(v => w.includes(v)));
+    
     queryWordsLower.forEach(keyword => {
       const keywordLower = keyword.toLowerCase();
+      // 使用更严格的边界匹配，避免部分匹配（如 'set' 匹配 'setting' 是可以的，但匹配 'asset' 不行）
+      // 这里简化处理，直接匹配
       const matches = (contentLower.match(new RegExp(keywordLower, 'g')) || []).length;
+      
       if (matches > 0) {
-        keywordScore += Math.log(1 + matches);
+        let weight = 1.0;
+        
+        // 如果是配置动词，且查询有配置意图，给予额外加分
+        if (hasConfigIntent && CONFIG_VERBS.some(v => keywordLower.includes(v))) {
+          weight = 3.0; // 显著提升配置命令的权重
+        }
+        
+        keywordScore += Math.log(1 + matches) * weight;
         matchedKeywords++;
       }
     });
@@ -707,7 +721,7 @@ export async function semanticSearch(
   // 找出最高平均分数，用于计算相关性阈值
   const maxAvgScore = Math.max(...Array.from(docAvgScores.values()));
   // 相关性阈值：使用自适应阈值和固定阈值的组合
-  const baseRelevanceThreshold = maxAvgScore * 0.7;
+  const baseRelevanceThreshold = maxAvgScore * 0.5;
   const relevanceThreshold = Math.max(adaptiveThreshold, baseRelevanceThreshold);
   
   // 过滤掉相关性低的文档，严格检查关键词匹配
@@ -759,8 +773,8 @@ export async function semanticSearch(
     }
     
     // 如果文档名称或内容中不包含任何关键词，且平均分数不是特别高，直接排除
-    if (!hasKeywords && avgScore < maxAvgScore * 0.95) {
-      // 不包含关键词且分数不够高，排除（提高阈值到95%）
+    if (!hasKeywords && avgScore < maxAvgScore * 0.8) {
+      // 不包含关键词且分数不够高，排除（提高阈值到80%）
       return;
     }
     
