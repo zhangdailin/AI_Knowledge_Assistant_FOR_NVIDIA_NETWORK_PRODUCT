@@ -508,9 +508,12 @@ export async function searchChunks(query, limit = 30) {
              if (isCommandStructure) {
                  score += 10; // Boost potential command blocks
                  
-                 // Double boost if it matches the specific action verb
-                 if (queryLower.includes('show') && contentLower.includes('show')) score += 5;
-                 if (queryLower.includes('config') && contentLower.includes('config')) score += 5;
+                 // Double boost if it matches the specific action verb (checking both English and Chinese)
+                 const hasShowIntent = queryLower.includes('show') || queryLower.includes('显示') || queryLower.includes('列出') || queryLower.includes('查看');
+                 const hasConfigIntent = queryLower.includes('config') || queryLower.includes('配置') || queryLower.includes('设置');
+
+                 if (hasShowIntent && contentLower.includes('show')) score += 5;
+                 if (hasConfigIntent && contentLower.includes('config')) score += 5;
              }
           }
 
@@ -534,7 +537,8 @@ export async function searchChunks(query, limit = 30) {
       }
       
       if (score > 0) {
-        results.push({ chunk, score });
+        // Return score for debugging
+        results.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
       }
     }
   }

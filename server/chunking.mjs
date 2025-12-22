@@ -44,7 +44,8 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
       console.error('[Chunking] Markdown 解析出错:', parseError);
       console.error('[Chunking] 错误堆栈:', parseError.stack);
       console.warn('[Chunking] 降级到简单分块');
-      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+      // 直接抛出错误，不再降级，以便发现问题
+      throw parseError;
     }
     
     const parseTime = Date.now() - parseStartTime;
@@ -77,8 +78,8 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     
     // 如果既没有标题也没有 Markdown 结构，才使用简单分块
     if (!hasHeadings && !hasMarkdownStructures) {
-      console.log('[Chunking] 文档既没有标题也没有 Markdown 结构，使用简单分块');
-      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+      console.log('[Chunking] 文档既没有标题也没有 Markdown 结构，尝试作为纯文本处理');
+      // 不再使用简单分块，而是尝试将其视为一个单独的章节
     }
     
     if (!hasHeadings) {
@@ -95,14 +96,16 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
       
       // 如果组织后没有生成 chunks，可能是章节树构建失败
       if (!chunks || chunks.length === 0) {
-        console.warn('[Chunking] organizeIntoParentChildChunks 返回空数组，尝试降级处理');
-        return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+        console.warn('[Chunking] organizeIntoParentChildChunks 返回空数组');
+        // 不再降级
+        return [];
       }
     } catch (organizeError) {
       console.error('[Chunking] 组织父子块出错:', organizeError);
       console.error('[Chunking] 错误堆栈:', organizeError.stack);
-      console.warn('[Chunking] 降级到简单分块');
-      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+      console.warn('[Chunking] 过程失败');
+      // 抛出错误而不是降级
+      throw organizeError;
     }
     
     const organizeTime = Date.now() - organizeStartTime;
@@ -111,9 +114,9 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     const validChunks = chunks.filter(c => c && c.content && c.content.trim().length > 0);
     
     if (validChunks.length === 0) {
-      console.warn('[Chunking] 生成的 chunks 为空，使用简单分块');
+      console.warn('[Chunking] 生成的 chunks 为空');
       console.warn(`[Chunking] 原始 chunks 数量: ${chunks.length}`);
-      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+      return [];
     }
     
     const totalTime = Date.now() - startTime;
@@ -127,13 +130,8 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
   } catch (error) {
     console.error('[Chunking] 分块过程出错:', error);
     console.error('[Chunking] 错误堆栈:', error.stack);
-    // 降级处理：使用简单的段落分割
-    try {
-      return createSimpleChunks(text.trim(), maxChunkSize, parentSize, childSize);
-    } catch (fallbackError) {
-      console.error('[Chunking] 降级处理也失败:', fallbackError);
-      return [];
-    }
+    // 不再降级处理，直接抛出错误或返回空数组
+    return [];
   }
 }
 
@@ -227,7 +225,8 @@ function parseMarkdownToBlocks(text) {
     }
     
     // 2. 标题 (# ## ### etc.)
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    // 修复：允许任意缩进的标题，防止缩进标题导致的解析死循环（被段落解析器拒绝但未被标题解析器捕获）
+    const headingMatch = line.match(/^[\s]*(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       blocks.push({
         type: BlockType.HEADING,
@@ -255,17 +254,41 @@ function parseMarkdownToBlocks(text) {
           break;
         }
         
-        codeLines.push(codeLine);
-        codeBlockLines++;
-        
-        // 检查是否是代码块结束标记（```）
         const trimmedCodeLine = codeLine.trim();
-        if (trimmedCodeLine.startsWith('```') && codeLines.length > 1) {
+
+        // 1. 检查是否是代码块结束标记（```）
+        if (trimmedCodeLine.startsWith('```')) {
+          codeLines.push(codeLine);
           i++;
           codeBlockClosed = true;
           break;
         }
+
+        // 2. 启发式检查：如果遇到明显的 Markdown 标题，且代码块未关闭，则认为代码块隐式结束
+        // 防止代码块未闭合导致后续所有文档都被吞噬
+        if (codeLines.length > 0 && /^#{1,6}\s+/.test(codeLine)) {
+          // 检查语言类型，避免误判使用 # 作为注释的语言（如 Python, Bash）
+          const firstLine = codeLines[0].trim();
+          const lang = firstLine.startsWith('```') ? firstLine.slice(3).trim().toLowerCase() : '';
+          const hashCommentLangs = ['python', 'py', 'bash', 'sh', 'shell', 'zsh', 'yaml', 'yml', 'conf', 'ini', 'makefile', 'dockerfile', 'rb', 'ruby', 'pl', 'perl', 'r'];
+          const isHashCommentLang = hashCommentLangs.includes(lang);
+          
+          // 如果是易混淆的语言，且代码块还不够长（< 100行），则保守处理，认为是注释
+          // 如果代码块非常长（> 100行），则更有可能是忘记闭合了
+          if (isHashCommentLang && codeBlockLines < 100) {
+            // Do nothing, treat as comment
+          } else {
+            console.warn(`[Chunking] 在行 ${i} 检测到标题，自动闭合未结束的代码块，防止文档被吞噬`);
+            // 自动补全闭合标记，使内容合规
+            codeLines.push('```');
+            codeBlockClosed = true;
+            // 注意：不执行 i++，让外层循环在下一次迭代中重新处理当前行（作为标题）
+            break;
+          }
+        }
         
+        codeLines.push(codeLine);
+        codeBlockLines++;
         i++;
       }
       
@@ -512,92 +535,84 @@ function organizeIntoParentChildChunks(blocks, maxChunkSize, parentSize, childSi
 }
 
 /**
- * 构建章节树
- * H1/H2 作为主要章节边界
+ * 构建章节树 (多级支持版)
+ * 使用栈结构处理任意深度的标题嵌套 (H1 -> H2 -> H3 -> ...)
  */
 function buildSectionTree(blocks) {
-  const sections = [];
-  let currentSection = null;
-  let currentSubSection = null;
-  
+  const rootSections = [];
+  const stack = []; // 存储 { heading, level, blocks: [], subSections: [] }
+
   if (!blocks || blocks.length === 0) {
     console.warn('[Chunking] buildSectionTree: blocks 为空');
-    return sections;
+    return rootSections;
   }
   
-  for (const block of blocks) {
-    if (!block || !block.type) {
-      console.warn('[Chunking] buildSectionTree: 遇到无效 block，跳过');
-      continue;
+  // 辅助函数：获取当前活动的容器（栈顶或根列表的最后一个无标题章节）
+  function getCurrentContainer() {
+    if (stack.length > 0) {
+      return stack[stack.length - 1];
     }
+    // 如果栈为空，检查根列表
+    if (rootSections.length > 0) {
+      const lastRoot = rootSections[rootSections.length - 1];
+      // 如果最后一个根节点是没有标题的"序言"章节，则返回它
+      if (!lastRoot.heading) {
+        return lastRoot;
+      }
+    }
+    // 否则创建一个新的无标题根章节
+    const newRoot = {
+      heading: null,
+      level: 0,
+      blocks: [],
+      subSections: []
+    };
+    rootSections.push(newRoot);
+    return newRoot;
+  }
+
+  for (const block of blocks) {
+    if (!block || !block.type) continue;
     
     if (block.type === BlockType.HEADING) {
-      if (block.level <= 2) {
-        // H1/H2: 新的主章节
-        if (currentSection) {
-          sections.push(currentSection);
-        }
-        currentSection = {
-          heading: block,
-          blocks: [],
-          subSections: []
-        };
-        currentSubSection = null;
-      } else {
-        // H3+: 子章节
-        if (!currentSection) {
-          currentSection = {
-            heading: null,
-            blocks: [],
-            subSections: []
-          };
-        }
-        
-        if (currentSubSection) {
-          currentSection.subSections.push(currentSubSection);
-        }
-        
-        currentSubSection = {
-          heading: block,
-          blocks: []
-        };
+      const currentLevel = block.level;
+      
+      // 创建新章节
+      const newSection = {
+        heading: block,
+        level: currentLevel,
+        blocks: [],
+        subSections: []
+      };
+
+      // 维护栈：弹出所有级别 >= 当前级别的章节
+      // 例如：当前是 H2，栈顶是 H3，则弹出 H3（H2 结束了 H3 的范围）
+      // 如果当前是 H2，栈顶是 H2，则弹出 H2（同级并列）
+      while (stack.length > 0 && stack[stack.length - 1].level >= currentLevel) {
+        stack.pop();
       }
+
+      // 将新章节添加到父级
+      if (stack.length > 0) {
+        // 栈顶就是父节点
+        stack[stack.length - 1].subSections.push(newSection);
+      } else {
+        // 栈为空，说明是根节点
+        rootSections.push(newSection);
+      }
+
+      // 入栈，成为当前活动章节
+      stack.push(newSection);
+      
     } else {
-      // 非标题块
-      if (currentSubSection) {
-        currentSubSection.blocks.push(block);
-      } else if (currentSection) {
-        currentSection.blocks.push(block);
-      } else {
-        // 没有任何标题的内容
-        currentSection = {
-          heading: null,
-          blocks: [block],
-          subSections: []
-        };
-      }
+      // 非标题内容，添加到当前活动容器
+      const container = getCurrentContainer();
+      container.blocks.push(block);
     }
   }
   
-  // 收尾
-  if (currentSubSection && currentSection) {
-    currentSection.subSections.push(currentSubSection);
-  }
-  if (currentSection) {
-    sections.push(currentSection);
-  }
-  
-  console.log(`[Chunking] buildSectionTree: 构建了 ${sections.length} 个章节`);
-  if (sections.length > 0) {
-    const sectionStats = {
-      withHeading: sections.filter(s => s.heading).length,
-      withoutHeading: sections.filter(s => !s.heading).length,
-      withSubSections: sections.filter(s => s.subSections && s.subSections.length > 0).length
-    };
-    console.log(`[Chunking] 章节统计:`, sectionStats);
-  }
-  
-  return sections;
+  console.log(`[Chunking] buildSectionTree: 构建了 ${rootSections.length} 个根章节 (多级结构)`);
+  return rootSections;
 }
 
 /**
