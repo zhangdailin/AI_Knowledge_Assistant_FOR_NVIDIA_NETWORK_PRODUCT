@@ -171,19 +171,30 @@ function parseMarkdownToBlocks(text) {
   
   // 智能无限循环检测：记录连续不前进的次数
   let stuckCount = 0;
-  let lastPosition = 0;
-  const MAX_STUCK_COUNT = 100; // 如果连续 100 次迭代位置没有变化，认为是无限循环
+  let lastPosition = -1;
+  const MAX_STUCK_COUNT = 50; // 如果连续 50 次迭代位置没有变化，认为是无限循环
   
   while (i < lines.length) {
-    // 智能无限循环检测
-    if (i === lastPosition) {
+    // 智能无限循环检测（只在位置真正不变时触发）
+    if (i === lastPosition && lastPosition >= 0) {
       stuckCount++;
       if (stuckCount > MAX_STUCK_COUNT) {
-        console.error(`[Chunking] 检测到可能的无限循环：连续 ${stuckCount} 次迭代位置未变化，当前行 ${i}/${totalLines}`);
-        console.error(`[Chunking] 最后处理的块类型: ${blocks.length > 0 ? blocks[blocks.length - 1].type : 'none'}`);
+        const lastBlockType = blocks.length > 0 ? blocks[blocks.length - 1].type : 'none';
+        const currentLinePreview = lines[i] ? lines[i].substring(0, 100) : 'undefined';
+        console.error(`[Chunking] 检测到可能的无限循环：连续 ${stuckCount} 次迭代位置未变化`);
+        console.error(`[Chunking] 当前行: ${i}/${totalLines}, 最后块类型: ${lastBlockType}`);
+        console.error(`[Chunking] 当前行内容预览: ${currentLinePreview}`);
+        
         // 强制前进一行，避免完全卡死
         i++;
         stuckCount = 0;
+        lastPosition = i;
+        
+        // 如果连续多次强制前进，可能是文档格式问题，跳过更多行
+        if (i === lastPosition) {
+          console.warn(`[Chunking] 强制前进后仍然卡住，跳过当前行并继续`);
+          i++;
+        }
         continue;
       }
     } else {
@@ -232,14 +243,27 @@ function parseMarkdownToBlocks(text) {
     if (trimmedLine.startsWith('```')) {
       const codeLines = [line];
       i++;
+      let codeBlockClosed = false;
       while (i < lines.length) {
-        codeLines.push(lines[i]);
-        if (lines[i].trim().startsWith('```') && codeLines.length > 1) {
+        const codeLine = lines[i];
+        if (codeLine === undefined) {
+          console.warn(`[Chunking] 代码块处理：行 ${i} 未定义，强制结束代码块`);
+          break;
+        }
+        codeLines.push(codeLine);
+        if (codeLine.trim().startsWith('```') && codeLines.length > 1) {
           i++;
+          codeBlockClosed = true;
           break;
         }
         i++;
       }
+      
+      // 如果代码块没有正确关闭，记录警告但继续处理
+      if (!codeBlockClosed && i >= lines.length) {
+        console.warn(`[Chunking] 代码块未正确关闭（文档末尾），已强制结束`);
+      }
+      
       blocks.push({
         type: BlockType.CODE_BLOCK,
         content: codeLines.join('\n'),
@@ -370,6 +394,14 @@ function parseMarkdownToBlocks(text) {
     const paragraphLines = [];
     while (i < lines.length) {
       const currentLine = lines[i];
+      
+      // 安全检查
+      if (currentLine === undefined) {
+        console.warn(`[Chunking] 段落处理：行 ${i} 未定义，强制结束段落`);
+        i++; // 强制前进
+        break;
+      }
+      
       const currentTrimmed = currentLine.trim();
       
       // 段落结束条件
@@ -377,15 +409,22 @@ function parseMarkdownToBlocks(text) {
           currentTrimmed.startsWith('#') ||           // 标题
           currentTrimmed.startsWith('```') ||         // 代码块
           currentTrimmed.startsWith('>') ||           // 引用
-          /^[-*+]\s+/.test(currentTrimmed) ||         // 无序列表
-          /^\d+\.\s+/.test(currentTrimmed) ||         // 有序列表
+          /^[\s]*[-*+]\s+/.test(currentTrimmed) ||   // 无序列表（修复：允许前导空格）
+          /^[\s]*\d+\.\s+/.test(currentTrimmed) ||    // 有序列表（修复：允许前导空格）
           /^[-*_]{3,}$/.test(currentTrimmed) ||       // 分隔线
-          (isTableLine(currentLine) && i + 1 < lines.length && isTableSeparator(lines[i + 1]))) {
+          (isTableLine(currentLine) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) ||
+          (currentLine.startsWith('<table'))) {       // HTML 表格
         break;
       }
       
       paragraphLines.push(currentLine);
       i++;
+      
+      // 防止段落过长（超过 1000 行），强制分段
+      if (paragraphLines.length > 1000) {
+        console.warn(`[Chunking] 段落过长（${paragraphLines.length} 行），强制分段`);
+        break;
+      }
     }
     
     if (paragraphLines.length > 0) {
