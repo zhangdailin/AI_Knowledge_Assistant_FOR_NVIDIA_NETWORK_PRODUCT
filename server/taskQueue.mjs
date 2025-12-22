@@ -193,7 +193,7 @@ export async function processEmbeddingTask(taskId, documentId) {
           console.log(`[任务 ${taskId}] [BATCH] 准备批量更新 ${pendingUpdates.length} 个 chunks`);
           // #endregion
           try {
-            const result = await storage.updateChunkEmbeddings(pendingUpdates);
+            const result = await storage.updateChunkEmbeddings(pendingUpdates, documentId);
             // 批量更新可能部分成功，调整计数
             const actualSuccess = result.success;
             const actualFailed = result.failed;

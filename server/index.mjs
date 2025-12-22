@@ -14,11 +14,106 @@ const pdfParse = pdfParseModule;
 import mammoth from 'mammoth';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import * as chunking from './chunking.mjs';
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // 支持 JSON 请求体
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// 异步处理文件上传
+async function processUploadedFile(documentId, file) {
+  try {
+    console.log(`[Async] 开始处理文档: ${documentId}, 文件: ${file.originalname}`);
+    
+    // 1. 解析文本
+    let text = '';
+    const mime = file.mimetype || '';
+    const name = file.originalname.toLowerCase();
+    
+    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+       const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
+       const parser = new PdfParseClass({ data: file.buffer });
+       const result = await parser.getText({});
+       text = result?.text || '';
+    } else if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) {
+       const result = await mammoth.extractRawText({ buffer: file.buffer });
+       text = result.value;
+    } else {
+       // 默认作为文本处理
+       text = file.buffer.toString('utf-8');
+    }
+    
+    text = (text || '').trim();
+    if (!text) throw new Error('提取文本为空');
+    
+    console.log(`[Async] 文本提取完成，长度: ${text.length}`);
+
+    // 更新预览
+    await storage.updateDocument(documentId, {
+      contentPreview: text.substring(0, 500)
+    });
+    
+    // 2. 分块
+    const chunks = chunking.enhancedParentChildChunking(text, 4000, 500, 150);
+    console.log(`[Async] 分块完成，块数: ${chunks.length}`);
+
+    // 3. 保存 chunks
+    const chunksWithDocId = chunks.map(c => ({ ...c, documentId }));
+    await storage.createChunks(chunksWithDocId);
+    
+    // 4. 生成 Embedding (复用 taskQueue)
+    // 注意：taskQueue.processEmbeddingTask 需要手动触发
+    // 或者我们直接创建任务并调用它
+    const task = taskQueue.createTask('generate_embeddings', documentId);
+    await taskQueue.processEmbeddingTask(task.id, documentId);
+    
+    // 5. 更新状态
+    await storage.updateDocument(documentId, { status: 'ready' });
+    console.log(`[Async] 文档处理完成: ${documentId}`);
+    
+  } catch (error) {
+    console.error(`[Async] 处理文档失败: ${documentId}`, error);
+    await storage.updateDocument(documentId, { 
+      status: 'error', 
+      errorMessage: error.message 
+    });
+  }
+}
+
+app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'no_file' });
+    const { userId, category } = req.body;
+    
+    // 1. 创建文档记录 (status: processing)
+    const docData = {
+      userId,
+      filename: file.originalname,
+      fileType: file.mimetype,
+      fileSize: file.size,
+      category: category || 'default',
+      contentPreview: '处理中...', // 初始预览
+      uploadedAt: new Date().toISOString(),
+      status: 'processing'
+    };
+    
+    const document = await storage.createDocument(docData);
+    
+    // 2. 立即响应前端
+    res.json({ ok: true, document });
+    
+    // 3. 异步处理
+    // 注意：这里没有 await，故意让它在后台运行
+    processUploadedFile(document.id, file);
+    
+  } catch (error) {
+    console.error('上传处理失败:', error);
+    res.status(500).json({ ok: false, error: '上传失败' });
+  }
+});
 
 app.post('/api/extract', upload.single('file'), async (req, res) => {
   try {

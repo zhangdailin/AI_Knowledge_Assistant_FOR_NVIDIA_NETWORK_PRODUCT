@@ -64,8 +64,18 @@ class UnifiedStorageManager {
     return await serverStorageManager.getAllChunks();
   }
 
-  async createChunks(documentId: string, chunks: Omit<Chunk, 'id' | 'documentId' | 'createdAt'>[]): Promise<Chunk[]> {
-    return await serverStorageManager.createChunks(documentId, chunks);
+  async createChunks(docId: string, chunks: any[]): Promise<any[]> {
+    // 确保每个 chunk 都有 documentId
+    const chunksWithId = chunks.map(c => ({ ...c, documentId: docId }));
+    return await serverStorageManager.createChunks(chunksWithId);
+  }
+
+  async uploadDocument(file: File, userId: string, category: string): Promise<Document> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('userId', userId);
+    formData.append('category', category);
+    return await serverStorageManager.uploadDocument(formData);
   }
 
   async updateChunkEmbedding(chunkId: string, embedding: number[]): Promise<void> {

@@ -10,6 +10,15 @@ const BGE_MODEL = 'BAAI/bge-m3';
 
 // 生成 embedding
 export async function embedText(text) {
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    console.warn('Empty text for embedding, skipping.');
+    return null;
+  }
+
+  // 截断文本，防止超过 API 限制
+  // bge-m3 支持 8192 token，但为了安全和速度，限制在 2000 字符
+  const truncatedText = text.substring(0, 2000).replace(/\n+/g, ' ');
+
   // 获取 API key
   const apiKey = await storage.getApiKey('siliconflow') || process.env.SILICONFLOW_API_KEY || process.env.VITE_SILICONFLOW_API_KEY;
   
@@ -26,7 +35,7 @@ export async function embedText(text) {
       },
       body: JSON.stringify({
         model: BGE_MODEL,
-        input: text
+        input: truncatedText
       })
     });
 

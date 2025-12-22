@@ -165,6 +165,17 @@ class ServerStorageManager {
     }
   }
 
+  async uploadDocument(formData: FormData): Promise<Document> {
+    const url = getApiServerUrl();
+    const res = await fetch(`${url}/api/documents/upload`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) throw new Error('上传失败');
+    const data = await res.json();
+    return data.document;
+  }
+
   async updateChunkEmbedding(chunkId: string, embedding: number[]): Promise<boolean> {
     try {
       const res = await fetch(`${this.apiUrl}/api/chunks/${chunkId}/embedding`, {

@@ -32,6 +32,17 @@ const KnowledgeBase: React.FC = () => {
     }
   }, [user]);
 
+  // 轮询逻辑：如果有文档正在处理中，每3秒刷新一次状态
+  useEffect(() => {
+    const hasProcessing = documents.some(doc => doc.status === 'processing');
+    if (hasProcessing) {
+      const timer = setInterval(() => {
+        loadDocuments();
+      }, 3000);
+      return () => clearInterval(timer);
+    }
+  }, [documents]);
+
   const loadDocuments = async () => {
     if (user) {
       const docs = await unifiedStorageManager.getDocuments(user.id);
@@ -69,81 +80,25 @@ const KnowledgeBase: React.FC = () => {
     if (!user) return;
 
     setIsUploading(true);
-    const uploadedDocs: Document[] = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      
-      try {
-        // 读取文件内容
-        const content = await readFileContent(file);
-        
-        // 创建文档记录
-        const doc = await unifiedStorageManager.createDocument(
-          user.id,
-          file.name,
-          file.type,
-          file.size,
-          content.substring(0, 500), // 预览内容
-          'default'
-        );
-
-        // 处理文档内容（分块）
-        const chunks = processDocumentContent(content);
-        await unifiedStorageManager.createChunks(doc.id, chunks);
-        
-        // 如果是 PDF 或 Word 文档，且解析成功（内容长度足够），自动添加可检索的文本片段
-        const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-        const isWord = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-                      file.type === 'application/msword' ||
-                      file.name.toLowerCase().endsWith('.docx') ||
-                      file.name.toLowerCase().endsWith('.doc');
-        
-        
-        if ((isPDF || isWord) && content && content.length > 100 && !content.startsWith('PDF文件:') && !content.startsWith('Word文档:')) {
-          // 提取关键内容作为可检索的文本片段（取前 5000 字符，避免过长）
-          const keyContent = content.substring(0, 5000);
-          // 如果内容很长，尝试提取摘要部分（前 2000 字符通常包含标题和摘要）
-          const summaryContent = content.length > 5000 ? content.substring(0, 2000) : keyContent;
-          
-          try {
-            // 添加摘要作为可检索的文本片段
-            if (summaryContent.length >= 50) {
-              await unifiedStorageManager.addManualChunk(doc.id, `文档摘要：\n${summaryContent}`);
-            }
-            // 如果内容足够长，也添加完整的关键内容
-            if (keyContent.length > summaryContent.length && keyContent.length >= 100) {
-              await unifiedStorageManager.addManualChunk(doc.id, keyContent);
-            }
-          } catch (error) {
-            console.warn(`为文档 ${doc.id} 自动添加可检索文本片段失败:`, error);
-          }
-        }
-        
-        // 创建后台任务生成 embedding
+    
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         try {
-          await unifiedStorageManager.createEmbeddingTask(doc.id);
+          // 直接上传到后台处理，不再在前端解析
+          await unifiedStorageManager.uploadDocument(file, user.id, 'default');
         } catch (error) {
-          console.error('创建 embedding 任务失败:', error);
+          console.error(`上传文件 ${file.name} 失败:`, error);
+          alert(`上传 ${file.name} 失败`);
         }
-        
-        // LLM 索引生成（不阻塞文件上传，失败不影响）
-        llmIndexDocument(doc.id, content).catch(error => {
-          console.warn(`文档 ${doc.id} 的 LLM 索引生成失败（不影响文件上传）:`, error);
-        });
-
-        uploadedDocs.push(doc);
-        if (/^(PDF文件|Word文档)/.test(content)) {
-          const reason = await diagnosePDFTextExtraction(file, { inspectPages: 40, groupByPosition: pdfGroupByPos });
-          alert(`提示：${file.name} 正文未成功解析。原因：${reason}。建议转换为 TXT/MD 后再导入。`);
-        }
-      } catch (error) {
-        console.error(`处理文件 ${file.name} 失败:`, error);
       }
+      // 上传完成后刷新列表，此时文档状态应为 processing
+      loadDocuments();
+    } catch (error) {
+      console.error('批量上传失败:', error);
+    } finally {
+      setIsUploading(false);
     }
-
-    setIsUploading(false);
-    loadDocuments(); // 重新加载文档列表
   };
 
   const readFileContent = async (file: File): Promise<string> => {
@@ -425,7 +380,16 @@ const KnowledgeBase: React.FC = () => {
         {/* 标题和上传区域 */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-800 mb-2">知识库管理</h1>
-          <p className="text-gray-600">上传和管理您的知识库文档</p>
+          <div className="flex items-center gap-2">
+            <p className="text-gray-600">上传和管理您的知识库文档</p>
+            <button 
+              onClick={loadDocuments} 
+              className="p-1 text-gray-400 hover:text-blue-500 transition-colors"
+              title="刷新列表"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* 上传区域 */}
@@ -615,6 +579,29 @@ const KnowledgeBase: React.FC = () => {
                     </p>
                   </div>
                 </div>
+
+                {/* 状态显示 */}
+                <div className="flex flex-col items-end mr-2">
+                  {document.status === 'processing' && (
+                    <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded whitespace-nowrap flex items-center">
+                      <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
+                      处理中...
+                    </span>
+                  )}
+                  {document.status === 'error' && (
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded whitespace-nowrap mb-1" title={document.errorMessage}>
+                        处理失败
+                      </span>
+                      {document.errorMessage && (
+                        <span className="text-[10px] text-red-500 max-w-[150px] truncate" title={document.errorMessage}>
+                          {document.errorMessage}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <button
                   onClick={() => deleteDocument(document.id)}
                   className="p-1 text-red-500 hover:bg-red-50 rounded transition-colors flex-shrink-0 ml-2"

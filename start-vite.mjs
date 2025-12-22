@@ -7,13 +7,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const isWindows = process.platform === 'win32';
-const vitePath = isWindows 
-  ? join(__dirname, 'node_modules', '.bin', 'vite.cmd')
-  : join(__dirname, 'node_modules', '.bin', 'vite');
 
-const vite = spawn(isWindows ? vitePath : 'node', isWindows ? [] : [vitePath], {
+// 直接指向 vite 包内的 JS 入口文件，避开 .bin 目录下的脚本差异
+const viteJsPath = join(__dirname, 'node_modules', 'vite', 'bin', 'vite.js');
+
+const vite = spawn('node', [viteJsPath], {
   stdio: 'inherit',
-  shell: isWindows,
+  shell: false, // 不需要 shell，直接用 node 执行 JS
   cwd: __dirname,
   env: {
     ...process.env,

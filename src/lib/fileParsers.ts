@@ -1,13 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
+import mammoth from 'mammoth';
 
 export async function readAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return await file.arrayBuffer();
-}
-
-declare global {
-  interface Window {
-    mammoth?: any;
-  }
 }
 
 async function ensurePDFJS() {
@@ -15,18 +10,6 @@ async function ensurePDFJS() {
   // 以避免打包器将其视为对 ES Module import 的赋值操作而报错。
   return pdfjsLib as any;
 }
-
-async function ensureMammoth() {
-  if (window.mammoth) return window.mammoth;
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/mammoth/mammoth.browser.min.js';
-    script.onload = () => resolve(window.mammoth);
-    script.onerror = () => reject(new Error('无法加载Mammoth'));
-    document.head.appendChild(script);
-  });
-}
-
 
 export async function parsePDFToText(file: File, maxPages = 20): Promise<string> {
   try {
@@ -236,7 +219,6 @@ export async function diagnosePDFTextExtraction(
 }
 
 export async function parseDocxToText(file: File): Promise<string> {
-  const mammoth = await ensureMammoth();
   const buffer = await readAsArrayBuffer(file);
   const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
   const html = result.value as string;

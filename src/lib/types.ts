@@ -33,6 +33,8 @@ export interface Document {
   contentPreview: string;
   uploadedAt: string;
   maxChunks?: number; // 每个文档的最大chunks数量（rack配额），默认1000
+  status?: 'processing' | 'ready' | 'error'; // 文档处理状态
+  errorMessage?: string; // 处理失败时的错误信息
 }
 
 export interface Chunk {
