@@ -12,17 +12,55 @@
  * 主入口：Markdown 感知的父子块分片
  */
 export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 2000, childSize = 600) {
-  // 1. 解析 Markdown 为语义块
-  const semanticBlocks = parseMarkdownToBlocks(text);
-  
-  console.log(`[Chunking] 解析出 ${semanticBlocks.length} 个语义块`);
-  
-  // 2. 根据标题层级组织父子块
-  const chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
-  
-  console.log(`[Chunking] 生成 ${chunks.length} 个 chunks (父: ${chunks.filter(c => c.chunkType === 'parent').length}, 子: ${chunks.filter(c => c.chunkType === 'child').length})`);
-  
-  return chunks;
+  try {
+    // 输入验证
+    if (!text || typeof text !== 'string') {
+      console.warn('[Chunking] 输入文本为空或无效，返回空数组');
+      return [];
+    }
+    
+    const trimmedText = text.trim();
+    if (trimmedText.length === 0) {
+      console.warn('[Chunking] 文本内容为空，返回空数组');
+      return [];
+    }
+    
+    // 1. 解析 Markdown 为语义块
+    const semanticBlocks = parseMarkdownToBlocks(trimmedText);
+    
+    if (!semanticBlocks || semanticBlocks.length === 0) {
+      console.warn('[Chunking] 未能解析出语义块，使用简单分块');
+      // 降级处理：使用简单的段落分割
+      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+    }
+    
+    console.log(`[Chunking] 解析出 ${semanticBlocks.length} 个语义块`);
+    
+    // 2. 根据标题层级组织父子块
+    const chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+    
+    // 验证 chunks
+    const validChunks = chunks.filter(c => c && c.content && c.content.trim().length > 0);
+    
+    if (validChunks.length === 0) {
+      console.warn('[Chunking] 生成的 chunks 为空，使用简单分块');
+      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+    }
+    
+    console.log(`[Chunking] 生成 ${validChunks.length} 个 chunks (父: ${validChunks.filter(c => c.chunkType === 'parent').length}, 子: ${validChunks.filter(c => c.chunkType === 'child').length})`);
+    
+    return validChunks;
+  } catch (error) {
+    console.error('[Chunking] 分块过程出错:', error);
+    console.error('[Chunking] 错误堆栈:', error.stack);
+    // 降级处理：使用简单的段落分割
+    try {
+      return createSimpleChunks(text.trim(), maxChunkSize, parentSize, childSize);
+    } catch (fallbackError) {
+      console.error('[Chunking] 降级处理也失败:', fallbackError);
+      return [];
+    }
+  }
 }
 
 /**
@@ -244,15 +282,37 @@ function organizeIntoParentChildChunks(blocks, maxChunkSize, parentSize, childSi
   const chunks = [];
   let globalIndex = 0;
   
+  // 输入验证
+  if (!blocks || !Array.isArray(blocks) || blocks.length === 0) {
+    console.warn('[Chunking] organizeIntoParentChildChunks: blocks 为空');
+    return [];
+  }
+  
   // 构建章节树
   const sections = buildSectionTree(blocks);
   
+  if (!sections || sections.length === 0) {
+    console.warn('[Chunking] organizeIntoParentChildChunks: 未能构建章节树');
+    return [];
+  }
+  
   // 遍历章节生成 chunks
   for (const section of sections) {
-    const sectionChunks = processSectionV2(section, [], maxChunkSize, parentSize, childSize);
-    for (const chunk of sectionChunks) {
-      chunk.chunkIndex = globalIndex++;
-      chunks.push(chunk);
+    if (!section) continue;
+    
+    try {
+      const sectionChunks = processSectionV2(section, [], maxChunkSize, parentSize, childSize);
+      if (sectionChunks && Array.isArray(sectionChunks)) {
+        for (const chunk of sectionChunks) {
+          if (chunk && chunk.content && chunk.content.trim().length > 0) {
+            chunk.chunkIndex = globalIndex++;
+            chunks.push(chunk);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Chunking] 处理章节时出错:', error);
+      // 继续处理下一个章节
     }
   }
   
@@ -334,6 +394,10 @@ function buildSectionTree(blocks) {
 function processSectionV2(section, breadcrumbs, maxChunkSize, parentSize, childSize) {
   const chunks = [];
   
+  if (!section) {
+    return chunks;
+  }
+  
   // 更新面包屑
   const sectionTitle = section.heading?.title || '';
   const currentBreadcrumbs = sectionTitle ? [...breadcrumbs, sectionTitle] : breadcrumbs;
@@ -341,16 +405,32 @@ function processSectionV2(section, breadcrumbs, maxChunkSize, parentSize, childS
   // 收集本章节的所有内容（不包括子章节）
   const sectionContent = buildSectionContent(section, currentBreadcrumbs);
   
-  if (sectionContent.length > 0) {
-    // 创建父块
-    const parentChunks = createParentChunks(sectionContent, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
-    chunks.push(...parentChunks);
+  if (sectionContent && sectionContent.length > 0) {
+    try {
+      // 创建父块
+      const parentChunks = createParentChunks(sectionContent, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
+      if (parentChunks && Array.isArray(parentChunks)) {
+        chunks.push(...parentChunks.filter(c => c && c.content && c.content.trim().length > 0));
+      }
+    } catch (error) {
+      console.error('[Chunking] 创建父块时出错:', error);
+    }
   }
   
   // 递归处理子章节
-  for (const subSection of section.subSections || []) {
-    const subChunks = processSectionV2(subSection, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
-    chunks.push(...subChunks);
+  if (section.subSections && Array.isArray(section.subSections)) {
+    for (const subSection of section.subSections) {
+      if (subSection) {
+        try {
+          const subChunks = processSectionV2(subSection, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
+          if (subChunks && Array.isArray(subChunks)) {
+            chunks.push(...subChunks.filter(c => c && c.content && c.content.trim().length > 0));
+          }
+        } catch (error) {
+          console.error('[Chunking] 处理子章节时出错:', error);
+        }
+      }
+    }
   }
   
   return chunks;
@@ -363,13 +443,18 @@ function buildSectionContent(section, breadcrumbs) {
   const parts = [];
   
   // 添加标题
-  if (section.heading) {
+  if (section.heading && section.heading.content) {
     parts.push(section.heading.content);
   }
   
   // 添加块内容
   for (const block of section.blocks || []) {
-    parts.push(formatBlock(block));
+    if (block && block.content) {
+      const formatted = formatBlock(block);
+      if (formatted && formatted.trim().length > 0) {
+        parts.push(formatted);
+      }
+    }
   }
   
   return parts.join('\n\n').trim();
@@ -379,25 +464,32 @@ function buildSectionContent(section, breadcrumbs) {
  * 格式化语义块为文本
  */
 function formatBlock(block) {
+  if (!block || !block.content) {
+    return '';
+  }
+  
   switch (block.type) {
     case BlockType.TABLE:
       // 如果已经转换为语义格式
-      if (block.rows) {
+      if (block.rows && Array.isArray(block.rows) && block.rows.length > 0) {
         return formatTableAsSemantic(block.rows);
       }
-      return block.content;
+      return block.content || '';
     
     case BlockType.CODE_BLOCK:
-      return block.content;
+      return block.content || '';
     
     case BlockType.LIST:
-      return block.content;
+      return block.content || '';
     
     case BlockType.BLOCKQUOTE:
-      return block.content;
+      return block.content || '';
+    
+    case BlockType.PARAGRAPH:
+      return block.content || '';
     
     default:
-      return block.content;
+      return block.content || '';
   }
 }
 
@@ -422,67 +514,101 @@ function formatTableAsSemantic(rows) {
 function createParentChunks(content, breadcrumbs, maxChunkSize, parentSize, childSize) {
   const chunks = [];
   
-  if (!content || content.trim().length === 0) {
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
     return chunks;
   }
   
-  // 如果内容小于父块大小，直接作为一个父块
-  if (content.length <= parentSize) {
-    const parentId = generateId('parent');
-    
-    // 父块内容添加面包屑上下文
-    const contextPrefix = breadcrumbs.length > 0 ? `[${breadcrumbs.join(' > ')}]\n\n` : '';
-    const parentContent = contextPrefix + content;
-    
-    chunks.push({
-      id: parentId,
-      content: parentContent,
-      chunkType: 'parent',
-      tokenCount: estimateTokens(parentContent),
-      metadata: {
-        breadcrumbs: breadcrumbs,
-        header: breadcrumbs[breadcrumbs.length - 1] || null,
-        summary: generateSummary(content, breadcrumbs)
-      }
-    });
-    
-    // 创建子块
-    const childChunks = createChildChunksV2(content, parentId, breadcrumbs, childSize);
-    chunks.push(...childChunks);
-    
-  } else {
-    // 内容过大，需要分割
-    const segments = splitContentIntoSegments(content, parentSize, maxChunkSize);
-    
-    segments.forEach((segment, segIdx) => {
+  // 确保参数有效
+  parentSize = Math.max(100, parentSize || 2000);
+  childSize = Math.max(50, childSize || 600);
+  maxChunkSize = Math.max(parentSize, maxChunkSize || 4000);
+  
+  try {
+    // 如果内容小于父块大小，直接作为一个父块
+    if (content.length <= parentSize) {
       const parentId = generateId('parent');
       
-      const contextPrefix = breadcrumbs.length > 0 
-        ? `[${breadcrumbs.join(' > ')}]${segments.length > 1 ? ` (${segIdx + 1}/${segments.length})` : ''}\n\n`
-        : '';
-      const parentContent = contextPrefix + segment;
+      // 父块内容添加面包屑上下文
+      const contextPrefix = (breadcrumbs && breadcrumbs.length > 0) ? `[${breadcrumbs.join(' > ')}]\n\n` : '';
+      const parentContent = contextPrefix + content;
       
-      chunks.push({
-        id: parentId,
-        content: parentContent,
-        chunkType: 'parent',
-        tokenCount: estimateTokens(parentContent),
-        metadata: {
-          breadcrumbs: breadcrumbs,
-          header: breadcrumbs[breadcrumbs.length - 1] || null,
-          segmentIndex: segIdx,
-          totalSegments: segments.length,
-          summary: generateSummary(segment, breadcrumbs)
+      if (parentContent.trim().length > 0) {
+        chunks.push({
+          id: parentId,
+          content: parentContent,
+          chunkType: 'parent',
+          tokenCount: estimateTokens(parentContent),
+          metadata: {
+            breadcrumbs: breadcrumbs || [],
+            header: (breadcrumbs && breadcrumbs.length > 0) ? breadcrumbs[breadcrumbs.length - 1] : null,
+            summary: generateSummary(content, breadcrumbs || [])
+          }
+        });
+        
+        // 创建子块
+        const childChunks = createChildChunksV2(content, parentId, breadcrumbs || [], childSize);
+        if (childChunks && Array.isArray(childChunks)) {
+          chunks.push(...childChunks.filter(c => c && c.content && c.content.trim().length > 0));
         }
-      });
+      }
       
-      // 创建子块
-      const childChunks = createChildChunksV2(segment, parentId, breadcrumbs, childSize);
-      chunks.push(...childChunks);
-    });
+    } else {
+      // 内容过大，需要分割
+      const segments = splitContentIntoSegments(content, parentSize, maxChunkSize);
+      
+      if (!segments || segments.length === 0) {
+        // 如果分割失败，至少创建一个块
+        const parentId = generateId('parent');
+        const contextPrefix = (breadcrumbs && breadcrumbs.length > 0) ? `[${breadcrumbs.join(' > ')}]\n\n` : '';
+        chunks.push({
+          id: parentId,
+          content: contextPrefix + content.substring(0, maxChunkSize),
+          chunkType: 'parent',
+          tokenCount: estimateTokens(content),
+          metadata: {
+            breadcrumbs: breadcrumbs || [],
+            header: (breadcrumbs && breadcrumbs.length > 0) ? breadcrumbs[breadcrumbs.length - 1] : null,
+            summary: generateSummary(content.substring(0, 200), breadcrumbs || [])
+          }
+        });
+      } else {
+        segments.forEach((segment, segIdx) => {
+          if (!segment || segment.trim().length === 0) return;
+          
+          const parentId = generateId('parent');
+          
+          const contextPrefix = (breadcrumbs && breadcrumbs.length > 0)
+            ? `[${breadcrumbs.join(' > ')}]${segments.length > 1 ? ` (${segIdx + 1}/${segments.length})` : ''}\n\n`
+            : '';
+          const parentContent = contextPrefix + segment;
+          
+          chunks.push({
+            id: parentId,
+            content: parentContent,
+            chunkType: 'parent',
+            tokenCount: estimateTokens(parentContent),
+            metadata: {
+              breadcrumbs: breadcrumbs || [],
+              header: (breadcrumbs && breadcrumbs.length > 0) ? breadcrumbs[breadcrumbs.length - 1] : null,
+              segmentIndex: segIdx,
+              totalSegments: segments.length,
+              summary: generateSummary(segment, breadcrumbs || [])
+            }
+          });
+          
+          // 创建子块
+          const childChunks = createChildChunksV2(segment, parentId, breadcrumbs || [], childSize);
+          if (childChunks && Array.isArray(childChunks)) {
+            chunks.push(...childChunks.filter(c => c && c.content && c.content.trim().length > 0));
+          }
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[Chunking] createParentChunks 出错:', error);
   }
   
-  return chunks;
+  return chunks.filter(c => c && c.content && c.content.trim().length > 0);
 }
 
 /**
@@ -842,8 +968,122 @@ function generateId(type) {
 }
 
 function estimateTokens(text) {
+  if (!text) return 0;
   // 简单估算：中文约 2 字符/token，英文约 4 字符/token
   const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
   const otherChars = text.length - chineseChars;
   return Math.ceil(chineseChars / 2 + otherChars / 4);
+}
+
+/**
+ * 降级处理：简单的段落分割（当主算法失败时使用）
+ */
+function createSimpleChunks(text, maxChunkSize, parentSize, childSize) {
+  const chunks = [];
+  let globalIndex = 0;
+  
+  // 按段落分割
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+  
+  let currentParent = [];
+  let currentParentLength = 0;
+  
+  for (const para of paragraphs) {
+    const paraLength = para.length;
+    
+    // 如果当前段落加入后会超过父块大小
+    if (currentParentLength + paraLength > parentSize && currentParent.length > 0) {
+      // 创建父块
+      const parentContent = currentParent.join('\n\n');
+      const parentId = generateId('parent');
+      
+      chunks.push({
+        id: parentId,
+        content: parentContent,
+        chunkType: 'parent',
+        chunkIndex: globalIndex++,
+        tokenCount: estimateTokens(parentContent),
+        metadata: {}
+      });
+      
+      // 创建子块
+      const childTexts = splitTextSimple(parentContent, childSize);
+      for (const childText of childTexts) {
+        chunks.push({
+          content: childText,
+          chunkType: 'child',
+          parentId: parentId,
+          chunkIndex: globalIndex++,
+          tokenCount: estimateTokens(childText),
+          metadata: {}
+        });
+      }
+      
+      currentParent = [];
+      currentParentLength = 0;
+    }
+    
+    currentParent.push(para);
+    currentParentLength += paraLength + 2; // +2 for \n\n
+  }
+  
+  // 处理最后一个父块
+  if (currentParent.length > 0) {
+    const parentContent = currentParent.join('\n\n');
+    const parentId = generateId('parent');
+    
+    chunks.push({
+      id: parentId,
+      content: parentContent,
+      chunkType: 'parent',
+      chunkIndex: globalIndex++,
+      tokenCount: estimateTokens(parentContent),
+      metadata: {}
+    });
+    
+    const childTexts = splitTextSimple(parentContent, childSize);
+    for (const childText of childTexts) {
+      chunks.push({
+        content: childText,
+        chunkType: 'child',
+        parentId: parentId,
+        chunkIndex: globalIndex++,
+        tokenCount: estimateTokens(childText),
+        metadata: {}
+      });
+    }
+  }
+  
+  return chunks.filter(c => c && c.content && c.content.trim().length > 0);
+}
+
+/**
+ * 简单文本分割
+ */
+function splitTextSimple(text, chunkSize) {
+  if (!text || text.length <= chunkSize) {
+    return text ? [text] : [];
+  }
+  
+  const chunks = [];
+  const sentences = text.split(/(?<=[。！？；!?;.])\s*/).filter(s => s.trim().length > 0);
+  
+  let current = [];
+  let currentLength = 0;
+  
+  for (const sentence of sentences) {
+    if (currentLength + sentence.length > chunkSize && current.length > 0) {
+      chunks.push(current.join(' '));
+      current = [];
+      currentLength = 0;
+    }
+    current.push(sentence);
+    currentLength += sentence.length;
+  }
+  
+  if (current.length > 0) {
+    chunks.push(current.join(' '));
+  }
+  
+  return chunks.filter(c => c && c.trim().length > 0);
 }
