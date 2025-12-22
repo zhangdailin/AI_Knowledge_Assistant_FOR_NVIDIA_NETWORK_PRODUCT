@@ -12,7 +12,8 @@
     "server": "node --max-old-space-size=4096 server/index.mjs",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:benchmark": "node test/benchmark_precision.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

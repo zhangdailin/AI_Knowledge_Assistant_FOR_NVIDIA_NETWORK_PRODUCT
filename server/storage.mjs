@@ -400,7 +400,7 @@ export async function searchChunks(query, limit = 30) {
   }
 
   // Check for concept-related keywords
-  if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理'].some(k => queryLower.includes(k))) {
+  if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理', '解释'].some(k => queryLower.includes(k))) {
     intent.isConcept = true;
   }
   
@@ -493,7 +493,7 @@ export async function searchChunks(query, limit = 30) {
 
       // --- Adaptive Scoring based on Intent ---
       
-      if (score > 5) { // Only apply optimizations if we have basic relevance
+      if (score > 2) { // Only apply optimizations if we have basic relevance
           
           // 1. Command Intent Optimization
           if (intent.isCommand) {
@@ -528,14 +528,16 @@ export async function searchChunks(query, limit = 30) {
              // Look for headers
              const isHeader = /^#+\s/.test(contentLower);
              
-             if (isDefinition) score += 5;
-             if (isHeader) score += 5;
+             if (isDefinition) score += 15; // Increased from 5
+             if (isHeader) score += 10; // Increased from 5
           }
           
           // 3. Troubleshooting Intent Optimization
           if (intent.isTroubleshooting) {
-             if (contentLower.includes('error') || contentLower.includes('fail') || contentLower.includes('troubleshoot')) {
-                 score += 10;
+             // Check for specific troubleshooting keywords AND expanded synonyms
+             const troubleTerms = ['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'];
+             if (troubleTerms.some(t => contentLower.includes(t))) {
+                 score += 15; // Increased from 10
              }
           }
       }

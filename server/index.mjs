@@ -483,7 +483,7 @@ app.get('/api/chunks/search', async (req, res) => {
       
       // Keyword Match Bonus: 如果关键词匹配得分极高，给予额外 RRF 权重
       // 这解决了 RRF 对"绝对匹配"不敏感的问题
-      if (chunk.score > 20) {
+      if (chunk.score > 10) {
           item.score += 0.05; // 相当于提升排名的效果
       }
       
