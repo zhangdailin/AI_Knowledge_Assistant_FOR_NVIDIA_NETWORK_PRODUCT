@@ -9,7 +9,7 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
       watch: false,
-      max_memory_restart: '500M',
+      max_memory_restart: '1024M',
       env: {
         NODE_ENV: 'production',
         PORT: 8787
@@ -30,7 +30,7 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
       watch: false,
-      max_memory_restart: '500M',
+      max_memory_restart: '1024M',
       env: {
         NODE_ENV: 'development',
         PORT: 5173,

@@ -144,8 +144,8 @@ export async function processEmbeddingTask(taskId, documentId) {
     }
 
     // 批量处理
-    // 动态调整批次大小：如果chunks太多，减小并发以防超时
-    const batchSize = chunksWithoutEmbedding.length > 2000 ? 3 : 5;
+    // 解除限速：恢复到较高的并发
+    const batchSize = 10;
     let successCount = 0;
     let failCount = 0;
     const pendingUpdates = [];
@@ -273,8 +273,8 @@ export async function processEmbeddingTask(taskId, documentId) {
 
       // 延迟避免 API 限流
       if (i + batchSize < chunksWithoutEmbedding.length) {
-        // 动态延迟：如果 chunks 很多，增加休息时间
-        const delayMs = chunksWithoutEmbedding.length > 2000 ? 1500 : 1000;
+        // 解除限速：大幅减少延迟，从 1000-1500ms 减少到 200ms
+        const delayMs = 200;
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }

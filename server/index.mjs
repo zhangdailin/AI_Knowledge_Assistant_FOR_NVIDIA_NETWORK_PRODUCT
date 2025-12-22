@@ -7,7 +7,15 @@ import * as taskQueue from './taskQueue.mjs';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
-const pdfParseModule = require('pdf-parse');
+
+// 安全加载 pdf-parse
+let pdfParseModule;
+try {
+  pdfParseModule = require('pdf-parse');
+} catch (e) {
+  console.warn('[Server] Failed to load pdf-parse:', e.message);
+  pdfParseModule = null;
+}
 
 // 直接保留模块引用，调用时选择合适的导出
 const pdfParse = pdfParseModule;
@@ -17,8 +25,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import * as chunking from './chunking.mjs';
 
 const app = express();
+// 增加 payload 限制，防止大请求导致 OOM
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // 支持 JSON 请求体
+app.use(express.json({ limit: '100mb' })); 
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 const upload = multer({ 
   storage: multer.memoryStorage(), 
@@ -489,6 +499,11 @@ app.get('/api/documents/:id/tasks', async (req, res) => {
     res.status(500).json({ ok: false, error: '获取文档任务失败' });
   }
 });
+
+// 增加 V8 内存限制提示
+const v8 = await import('v8');
+const totalHeapSize = v8.getHeapStatistics().total_available_size / 1024 / 1024;
+console.log(`[Server] Max Heap Size: ${Math.round(totalHeapSize)} MB`);
 
 const port = process.env.PORT || 8787;
 const server = app.listen(port, () => {
