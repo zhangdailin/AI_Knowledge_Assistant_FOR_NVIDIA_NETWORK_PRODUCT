@@ -1,4 +1,4 @@
-# AI 知识助手 (AI Knowledge Assistant)
+# 英伟达网络产品AI 知识助手 (AI Knowledge Assistant for NVIDIA NETWORK PRODUCT)
 
 一个基于 RAG (检索增强生成) 技术的智能知识库问答系统。专为保护用户隐私设计，采用**混合存储架构**：企业/团队知识库在云端共享，而用户的个人对话记录严格保存在本地浏览器中。
 
