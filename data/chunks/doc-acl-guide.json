@@ -1,0 +1,239 @@
+[
+  {
+    "id": "acl-chunk-0",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide]\n\n# NVIDIA Cumulus Linux ACL Configuration Guide",
+    "chunkType": "parent",
+    "tokenCount": 24,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide"
+      ],
+      "header": "NVIDIA Cumulus Linux ACL Configuration Guide",
+      "summary": "NVIDIA Cumulus Linux ACL Configuration Guide | 关键词: ACL"
+    },
+    "chunkIndex": 0,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-1",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Access Control Lists (ACLs) Overview]\n\n## Access Control Lists (ACLs) Overview\n\nACLs (Access Control Lists) are used to filter traffic on an interface. \nCumulus Linux supports standard and extended ACLs for IPv4 and IPv6.",
+    "chunkType": "parent",
+    "tokenCount": 68,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Access Control Lists (ACLs) Overview"
+      ],
+      "header": "Access Control Lists (ACLs) Overview",
+      "summary": "Access Control Lists (ACLs) Overview"
+    },
+    "chunkIndex": 1,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "## Access Control Lists (ACLs) Overview\n\nACLs (Access Control Lists) are used to filter traffic on an interface. \nCumulus Linux supports standard and extended ACLs for IPv4 and IPv6.",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289757-4593ayzk",
+    "tokenCount": 46,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 2,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-2",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-3",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Configuring ACLs with NVUE]\n\n## Configuring ACLs with NVUE\n\nTo configure an ACL, you define rules and attach them to an interface.",
+    "chunkType": "parent",
+    "tokenCount": 45,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Configuring ACLs with NVUE"
+      ],
+      "header": "Configuring ACLs with NVUE",
+      "summary": "Configuring ACLs with NVUE | 关键词: ACL"
+    },
+    "chunkIndex": 3,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "## Configuring ACLs with NVUE\n\nTo configure an ACL, you define rules and attach them to an interface.",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289757-svyiwao2",
+    "tokenCount": 26,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 4,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-4",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-5",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Configuring ACLs with NVUE > Creating an ACL]\n\n### Creating an ACL\n\nTo create an ACL named 'block-telnet' that denies TCP traffic on port 23:\n\n```bash\nnv config set acl block-telnet rule 10 action deny\nnv config set acl block-telnet rule 10 match ip protocol tcp\nnv config set acl block-telnet rule 10 match ip dest-port 23\nnv config set acl block-telnet rule 10 match ip source-ip any\nnv config set acl block-telnet rule 10 match ip dest-ip any\n```",
+    "chunkType": "parent",
+    "tokenCount": 125,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Configuring ACLs with NVUE",
+        "Creating an ACL"
+      ],
+      "header": "Creating an ACL",
+      "summary": "Creating an ACL | 命令: nv config set acl block-telnet rule 10 action deny\nnv config set acl block-telnet rule 10 match ip protocol tcp\nnv config set acl block-telnet rule 10 match ip dest-port 23\nnv config set acl block-telnet rule 10 match ip source-ip any\nnv config set acl block-telnet rule 10 match ip dest-ip any\n``` | 关键词: ACL"
+    },
+    "chunkIndex": 5,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "### Creating an ACL\n\nTo create an ACL named 'block-telnet' that denies TCP traffic on port 23:\n\n```bash\nnv config set acl block-telnet rule 10 action deny\nnv config set acl block-telnet rule 10 match ip protocol tcp\nnv config set acl block-telnet rule 10 match ip dest-port 23\nnv config set acl block-telnet rule 10 match ip source-ip any\nnv config set acl block-telnet rule 10 match ip dest-ip any\n```",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289757-i489ugc6",
+    "tokenCount": 101,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 6,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-6",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-7",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Configuring ACLs with NVUE > Permitting Other Traffic]\n\n### Permitting Other Traffic\n\nAlways remember to permit other traffic if the default policy is deny, or implicit deny exists:\n\n```bash\nnv config set acl block-telnet rule 999 action permit\nnv config set acl block-telnet rule 999 match ip protocol any\n```",
+    "chunkType": "parent",
+    "tokenCount": 90,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Configuring ACLs with NVUE",
+        "Permitting Other Traffic"
+      ],
+      "header": "Permitting Other Traffic",
+      "summary": "Permitting Other Traffic | 命令: nv config set acl block-telnet rule 999 action permit\nnv config set acl block-telnet rule 999 match ip protocol any\n``` | 关键词: ACL"
+    },
+    "chunkIndex": 7,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "### Permitting Other Traffic\n\nAlways remember to permit other traffic if the default policy is deny, or implicit deny exists:\n\n```bash\nnv config set acl block-telnet rule 999 action permit\nnv config set acl block-telnet rule 999 match ip protocol any\n```",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289758-dnnhhwad",
+    "tokenCount": 64,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 8,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-8",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-9",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Configuring ACLs with NVUE > Attaching ACL to Interface]\n\n### Attaching ACL to Interface\n\nApply the ACL to an interface (e.g., swp1) in the ingress direction:\n\n```bash\nnv config set interface swp1 acl ingress block-telnet\n```",
+    "chunkType": "parent",
+    "tokenCount": 69,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Configuring ACLs with NVUE",
+        "Attaching ACL to Interface"
+      ],
+      "header": "Attaching ACL to Interface",
+      "summary": "Attaching ACL to Interface | 命令: nv config set interface swp1 acl ingress block-telnet\n``` | 关键词: ACL, SWP1"
+    },
+    "chunkIndex": 9,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "### Attaching ACL to Interface\n\nApply the ACL to an interface (e.g., swp1) in the ingress direction:\n\n```bash\nnv config set interface swp1 acl ingress block-telnet\n```",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289758-sv85p9mp",
+    "tokenCount": 42,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 10,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-10",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-11",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Configuring ACLs with NVUE > Verifying Configuration]\n\n### Verifying Configuration\n\nTo show the configured ACLs:\n\n```bash\nnv show acl\n```\n\nTo check the rules of a specific ACL:\n\n```bash\nnv show acl block-telnet\n```",
+    "chunkType": "parent",
+    "tokenCount": 66,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Configuring ACLs with NVUE",
+        "Verifying Configuration"
+      ],
+      "header": "Verifying Configuration",
+      "summary": "Verifying Configuration | 命令: show the configured ACLs:\n\n```bash\nnv show acl\n```\n\nTo check the rules of a specific ACL:\n\n```bash\nnv show acl block-telnet\n``` | 关键词: ACL"
+    },
+    "chunkIndex": 11,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "### Verifying Configuration\n\nTo show the configured ACLs:\n\n```bash\nnv show acl\n```\n\nTo check the rules of a specific ACL:\n\n```bash\nnv show acl block-telnet\n```",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289758-nh8dwqj1",
+    "tokenCount": 40,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 12,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-12",
+    "embedding": []
+  },
+  {
+    "id": "acl-chunk-13",
+    "content": "[NVIDIA Cumulus Linux ACL Configuration Guide > Troubleshooting ACLs]\n\n## Troubleshooting ACLs\n\nIf traffic is not being filtered as expected:\n\n1. Check the rule order (rules are processed sequentially).\n2. Verify the ACL is applied to the correct interface and direction (ingress/egress).\n3. Use `nv show acl <name> statistics` to see hit counts.",
+    "chunkType": "parent",
+    "tokenCount": 87,
+    "metadata": {
+      "breadcrumbs": [
+        "NVIDIA Cumulus Linux ACL Configuration Guide",
+        "Troubleshooting ACLs"
+      ],
+      "header": "Troubleshooting ACLs",
+      "summary": "Troubleshooting ACLs | 命令: nv show acl <name> statistics` to see hit counts. | 关键词: ACL"
+    },
+    "chunkIndex": 13,
+    "documentId": "doc-acl-guide",
+    "embedding": []
+  },
+  {
+    "content": "## Troubleshooting ACLs\n\nIf traffic is not being filtered as expected:\n\n1. Check the rule order (rules are processed sequentially).\n2. Verify the ACL is applied to the correct interface and direction (ingress/egress).\n3. Use `nv show acl <name> statistics` to see hit counts.",
+    "chunkType": "child",
+    "parentId": "chunk-parent-1766427289758-i8bbc3mm",
+    "tokenCount": 69,
+    "metadata": {
+      "childIndex": 0,
+      "totalChildren": 1
+    },
+    "chunkIndex": 14,
+    "documentId": "doc-acl-guide",
+    "id": "acl-chunk-14",
+    "embedding": []
+  }
+]

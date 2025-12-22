@@ -20,5 +20,13 @@
     "uploadedAt": "2025-12-22T03:40:15.313Z",
     "status": "processing",
     "id": "doc-1766374815314"
+  },
+  {
+    "id": "doc-acl-guide",
+    "filename": "cumulus_acl_guide.md",
+    "contentPreview": "\n# NVIDIA Cumulus Linux ACL Configuration Guide\n\n## Access Control Lists (ACLs) Overview\nACLs (Acces",
+    "uploadedAt": "2025-12-22T18:14:49.750Z",
+    "status": "ready",
+    "userId": "system"
   }
 ]

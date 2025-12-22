@@ -76,7 +76,7 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
   const chunksWithoutEmbedding = totalChunksRequiringEmbedding - chunksWithEmbedding;
   
   const hasNoChunks = !stats || stats.total === 0;
-  const isLikelyPreviewOnly = document.fileSize > 100000 && (stats?.total || 0) <= 1 && document.contentPreview.length < 1000;
+  const isLikelyPreviewOnly = stats && document.fileSize > 100000 && stats.total <= 1 && document.contentPreview.length < 1000;
 
   if (loading) {
     return <div className="text-xs text-gray-500">加载中...</div>;
@@ -151,7 +151,7 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
       )}
       {isLikelyPreviewOnly && (
         <div className="mb-2 p-2 bg-orange-50 border border-orange-200 rounded text-xs text-orange-700">
-          ⚠️ 此文档可能只有预览内容（{document.contentPreview.length} 字符），建议删除后重新上传完整文件以获得更好的检索效果
+          ⚠️ 此文档可能只有预览内容（{document.contentPreview.length} 字符），建议删除后重新上传完整文件以获得更好的检索效果。如果是 PDF/Word 文档，请确保文档包含可提取的文本（非扫描图片）。
         </div>
       )}
       {hasNoChunks ? (
