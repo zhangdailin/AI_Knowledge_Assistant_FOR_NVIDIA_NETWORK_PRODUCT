@@ -1,283 +1,849 @@
 /**
- * 语义增强的分片算法
- * 采用递归字符切分策略 (Recursive Character Text Splitting)
- * 优先保留段落、句子、代码块的完整性
+ * Markdown 语义感知的父子块分片算法
+ * 
+ * 专门针对 Markdown 文档特性优化：
+ * 1. 标题层级（H1-H6）作为自然的父块边界
+ * 2. 代码块、表格、列表等作为不可分割的语义单元
+ * 3. 子块继承父块的上下文（标题路径）
+ * 4. 智能合并小段落，避免过于碎片化
  */
 
-export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 1000, childSize = 400) {
-  const chunks = [];
-  let globalChunkIndex = 0;
-
-  // 1. 尝试基于 Markdown 结构切分 (Structure-Aware Split)
-  // 如果文档包含 Headers (#, ##, ###)，则优先按 Headers 分组
-  const hasHeaders = /^#{1,6}\s+.+$/m.test(text);
+/**
+ * 主入口：Markdown 感知的父子块分片
+ */
+export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 2000, childSize = 600) {
+  // 1. 解析 Markdown 为语义块
+  const semanticBlocks = parseMarkdownToBlocks(text);
   
-  if (hasHeaders) {
-    console.log('[Chunking] Detected Markdown headers, using Structure-Aware splitting');
-    const sections = splitByMarkdownHeaders(text);
+  console.log(`[Chunking] 解析出 ${semanticBlocks.length} 个语义块`);
+  
+  // 2. 根据标题层级组织父子块
+  const chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+  
+  console.log(`[Chunking] 生成 ${chunks.length} 个 chunks (父: ${chunks.filter(c => c.chunkType === 'parent').length}, 子: ${chunks.filter(c => c.chunkType === 'child').length})`);
+  
+  return chunks;
+}
+
+/**
+ * 语义块类型
+ */
+const BlockType = {
+  HEADING: 'heading',      // 标题
+  PARAGRAPH: 'paragraph',  // 段落
+  CODE_BLOCK: 'code_block', // 代码块
+  TABLE: 'table',          // 表格
+  LIST: 'list',            // 列表（有序/无序）
+  BLOCKQUOTE: 'blockquote', // 引用块
+  HORIZONTAL_RULE: 'hr',   // 分隔线
+  EMPTY: 'empty'           // 空行
+};
+
+/**
+ * 解析 Markdown 为语义块数组
+ */
+function parseMarkdownToBlocks(text) {
+  const lines = text.split('\n');
+  const blocks = [];
+  let i = 0;
+  
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
     
-    sections.forEach((section, sIndex) => {
-       // 每个 Section 作为一个天然的父块 (Parent Chunk)
-       const parentContent = section.content;
-       const parentHeader = section.header;
-       
-       // 如果 section 内容过大 (超过 maxChunkSize)，可能需要进一步拆分 Parent
-       // 但为了保持结构完整性，我们暂时允许 Parent 略大，或者对其进行 Recursive Split
-       // 这里简单起见，如果 Parent 太大，我们还是得切，否则 Context Window 爆了
-       
-       let parentSubChunks = [parentContent];
-       if (parentContent.length > maxChunkSize) {
-           parentSubChunks = recursiveSplit(parentContent, maxChunkSize, 200);
-       }
-       
-       parentSubChunks.forEach((subParentContent, subIndex) => {
-           const parentId = `chunk-parent-${Date.now()}-${sIndex}-${subIndex}-${Math.random().toString(36).substr(2, 6)}`;
-           
-           // 添加父块
-           chunks.push({
-             id: parentId,
-             content: subParentContent,
-             chunkType: 'parent',
-             chunkIndex: globalChunkIndex++,
-             tokenCount: Math.ceil(subParentContent.length / 4),
-             metadata: {
-                 header: parentHeader // 保留标题信息
-             }
-           });
-           
-           // 2. 生成子块 (Recursive Split within Section)
-           const childOverlap = Math.floor(childSize * 0.2);
-           const childTexts = recursiveSplit(subParentContent, childSize, childOverlap);
-           
-           childTexts.forEach((childContent) => {
-             // 优化：子块内容可以带上父块的 Header，增加语义 (可选)
-             // const enrichedContent = parentHeader ? `[${parentHeader}]\n${childContent}` : childContent;
-             chunks.push({
-                content: childContent,
-                chunkType: 'child',
-                parentId: parentId,
-                chunkIndex: globalChunkIndex++,
-                tokenCount: Math.ceil(childContent.length / 4),
-                metadata: {
-                    header: parentHeader
-                }
-             });
-           });
-       });
+    // 1. 空行
+    if (trimmedLine === '') {
+      i++;
+      continue;
+    }
+    
+    // 2. 标题 (# ## ### etc.)
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({
+        type: BlockType.HEADING,
+        level: headingMatch[1].length,
+        content: line,
+        title: headingMatch[2].trim()
+      });
+      i++;
+      continue;
+    }
+    
+    // 3. 代码块 (```)
+    if (trimmedLine.startsWith('```')) {
+      const codeLines = [line];
+      i++;
+      while (i < lines.length) {
+        codeLines.push(lines[i]);
+        if (lines[i].trim().startsWith('```') && codeLines.length > 1) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      blocks.push({
+        type: BlockType.CODE_BLOCK,
+        content: codeLines.join('\n'),
+        language: trimmedLine.slice(3).trim() || 'text'
+      });
+      continue;
+    }
+    
+    // 4. 表格 (| col | col |)
+    if (isTableLine(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const tableLines = [];
+      while (i < lines.length && (isTableLine(lines[i]) || isTableSeparator(lines[i]))) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      blocks.push({
+        type: BlockType.TABLE,
+        content: tableLines.join('\n'),
+        rows: parseTableToSemantic(tableLines)
+      });
+      continue;
+    }
+    
+    // 5. 无序列表 (-, *, +)
+    if (/^[\s]*[-*+]\s+/.test(line)) {
+      const listLines = [];
+      const baseIndent = line.search(/\S/);
+      
+      while (i < lines.length) {
+        const currentLine = lines[i];
+        const currentIndent = currentLine.search(/\S/);
+        
+        // 继续收集列表项：同级或缩进更多的行，或空行（用于分隔列表项内的段落）
+        if (currentLine.trim() === '' || 
+            /^[\s]*[-*+]\s+/.test(currentLine) || 
+            (currentIndent > baseIndent && currentLine.trim() !== '')) {
+          listLines.push(currentLine);
+          i++;
+        } else {
+          break;
+        }
+      }
+      
+      blocks.push({
+        type: BlockType.LIST,
+        listType: 'unordered',
+        content: listLines.join('\n').trim()
+      });
+      continue;
+    }
+    
+    // 6. 有序列表 (1. 2. 3.)
+    if (/^[\s]*\d+\.\s+/.test(line)) {
+      const listLines = [];
+      const baseIndent = line.search(/\S/);
+      
+      while (i < lines.length) {
+        const currentLine = lines[i];
+        const currentIndent = currentLine.search(/\S/);
+        
+        if (currentLine.trim() === '' || 
+            /^[\s]*\d+\.\s+/.test(currentLine) || 
+            (currentIndent > baseIndent && currentLine.trim() !== '')) {
+          listLines.push(currentLine);
+          i++;
+        } else {
+          break;
+        }
+      }
+      
+      blocks.push({
+        type: BlockType.LIST,
+        listType: 'ordered',
+        content: listLines.join('\n').trim()
+      });
+      continue;
+    }
+    
+    // 7. 引用块 (>)
+    if (trimmedLine.startsWith('>')) {
+      const quoteLines = [];
+      while (i < lines.length && (lines[i].trim().startsWith('>') || lines[i].trim() === '')) {
+        if (lines[i].trim() === '' && i + 1 < lines.length && !lines[i + 1].trim().startsWith('>')) {
+          break;
+        }
+        quoteLines.push(lines[i]);
+        i++;
+      }
+      blocks.push({
+        type: BlockType.BLOCKQUOTE,
+        content: quoteLines.join('\n').trim()
+      });
+      continue;
+    }
+    
+    // 8. 分隔线 (---, ***, ___)
+    if (/^[-*_]{3,}$/.test(trimmedLine)) {
+      blocks.push({
+        type: BlockType.HORIZONTAL_RULE,
+        content: line
+      });
+      i++;
+      continue;
+    }
+    
+    // 9. HTML 表格
+    if (trimmedLine.startsWith('<table')) {
+      const htmlLines = [line];
+      i++;
+      while (i < lines.length && !lines[i - 1].includes('</table>')) {
+        htmlLines.push(lines[i]);
+        i++;
+      }
+      const htmlContent = htmlLines.join('\n');
+      blocks.push({
+        type: BlockType.TABLE,
+        content: convertHtmlTableToSemantic(htmlContent),
+        isHtml: true
+      });
+      continue;
+    }
+    
+    // 10. 普通段落
+    const paragraphLines = [];
+    while (i < lines.length) {
+      const currentLine = lines[i];
+      const currentTrimmed = currentLine.trim();
+      
+      // 段落结束条件
+      if (currentTrimmed === '' ||                    // 空行
+          currentTrimmed.startsWith('#') ||           // 标题
+          currentTrimmed.startsWith('```') ||         // 代码块
+          currentTrimmed.startsWith('>') ||           // 引用
+          /^[-*+]\s+/.test(currentTrimmed) ||         // 无序列表
+          /^\d+\.\s+/.test(currentTrimmed) ||         // 有序列表
+          /^[-*_]{3,}$/.test(currentTrimmed) ||       // 分隔线
+          (isTableLine(currentLine) && i + 1 < lines.length && isTableSeparator(lines[i + 1]))) {
+        break;
+      }
+      
+      paragraphLines.push(currentLine);
+      i++;
+    }
+    
+    if (paragraphLines.length > 0) {
+      blocks.push({
+        type: BlockType.PARAGRAPH,
+        content: paragraphLines.join('\n').trim()
+      });
+    }
+  }
+  
+  return blocks;
+}
+
+/**
+ * 将语义块组织为父子块结构
+ */
+function organizeIntoParentChildChunks(blocks, maxChunkSize, parentSize, childSize) {
+  const chunks = [];
+  let globalIndex = 0;
+  
+  // 构建章节树
+  const sections = buildSectionTree(blocks);
+  
+  // 遍历章节生成 chunks
+  for (const section of sections) {
+    const sectionChunks = processSectionV2(section, [], maxChunkSize, parentSize, childSize);
+    for (const chunk of sectionChunks) {
+      chunk.chunkIndex = globalIndex++;
+      chunks.push(chunk);
+    }
+  }
+  
+  return chunks;
+}
+
+/**
+ * 构建章节树
+ * H1/H2 作为主要章节边界
+ */
+function buildSectionTree(blocks) {
+  const sections = [];
+  let currentSection = null;
+  let currentSubSection = null;
+  
+  for (const block of blocks) {
+    if (block.type === BlockType.HEADING) {
+      if (block.level <= 2) {
+        // H1/H2: 新的主章节
+        if (currentSection) {
+          sections.push(currentSection);
+        }
+        currentSection = {
+          heading: block,
+          blocks: [],
+          subSections: []
+        };
+        currentSubSection = null;
+      } else {
+        // H3+: 子章节
+        if (!currentSection) {
+          currentSection = {
+            heading: null,
+            blocks: [],
+            subSections: []
+          };
+        }
+        
+        if (currentSubSection) {
+          currentSection.subSections.push(currentSubSection);
+        }
+        
+        currentSubSection = {
+          heading: block,
+          blocks: []
+        };
+      }
+    } else {
+      // 非标题块
+      if (currentSubSection) {
+        currentSubSection.blocks.push(block);
+      } else if (currentSection) {
+        currentSection.blocks.push(block);
+      } else {
+        // 没有任何标题的内容
+        currentSection = {
+          heading: null,
+          blocks: [block],
+          subSections: []
+        };
+      }
+    }
+  }
+  
+  // 收尾
+  if (currentSubSection && currentSection) {
+    currentSection.subSections.push(currentSubSection);
+  }
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+  
+  return sections;
+}
+
+/**
+ * 处理一个章节，生成父子块
+ */
+function processSectionV2(section, breadcrumbs, maxChunkSize, parentSize, childSize) {
+  const chunks = [];
+  
+  // 更新面包屑
+  const sectionTitle = section.heading?.title || '';
+  const currentBreadcrumbs = sectionTitle ? [...breadcrumbs, sectionTitle] : breadcrumbs;
+  
+  // 收集本章节的所有内容（不包括子章节）
+  const sectionContent = buildSectionContent(section, currentBreadcrumbs);
+  
+  if (sectionContent.length > 0) {
+    // 创建父块
+    const parentChunks = createParentChunks(sectionContent, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
+    chunks.push(...parentChunks);
+  }
+  
+  // 递归处理子章节
+  for (const subSection of section.subSections || []) {
+    const subChunks = processSectionV2(subSection, currentBreadcrumbs, maxChunkSize, parentSize, childSize);
+    chunks.push(...subChunks);
+  }
+  
+  return chunks;
+}
+
+/**
+ * 构建章节内容
+ */
+function buildSectionContent(section, breadcrumbs) {
+  const parts = [];
+  
+  // 添加标题
+  if (section.heading) {
+    parts.push(section.heading.content);
+  }
+  
+  // 添加块内容
+  for (const block of section.blocks || []) {
+    parts.push(formatBlock(block));
+  }
+  
+  return parts.join('\n\n').trim();
+}
+
+/**
+ * 格式化语义块为文本
+ */
+function formatBlock(block) {
+  switch (block.type) {
+    case BlockType.TABLE:
+      // 如果已经转换为语义格式
+      if (block.rows) {
+        return formatTableAsSemantic(block.rows);
+      }
+      return block.content;
+    
+    case BlockType.CODE_BLOCK:
+      return block.content;
+    
+    case BlockType.LIST:
+      return block.content;
+    
+    case BlockType.BLOCKQUOTE:
+      return block.content;
+    
+    default:
+      return block.content;
+  }
+}
+
+/**
+ * 将表格格式化为语义文本
+ */
+function formatTableAsSemantic(rows) {
+  if (!rows || rows.length === 0) return '';
+  
+  const lines = ['[表格开始]'];
+  rows.forEach((row, idx) => {
+    lines.push(`行${idx + 1}: ${row}`);
+  });
+  lines.push('[表格结束]');
+  
+  return lines.join('\n');
+}
+
+/**
+ * 创建父块和子块
+ */
+function createParentChunks(content, breadcrumbs, maxChunkSize, parentSize, childSize) {
+  const chunks = [];
+  
+  if (!content || content.trim().length === 0) {
+    return chunks;
+  }
+  
+  // 如果内容小于父块大小，直接作为一个父块
+  if (content.length <= parentSize) {
+    const parentId = generateId('parent');
+    
+    // 父块内容添加面包屑上下文
+    const contextPrefix = breadcrumbs.length > 0 ? `[${breadcrumbs.join(' > ')}]\n\n` : '';
+    const parentContent = contextPrefix + content;
+    
+    chunks.push({
+      id: parentId,
+      content: parentContent,
+      chunkType: 'parent',
+      tokenCount: estimateTokens(parentContent),
+      metadata: {
+        breadcrumbs: breadcrumbs,
+        header: breadcrumbs[breadcrumbs.length - 1] || null,
+        summary: generateSummary(content, breadcrumbs)
+      }
     });
     
-  } else {
-    // Fallback: 传统的递归切分 (Recursive Split)
-    console.log('[Chunking] No headers detected, using Recursive splitting');
-    const parentOverlap = Math.floor(parentSize * 0.15);
-    const parentTexts = recursiveSplit(text, parentSize, parentOverlap);
+    // 创建子块
+    const childChunks = createChildChunksV2(content, parentId, breadcrumbs, childSize);
+    chunks.push(...childChunks);
     
-    parentTexts.forEach((parentContent, pIndex) => {
-        const parentId = `chunk-parent-${Date.now()}-${pIndex}-${Math.random().toString(36).substr(2, 6)}`;
-        chunks.push({
-            id: parentId,
-            content: parentContent,
-            chunkType: 'parent',
-            chunkIndex: globalChunkIndex++,
-            tokenCount: Math.ceil(parentContent.length / 4)
-        });
-        
-        const childOverlap = Math.floor(childSize * 0.2);
-        const childTexts = recursiveSplit(parentContent, childSize, childOverlap);
-        
-        childTexts.forEach((childContent) => {
-             chunks.push({
-                content: childContent,
-                chunkType: 'child',
-                parentId: parentId,
-                chunkIndex: globalChunkIndex++,
-                tokenCount: Math.ceil(childContent.length / 4)
-             });
-        });
+  } else {
+    // 内容过大，需要分割
+    const segments = splitContentIntoSegments(content, parentSize, maxChunkSize);
+    
+    segments.forEach((segment, segIdx) => {
+      const parentId = generateId('parent');
+      
+      const contextPrefix = breadcrumbs.length > 0 
+        ? `[${breadcrumbs.join(' > ')}]${segments.length > 1 ? ` (${segIdx + 1}/${segments.length})` : ''}\n\n`
+        : '';
+      const parentContent = contextPrefix + segment;
+      
+      chunks.push({
+        id: parentId,
+        content: parentContent,
+        chunkType: 'parent',
+        tokenCount: estimateTokens(parentContent),
+        metadata: {
+          breadcrumbs: breadcrumbs,
+          header: breadcrumbs[breadcrumbs.length - 1] || null,
+          segmentIndex: segIdx,
+          totalSegments: segments.length,
+          summary: generateSummary(segment, breadcrumbs)
+        }
+      });
+      
+      // 创建子块
+      const childChunks = createChildChunksV2(segment, parentId, breadcrumbs, childSize);
+      chunks.push(...childChunks);
     });
   }
   
   return chunks;
 }
 
-// 辅助函数：按 Markdown 标题切分
-function splitByMarkdownHeaders(text) {
-    const lines = text.split('\n');
-    const sections = [];
-    let currentHeader = '';
-    let currentBuffer = [];
-    
-    const flush = () => {
-        if (currentBuffer.length > 0) {
-            const content = currentBuffer.join('\n').trim();
-            if (content.length > 0) {
-                sections.push({
-                    header: currentHeader,
-                    content: content
-                });
-            }
-        }
-    };
-    
-    for (const line of lines) {
-        // 匹配 # Header (H1-H3)
-        // 只有当行首是 # 时才认为是标题，避免代码块内的注释被误判
-        // 但这里简化处理，假设 Markdown 格式规范
-        const match = line.match(/^(#{1,3})\s+(.*)/);
-        if (match) {
-            flush(); // 保存上一节
-            currentHeader = match[2].trim(); // 提取标题文本
-            currentBuffer = [line]; // 标题行也包含在内容中
-        } else {
-            currentBuffer.push(line);
-        }
-    }
-    flush(); // 保存最后一节
-    
-    // 如果没有任何标题被匹配到（但 text.test 说有），可能是 regex 差异，兜底
-    if (sections.length === 0 && text.trim().length > 0) {
-        return [{ header: '', content: text }];
-    }
-    
-    return sections;
-}
-
-// 递归切分核心逻辑
-function recursiveSplit(text, chunkSize, chunkOverlap) {
-  // 定义分隔符优先级：段落 > 换行 > 句子结束符 > 空格
-  const separators = [
-    "\n\n",   // 段落
-    "\n",     // 换行
-    /(?<=[。！？；!?;])/, // 句子结束符（保留标点）
-    " ",      // 单词
-    ""        // 字符（最后手段）
-  ];
+/**
+ * 将内容分割为多个段落
+ * 优先在语义边界分割
+ */
+function splitContentIntoSegments(content, targetSize, maxSize) {
+  const segments = [];
   
-  // 1. 预处理：保护代码块不被切分
-  // 将代码块替换为占位符，切分后再还原
-  const codeBlocks = [];
-  const placeholderPrefix = "___CODE_BLOCK_";
+  // 1. 先按双换行分割为段落
+  const paragraphs = content.split(/\n\n+/);
   
-  // 匹配 Markdown 代码块 (```...```)
-  // 增强正则：支持```language ... ```
-  const textWithPlaceholders = text.replace(/```[\s\S]*?```/g, (match) => {
-    // 增加对空代码块的过滤
-    if (!match || match.trim().length === 0) return match;
-    const placeholder = `${placeholderPrefix}${codeBlocks.length}___`;
-    codeBlocks.push(match);
-    return placeholder;
-  });
-  
-  // 2. 执行切分
-  let rawChunks = splitText(textWithPlaceholders, separators, chunkSize, chunkOverlap);
-  
-  // 增加：过滤掉纯占位符且原始代码块为空的情况（防御性编程）
-  // 增加：过滤掉极短的碎片（例如仅包含分隔符的块）
-  rawChunks = rawChunks.filter(chunk => {
-      const trimmed = chunk.trim();
-      return trimmed.length > 0 && trimmed.length > 5; // 忽略小于5个字符的极小碎片
-  });
-  
-  // 3. 还原代码块
-  const finalChunks = rawChunks.map(chunk => {
-    const restored = chunk.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, 'g'), (match, index) => {
-      const idx = parseInt(index);
-      return codeBlocks[idx] || match;
-    });
-    return restored;
-  });
-  
-  // 4. 最终过滤：确保还原后也不是空块
-  return finalChunks.filter(c => c && c.trim().length > 0);
-}
-
-function splitText(text, separators, chunkSize, chunkOverlap) {
-  const finalChunks = [];
-  let separator = separators[0];
-  let nextSeparators = separators.slice(1);
-  
-  // 1. 使用当前分隔符分割文本
-  let splits = [];
-  if (separator instanceof RegExp) {
-    splits = text.split(separator).filter(s => s !== '');
-  } else if (separator === "") {
-    splits = Array.from(text); // 按字符分割
-  } else {
-    splits = text.split(separator);
-  }
-  
-  // 2. 重新组合这些片段
-  let currentDoc = [];
+  let currentSegment = [];
   let currentLength = 0;
   
-  for (let split of splits) {
-    // 恢复分隔符（如果是 regex split，分隔符可能丢失，这里简单处理：如果是字符串分隔符，且不是空字符，补回）
-    // 为了简化，我们假设合并时会重新加上分隔符（除了 regex 情况）
-    // 对于 regex split，split 结果通常已经包含了内容，或者是被 split 消耗掉了。
-    // 这里我们采用简单的累积策略。
+  for (const para of paragraphs) {
+    const paraLength = para.length;
     
-    const splitLen = split.length;
+    // 如果当前段落加入后超过目标大小
+    if (currentLength + paraLength > targetSize && currentSegment.length > 0) {
+      segments.push(currentSegment.join('\n\n'));
+      currentSegment = [];
+      currentLength = 0;
+    }
     
-    if (currentLength + splitLen > chunkSize) {
-      // 当前块已满，需要处理
-      if (currentLength > 0) {
-        // 如果当前累积的块本身就很大（且没法再分），或者我们已经到了字符级别
-        const doc = joinDocs(currentDoc, separator);
-        
-        // 如果当前块还是太大，且还有更细的分隔符，递归处理它
-        if (doc.length > chunkSize && nextSeparators.length > 0) {
-           const subChunks = splitText(doc, nextSeparators, chunkSize, chunkOverlap);
-           finalChunks.push(...subChunks);
+    // 如果单个段落就超过目标大小
+    if (paraLength > targetSize) {
+      // 检查是否是受保护的块（代码块、表格）
+      if (isProtectedBlock(para)) {
+        // 受保护块不切分，直接作为一个段
+        if (currentSegment.length > 0) {
+          segments.push(currentSegment.join('\n\n'));
+          currentSegment = [];
+          currentLength = 0;
+        }
+        segments.push(para);
+      } else {
+        // 普通大段落，按句子切分
+        const sentences = splitBySentences(para);
+        for (const sentence of sentences) {
+          if (currentLength + sentence.length > targetSize && currentSegment.length > 0) {
+            segments.push(currentSegment.join('\n\n'));
+            currentSegment = [];
+            currentLength = 0;
+          }
+          currentSegment.push(sentence);
+          currentLength += sentence.length;
+        }
+      }
+    } else {
+      currentSegment.push(para);
+      currentLength += paraLength + 2;
+    }
+  }
+  
+  // 收尾
+  if (currentSegment.length > 0) {
+    segments.push(currentSegment.join('\n\n'));
+  }
+  
+  return segments.filter(s => s && s.trim().length > 0);
+}
+
+/**
+ * 检查是否是受保护的块（不应该被切分）
+ */
+function isProtectedBlock(text) {
+  const trimmed = text.trim();
+  
+  // 代码块
+  if (trimmed.startsWith('```') && trimmed.endsWith('```')) {
+    return true;
+  }
+  
+  // 表格
+  if (trimmed.startsWith('[表格开始]') || trimmed.includes('[表格结束]')) {
+    return true;
+  }
+  
+  // Markdown 表格
+  if (trimmed.includes('|') && trimmed.includes('---')) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * 创建子块 V2
+ */
+function createChildChunksV2(content, parentId, breadcrumbs, childSize) {
+  const chunks = [];
+  
+  if (!content || content.length <= childSize) {
+    // 内容太短，不需要子块，或者直接作为一个子块
+    if (content && content.length > 50) {
+      chunks.push({
+        content: content,
+        chunkType: 'child',
+        parentId: parentId,
+        tokenCount: estimateTokens(content),
+        metadata: {
+          childIndex: 0,
+          totalChildren: 1
+        }
+      });
+    }
+    return chunks;
+  }
+  
+  // 分割内容
+  const childTexts = splitForChildren(content, childSize);
+  
+  // 重叠量
+  const overlap = Math.floor(childSize * 0.1);
+  
+  for (let i = 0; i < childTexts.length; i++) {
+    let childContent = childTexts[i];
+    
+    // 为子块添加简短上下文（只在非首个子块时添加）
+    if (i > 0 && breadcrumbs.length > 0) {
+      const shortContext = `[...${breadcrumbs[breadcrumbs.length - 1] || '续'}]`;
+      childContent = shortContext + '\n' + childContent;
+    }
+    
+    chunks.push({
+      content: childContent,
+      chunkType: 'child',
+      parentId: parentId,
+      tokenCount: estimateTokens(childContent),
+      metadata: {
+        childIndex: i,
+        totalChildren: childTexts.length
+      }
+    });
+  }
+  
+  return chunks;
+}
+
+/**
+ * 为子块分割内容
+ */
+function splitForChildren(content, childSize) {
+  const children = [];
+  
+  // 按段落分割
+  const paragraphs = content.split(/\n\n+/);
+  
+  let current = [];
+  let currentLen = 0;
+  
+  for (const para of paragraphs) {
+    // 如果是受保护块，不切分
+    if (isProtectedBlock(para)) {
+      if (current.length > 0) {
+        children.push(current.join('\n\n'));
+        current = [];
+        currentLen = 0;
+      }
+      children.push(para);
+      continue;
+    }
+    
+    if (currentLen + para.length > childSize && current.length > 0) {
+      children.push(current.join('\n\n'));
+      current = [];
+      currentLen = 0;
+    }
+    
+    if (para.length > childSize) {
+      // 大段落按句子分
+      const sentences = splitBySentences(para);
+      for (const s of sentences) {
+        if (currentLen + s.length > childSize && current.length > 0) {
+          children.push(current.join('\n\n'));
+          current = [];
+          currentLen = 0;
+        }
+        current.push(s);
+        currentLen += s.length;
+      }
+    } else {
+      current.push(para);
+      currentLen += para.length + 2;
+    }
+  }
+  
+  if (current.length > 0) {
+    children.push(current.join('\n\n'));
+  }
+  
+  return children.filter(c => c && c.trim().length > 0);
+}
+
+/**
+ * 按句子分割
+ */
+function splitBySentences(text) {
+  // 中英文句子结束符
+  const sentences = text.split(/(?<=[。！？；!?;.])\s*/);
+  return sentences.filter(s => s && s.trim().length > 0);
+}
+
+// ========== 辅助函数 ==========
+
+function isTableLine(line) {
+  if (!line) return false;
+  const trimmed = line.trim();
+  return trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.includes('|');
+}
+
+function isTableSeparator(line) {
+  if (!line) return false;
+  const trimmed = line.trim();
+  return /^\|[\s\-:]+\|/.test(trimmed);
+}
+
+/**
+ * 解析 Markdown 表格为语义格式
+ */
+function parseTableToSemantic(tableLines) {
+  if (!tableLines || tableLines.length < 2) return null;
+  
+  // 解析表头
+  const headers = parseTableRow(tableLines[0]);
+  
+  // 跳过分隔符行（第二行）
+  const rows = [];
+  for (let i = 2; i < tableLines.length; i++) {
+    if (!isTableSeparator(tableLines[i])) {
+      const cells = parseTableRow(tableLines[i]);
+      if (cells.length > 0) {
+        if (headers.length === cells.length) {
+          const rowDesc = cells.map((cell, idx) => `${headers[idx]}=${cell}`).join(', ');
+          rows.push(rowDesc);
         } else {
-           finalChunks.push(doc);
+          rows.push(cells.join(' | '));
         }
-        
-        // 处理重叠：保留末尾的一部分片段作为下一个块的开头
-        // 这是一个简化的滑动窗口实现
-        const overlapDocs = [];
-        let overlapLength = 0;
-        // 从后往前找，直到满足 overlap 要求
-        for (let i = currentDoc.length - 1; i >= 0; i--) {
-          const d = currentDoc[i];
-          if (overlapLength + d.length > chunkOverlap) break;
-          overlapDocs.unshift(d);
-          overlapLength += d.length;
-        }
-        currentDoc = overlapDocs;
-        currentLength = overlapLength;
       }
     }
-    
-    currentDoc.push(split);
-    currentLength += splitLen + (typeof separator === 'string' ? separator.length : 0);
   }
   
-  // 处理最后一个块
-  if (currentDoc.length > 0) {
-    const doc = joinDocs(currentDoc, separator);
-    if (doc.length > chunkSize && nextSeparators.length > 0) {
-       const subChunks = splitText(doc, nextSeparators, chunkSize, chunkOverlap);
-       finalChunks.push(...subChunks);
-    } else {
-       finalChunks.push(doc);
+  return rows;
+}
+
+function parseTableRow(line) {
+  if (!line) return [];
+  return line.split('|')
+    .map(cell => cell.trim())
+    .filter((cell, idx, arr) => idx > 0 && idx < arr.length - 1 && cell.length >= 0);
+}
+
+/**
+ * 转换 HTML 表格为语义文本
+ */
+function convertHtmlTableToSemantic(html) {
+  const rows = [];
+  const headers = [];
+  
+  // 提取表头
+  const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/gi;
+  let thMatch;
+  while ((thMatch = thRegex.exec(html)) !== null) {
+    headers.push(cleanHtml(thMatch[1]));
+  }
+  
+  // 提取行
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let trMatch;
+  let rowIndex = 0;
+  
+  while ((trMatch = trRegex.exec(html)) !== null) {
+    const rowContent = trMatch[1];
+    const cells = [];
+    
+    const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let tdMatch;
+    while ((tdMatch = tdRegex.exec(rowContent)) !== null) {
+      cells.push(cleanHtml(tdMatch[1]));
+    }
+    
+    if (cells.length > 0) {
+      if (headers.length > 0 && headers.length === cells.length) {
+        const rowDesc = cells.map((cell, i) => `${headers[i]}=${cell}`).join(', ');
+        rows.push(`行${rowIndex + 1}: ${rowDesc}`);
+      } else {
+        rows.push(`行${rowIndex + 1}: ${cells.join(' | ')}`);
+      }
+      rowIndex++;
     }
   }
   
-  return finalChunks;
-}
-
-function joinDocs(docs, separator) {
-  if (typeof separator === 'string') {
-    return docs.join(separator);
+  if (rows.length > 0) {
+    return `[表格开始]\n${rows.join('\n')}\n[表格结束]`;
   }
-  // 对于 RegExp 分隔符，我们假设内容已经完整，直接连接
-  return docs.join("");
+  
+  return `[表格内容]\n${cleanHtml(html)}`;
 }
 
-// 辅助函数：检测代码块（防止切断代码块）
-// 这是一个优化项，可以在 splitText 之前先提取代码块
-function splitWithCodeBlocks(text) {
-  // TODO: 如果需要更高级的逻辑，可以先提取 ```...``` 块，将其视为不可分割的原子
-  // 目前递归切分已经能较好处理（因为代码块通常有换行）
-  return [text];
+function cleanHtml(html) {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 生成摘要
+ */
+function generateSummary(content, breadcrumbs) {
+  const parts = [];
+  
+  // 添加标题路径
+  if (breadcrumbs.length > 0) {
+    parts.push(breadcrumbs[breadcrumbs.length - 1]);
+  }
+  
+  // 提取命令
+  const commands = content.match(/(?:nv|show|netq|vtysh|ip)\s+\S+(?:\s+\S+)*/gi);
+  if (commands && commands.length > 0) {
+    parts.push(`命令: ${commands.slice(0, 2).join(', ')}`);
+  }
+  
+  // 提取技术术语
+  const terms = extractTechTerms(content);
+  if (terms.length > 0) {
+    parts.push(`关键词: ${terms.slice(0, 4).join(', ')}`);
+  }
+  
+  return parts.join(' | ');
+}
+
+function extractTechTerms(text) {
+  const terms = new Set();
+  const patterns = [
+    /\b(BGP|OSPF|EVPN|VXLAN|MLAG|STP|LACP|LLDP|VLAN|VRF|ACL|BFD|PTP|SNMP|NTP|DHCP|DNS)\b/gi,
+    /\b(PFC|ECN|RDMA|RoCE|DCQCN|QoS|CoS|DSCP)\b/gi,
+    /\b(swp\d+|eth\d+|bond\d+|bridge|vni\d+)\b/gi
+  ];
+  
+  for (const pattern of patterns) {
+    const matches = text.match(pattern) || [];
+    matches.forEach(m => terms.add(m.toUpperCase()));
+  }
+  
+  return Array.from(terms);
+}
+
+function generateId(type) {
+  return `chunk-${type}-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+}
+
+function estimateTokens(text) {
+  // 简单估算：中文约 2 字符/token，英文约 4 字符/token
+  const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+  const otherChars = text.length - chineseChars;
+  return Math.ceil(chineseChars / 2 + otherChars / 4);
 }
