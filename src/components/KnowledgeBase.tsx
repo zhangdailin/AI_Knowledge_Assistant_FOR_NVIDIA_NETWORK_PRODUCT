@@ -198,17 +198,17 @@ const KnowledgeBase: React.FC = () => {
     
     setRegeneratingDocs(prev => new Set(prev).add(documentId));
     try {
-      const chunks = await unifiedStorageManager.getChunks(documentId);
-      const chunksWithoutEmbedding = chunks.filter(ch => !ch.embedding || !Array.isArray(ch.embedding) || ch.embedding.length === 0);
+      const stats = await unifiedStorageManager.getChunkStats(documentId);
+      const chunksWithoutEmbedding = stats.requiringEmbedding - stats.withEmbedding;
       
-      if (chunksWithoutEmbedding.length === 0) {
+      if (chunksWithoutEmbedding === 0) {
         alert('该文档的所有 chunks 都已经有 embedding 了！');
         return;
       }
       
       // 创建后台任务生成 embedding
       await unifiedStorageManager.createEmbeddingTask(documentId);
-      alert(`已开始后台生成 Embedding（${chunksWithoutEmbedding.length} 个 chunks），请查看进度...`);
+      alert(`已开始后台生成 Embedding（${chunksWithoutEmbedding} 个 chunks），请查看进度...`);
       
       // 立即刷新一次
       loadDocuments();

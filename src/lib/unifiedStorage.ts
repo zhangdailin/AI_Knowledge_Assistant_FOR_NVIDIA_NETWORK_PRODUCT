@@ -42,6 +42,22 @@ class UnifiedStorageManager {
     return await serverStorageManager.getChunks(documentId);
   }
 
+  async getChunk(documentId: string, chunkId: string): Promise<Chunk | null> {
+    return await serverStorageManager.getChunk(documentId, chunkId);
+  }
+
+  async getChunkStats(documentId: string): Promise<any> {
+    try {
+      const res = await fetch(`${serverStorageManager['apiUrl']}/api/documents/${documentId}/chunk-stats`);
+      if (!res.ok) throw new Error('获取统计失败');
+      const data = await res.json();
+      return data.stats;
+    } catch (e) {
+      console.error('获取 chunk 统计失败:', e);
+      return null;
+    }
+  }
+
   async getAllChunks(): Promise<Chunk[]> {
     return await serverStorageManager.getAllChunks();
   }
@@ -83,6 +99,10 @@ class UnifiedStorageManager {
     const chunks = await serverStorageManager.searchChunks(query, limit);
     // 转换为相同的返回格式
     return chunks.map(chunk => ({ chunk, score: 1.0 }));
+  }
+
+  async vectorSearchChunks(embedding: number[], limit: number = 30): Promise<{ chunk: Chunk; score: number }[]> {
+    return await serverStorageManager.vectorSearchChunks(embedding, limit);
   }
 
   async addManualChunk(documentId: string, content: string): Promise<Chunk> {

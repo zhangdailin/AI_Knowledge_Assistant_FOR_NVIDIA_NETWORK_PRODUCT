@@ -264,38 +264,56 @@ const ChatInterface: React.FC = () => {
           ) : (
             <div className="space-y-6 max-w-4xl mx-auto">
               {messages.map((message) => (
-                <div key={message.id} className={`flex items-start gap-4 ${
+                <div key={message.id} className={`flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 ${
                   message.role === 'user' ? 'justify-end' : 'justify-start'
                 }`}>
                   {message.role === 'assistant' && (
-                    <div className="w-10 h-10 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0">
-                      <Bot className="w-5 h-5 text-purple-600" />
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 border border-indigo-200 flex items-center justify-center flex-shrink-0 shadow-sm mt-1">
+                      <Bot className="w-6 h-6 text-indigo-600" />
                     </div>
                   )}
                   
-                  <div className={`max-w-3xl ${
+                  <div className={`max-w-[85%] relative group ${
                     message.role === 'user' 
-                      ? 'order-1 bg-blue-100 text-gray-900 rounded-2xl' 
-                      : 'order-2 bg-white rounded-2xl shadow-sm'
-                  } px-6 py-4`}>
-                    <MessageContent content={message.content} role={message.role} />
+                      ? 'order-1' 
+                      : 'order-2'
+                  }`}>
+                    {/* 消息气泡 */}
+                    <div className={`px-6 py-4 shadow-sm ${
+                      message.role === 'user'
+                        ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm'
+                        : 'bg-white border border-gray-100 rounded-2xl rounded-tl-sm'
+                    }`}>
+                      <MessageContent content={message.content} role={message.role} />
+                    </div>
                     
-                    {message.role === 'assistant' && message.metadata?.model && (
-                      <div className="text-xs mt-2 text-gray-500">
-                        {message.metadata.model}
-                        {message.metadata.deepThinking && (
-                          <span className="ml-2 inline-flex items-center gap-1">
-                            <Brain className="w-3 h-3" />
-                            深度思考
-                          </span>
-                        )}
-                      </div>
-                    )}
+                    {/* 底部元数据 */}
+                    <div className={`flex items-center gap-2 mt-1.5 text-xs text-gray-400 ${
+                       message.role === 'user' ? 'justify-end' : 'justify-start'
+                    }`}>
+                      {message.role === 'assistant' && message.metadata?.model && (
+                        <span className="flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded border border-gray-100">
+                           <Bot className="w-3 h-3" />
+                           {message.metadata.model}
+                        </span>
+                      )}
+                      
+                      {message.role === 'assistant' && message.metadata?.deepThinking && (
+                        <span className="flex items-center gap-1 text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                          <Brain className="w-3 h-3" />
+                          深度思考
+                        </span>
+                      )}
+                      
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity">
+                        {new Date(message.createdAt || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                      </span>
+                    </div>
                   </div>
                   
                   {message.role === 'user' && (
-                    <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 order-2">
-                      <User className="w-5 h-5 text-blue-600" />
+                    <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0 shadow-md mt-1 order-2 border-2 border-white">
+                      <User className="w-6 h-6 text-white" />
                     </div>
                   )}
                 </div>
@@ -303,33 +321,33 @@ const ChatInterface: React.FC = () => {
               
               {/* 加载状态 */}
               {isLoading && (
-                <div className="flex items-start gap-4">
-                  <div className="w-10 h-10 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-5 h-5 text-purple-600" />
+                <div className="flex items-start gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 border border-indigo-200 flex items-center justify-center flex-shrink-0 shadow-sm mt-1">
+                    <Bot className="w-6 h-6 text-indigo-600 animate-pulse" />
                   </div>
-                  <div className="flex flex-col gap-2 max-w-3xl w-full">
+                  <div className="flex flex-col gap-2 max-w-[85%] w-full">
                     {/* 状态栏：深度思考中 + 停止按钮 */}
-                    <div className="flex items-center gap-3 text-sm text-gray-500">
-                      <div className="flex items-center gap-2">
-                        <Brain className="w-4 h-4 animate-pulse text-purple-600" />
-                        <span>深度思考中...</span>
+                    <div className="flex items-center gap-3 text-sm text-gray-500 pl-1">
+                      <div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100 shadow-sm">
+                        <Brain className="w-4 h-4 animate-pulse" />
+                        <span className="font-medium">深度思考中...</span>
                       </div>
                       <button
                         onClick={handleStop}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
+                        className="flex items-center gap-1 px-3 py-1 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
                         title="停止响应"
                       >
                         <Square className="w-3 h-3 fill-current" />
-                        <span className="text-xs">停止响应</span>
+                        <span className="text-xs font-medium">停止</span>
                       </button>
                     </div>
                     
                     {/* 占位气泡 */}
-                    <div className="bg-white rounded-2xl p-6 shadow-sm min-h-[100px] flex items-center justify-center">
+                    <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm p-6 shadow-sm min-h-[80px] flex items-center">
                        <div className="flex space-x-2">
-                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
-                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                        <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
                       </div>
                     </div>
                   </div>

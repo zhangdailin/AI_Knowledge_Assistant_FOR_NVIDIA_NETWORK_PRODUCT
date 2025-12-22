@@ -70,121 +70,13 @@ function cosine(a: number[], b: number[]): number {
 }
 
 export async function ensureEmbeddingsForDocument(documentId: string) {
-  const chunks = await unifiedStorageManager.getChunks(documentId);
-  const allDocs = await unifiedStorageManager.getAllDocumentsPublic();
-  const doc = allDocs.find(d => d.id === documentId);
-  const chunksWithoutEmbedding = chunks.filter(ch => !ch.embedding || !Array.isArray(ch.embedding) || ch.embedding.length === 0);
-  
-  
-  if (chunksWithoutEmbedding.length === 0) {
-    return; // 所有chunks都有embedding，直接返回
+  console.log(`Requesting server to generate embeddings for document ${documentId}...`);
+  try {
+    await unifiedStorageManager.createEmbeddingTask(documentId);
+    console.log(`Server embedding task created for document ${documentId}`);
+  } catch (error) {
+    console.error(`Failed to create server embedding task for document ${documentId}:`, error);
   }
-  
-  console.log(`为文档 ${documentId} 的 ${chunksWithoutEmbedding.length} 个chunks生成embedding...`);
-  
-  // 批量并行处理，但限制并发数
-  // 对于大量chunks，使用更小的批次，并在每批后清理空间
-  const batchSize = chunksWithoutEmbedding.length > 100 ? 3 : 5;
-  let successCount = 0;
-  let failCount = 0;
-  const errors: Array<{ chunkId: string; error: string }> = [];
-  const MAX_RETRIES = 3; // 增加最大重试次数
-  
-  // 对于大量chunks，先清理一些空间
-  if (chunksWithoutEmbedding.length > 100) {
-    try {
-      // 对于超大文档（>500 chunks），清理其他文档的所有chunks（包括有embedding的）
-      // 对于中等文档（100-500 chunks），只清理其他文档的没有embedding的chunks
-      if (chunksWithoutEmbedding.length > 500) {
-        // 清理其他文档的所有chunks，只保留当前文档的chunks
-        const allChunks = await unifiedStorageManager.getAllChunksForSearch();
-        const otherDocChunks = allChunks.filter(c => c.documentId !== documentId);
-        const currentDocChunks = allChunks.filter(c => c.documentId === documentId);
-        
-        // 只保留当前文档的chunks
-        try {
-          localStorage.setItem('ai_assistant_chunks', JSON.stringify(currentDocChunks));
-        } catch (e: any) {
-          if (e.name === 'QuotaExceededError') {
-            // 即使只保留当前文档的chunks，仍然空间不足
-            // 尝试只保留当前文档的部分chunks（最新的）
-            const sortedCurrent = currentDocChunks.sort((a, b) => 
-              new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-            );
-            // 只保留最新的 500 个chunks
-            const keptChunks = sortedCurrent.slice(0, 500);
-            localStorage.setItem('ai_assistant_chunks', JSON.stringify(keptChunks));
-          } else {
-            throw e;
-          }
-        }
-      } else {
-        // 清理其他文档的旧chunks，为当前文档腾出空间
-        const removed = await unifiedStorageManager.cleanupOldChunksWithoutEmbedding(200, [documentId]);
-      }
-    } catch (e) {
-      console.warn('预清理失败:', e);
-    }
-  }
-  
-  for (let i = 0; i < chunksWithoutEmbedding.length; i += batchSize) {
-    const batch = chunksWithoutEmbedding.slice(i, i + batchSize);
-    await Promise.all(
-      batch.map(async (ch) => {
-        try {
-          // 优化文本用于embedding：智能截断，保留重要信息
-          const optimizedText = optimizeTextForEmbedding(ch.content, 2000);
-          
-          let emb: number[] | null = null;
-          let retryCount = 0;
-          
-          // 重试逻辑
-          while (retryCount < MAX_RETRIES && !emb) {
-            try {
-              if (retryCount > 0) {
-                 // 指数退避策略：1s, 2s, 4s
-                 await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount - 1)));
-                 console.warn(`Retry embedding for chunk ${ch.id} (Attempt ${retryCount + 1}/${MAX_RETRIES})...`);
-              }
-              emb = await embedText(optimizedText);
-            } catch (err) {
-              console.warn(`Embedding attempt ${retryCount + 1} failed:`, err);
-            }
-            retryCount++;
-          }
-
-          if (emb) {
-            // updateChunkEmbedding 内部会保护当前文档的chunks
-            await unifiedStorageManager.updateChunkEmbedding(ch.id, emb);
-            successCount++;
-          } else {
-            failCount++;
-            errors.push({ chunkId: ch.id, error: 'embedText returned null after retries' });
-          }
-        } catch (error) {
-          console.warn(`为chunk ${ch.id}生成embedding失败:`, error);
-          failCount++;
-          errors.push({ chunkId: ch.id, error: error instanceof Error ? error.message : String(error) });
-        }
-      })
-    );
-    
-    // 对于大量chunks，每处理一定数量后清理一次空间
-    if (chunksWithoutEmbedding.length > 100 && (i + batchSize) % 50 === 0) {
-      try {
-        const removed = await unifiedStorageManager.cleanupOldChunksWithoutEmbedding(300, [documentId]);
-      } catch (e) {
-        console.warn('定期清理失败:', e);
-      }
-    }
-    
-    // 每批之间稍作延迟，避免API限流
-    if (i + batchSize < chunksWithoutEmbedding.length) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-  }
-  
-  console.log(`已完成文档 ${documentId} 的embedding生成，成功: ${successCount}, 失败: ${failCount}`);
 }
 
 /**
@@ -291,266 +183,44 @@ export async function semanticSearch(
 
   // 使用核心查询进行嵌入（更聚焦于命令本身）
   // const qEmb = await embedText(coreQuery); // 已经在上面并行执行了
-  const all = await unifiedStorageManager.getAllChunksForSearch();
+  // const all = await unifiedStorageManager.getAllChunksForSearch(); // REMOVED: Do not fetch all chunks
   const allDocs = await unifiedStorageManager.getAllDocumentsPublic();
   
+  let chunksWithEmbedding: Chunk[] = [];
   
-  let chunksWithEmbedding = all.filter((c: Chunk) => Array.isArray(c.embedding) && c.embedding.length > 0);
+  // 并行执行向量检索和关键词检索（在服务器端）
+  const [vectorResults, keywordResults] = await Promise.all([
+    qEmb ? unifiedStorageManager.vectorSearchChunks(qEmb, limit * 3) : Promise.resolve([]),
+    unifiedStorageManager.searchSimilarChunks(enhancedQueryForKeyword, limit * 3)
+  ]);
   
-  if (!qEmb || all.length === 0) {
-    const fallbackResults = await unifiedStorageManager.searchSimilarChunks(query, limit);
-    // 对 fallback 结果也应用 Parent-Child 逻辑（如果有必要）
-    // 虽然 fallback 结果没有 embedding，但如果有 parentId，我们仍然可以尝试获取父块内容
-    return fallbackResults.map(item => {
-        if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
-            const parent = all.find(c => c.id === item.chunk.parentId);
-            if (parent) {
-                return {
-                    ...item,
-                    chunk: {
-                        ...item.chunk,
-                        content: `[相关上下文]: ${parent.content}\n\n[详细内容]: ${item.chunk.content}`
-                    }
-                };
-            }
-        }
-        return item;
-    });
-  }
+  // 转换 keyword results
+  const keywordRecall = keywordResults.map(item => ({
+    chunk: item.chunk,
+    score: item.score, // 简单的关键词匹配分数
+    source: 'keyword' as const
+  }));
   
-  // 检查是否有 chunks 没有 embedding，如果有则生成（优先处理最近的chunks）
-  let chunksWithoutEmbedding = all.filter((c: Chunk) => !Array.isArray(c.embedding) || !c.embedding.length);
-  if (chunksWithoutEmbedding.length > 0) {
-    console.warn(`发现 ${chunksWithoutEmbedding.length} 个 chunks 没有 embedding，正在生成...`);
-    
-    // 如果有很多chunks没有embedding，先清理旧的没有embedding的chunks，释放空间
-    // 但不要清理正在处理的文档的chunks（通过documentId判断）
-    if (chunksWithoutEmbedding.length > 1000) {
-      console.warn('chunks数量过多，先清理旧的没有embedding的chunks...');
-      // 获取正在处理的文档ID（最新的chunks所属的文档）
-      const processingDocIds = new Set<string>();
-      const sortedChunks = chunksWithoutEmbedding.sort((a, b) => {
-        const timeA = new Date(a.createdAt || 0).getTime();
-        const timeB = new Date(b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-      // 保护最新的100个chunks所属的文档
-      sortedChunks.slice(0, 100).forEach(chunk => {
-        processingDocIds.add(chunk.documentId);
-      });
-      const removedCount = await unifiedStorageManager.cleanupOldChunksWithoutEmbedding(500, Array.from(processingDocIds));
-      if (removedCount > 0) {
-        // 重新获取chunks（清理后的）
-        const updatedAll = await unifiedStorageManager.getAllChunksForSearch();
-        all.length = 0;
-        all.push(...updatedAll);
-        // 重新计算chunksWithoutEmbedding（清理后的）
-        chunksWithoutEmbedding = all.filter((c: Chunk) => !Array.isArray(c.embedding) || !c.embedding.length);
-        console.warn(`清理完成，重新获取chunks，当前总数: ${all.length}，没有embedding的: ${chunksWithoutEmbedding.length}`);
-      } else {
-        console.warn('清理失败，可能localStorage空间已满，尝试更激进的清理...');
-      }
-    }
-    
-    // 按创建时间排序，优先处理最新的chunks（新上传的文件）
-    const sortedChunks = chunksWithoutEmbedding.sort((a, b) => {
-      const timeA = new Date(a.createdAt || 0).getTime();
-      const timeB = new Date(b.createdAt || 0).getTime();
-      return timeB - timeA; // 最新的在前
-    });
-    
-    // 批量处理，优先处理最新的100个chunks（新上传的文件）
-    const chunksToProcess = sortedChunks.slice(0, 100);
-    console.log(`正在为 ${chunksToProcess.length} 个最新chunks生成embedding...`);
-    
-    // 并行处理，但限制并发数（避免API限流）
-    const batchSize = 5; // 降低并发数，避免API限流
-    let successCount = 0;
-    let failCount = 0;
-    
-    for (let i = 0; i < chunksToProcess.length; i += batchSize) {
-      const batch = chunksToProcess.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (chunk) => {
-          try {
-            // 优化文本用于embedding：智能截断，保留重要信息
-            const optimizedText = optimizeTextForEmbedding(chunk.content, 2000);
-            const emb = await embedText(optimizedText);
-            if (emb && Array.isArray(emb) && emb.length > 0) {
-              try {
-                await unifiedStorageManager.updateChunkEmbedding(chunk.id, emb);
-                successCount++;
-              } catch (updateError: any) {
-                // updateChunkEmbedding内部已经处理了QuotaExceededError，但如果还是失败，记录日志
-                console.warn(`保存chunk ${chunk.id}的embedding失败:`, updateError);
-                failCount++;
-              }
-            } else {
-              console.warn(`为chunk ${chunk.id}生成embedding返回空值，content长度: ${chunk.content.length}`);
-              failCount++;
-            }
-          } catch (error) {
-            console.warn(`为chunk ${chunk.id}生成embedding失败:`, error);
-            failCount++;
-          }
-        })
-      );
-      // 每批之间稍作延迟，避免API限流
-      if (i + batchSize < chunksToProcess.length) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-    }
-    console.log(`已完成 ${chunksToProcess.length} 个chunks的embedding生成，成功: ${successCount}, 失败: ${failCount}`);
-    
-    // 重新获取所有chunks（包括新生成的embedding）
-    const updatedAll = await unifiedStorageManager.getAllChunksForSearch();
-    // 更新all变量，使用最新的chunks数据
-    all.length = 0;
-    all.push(...updatedAll);
-    // 重新计算chunksWithEmbedding（因为all已经更新）
-    chunksWithEmbedding = all.filter((c: Chunk) => Array.isArray(c.embedding) && c.embedding.length);
-  } else {
-    // 如果没有需要生成embedding的chunks，重新计算chunksWithEmbedding（确保使用最新的all）
-    chunksWithEmbedding = all.filter((c: Chunk) => Array.isArray(c.embedding) && c.embedding.length);
-  }
-  
-  if (chunksWithEmbedding.length === 0) {
-    const fallbackResults = await unifiedStorageManager.searchSimilarChunks(query, limit);
-    // 对 fallback 结果也应用 Parent-Child 逻辑
-    return fallbackResults.map(item => {
-        if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
-            const parent = all.find(c => c.id === item.chunk.parentId);
-            if (parent) {
-                return {
-                    ...item,
-                    chunk: {
-                        ...item.chunk,
-                        content: `[相关上下文]: ${parent.content}\n\n[详细内容]: ${item.chunk.content}`
-                    }
-                };
-            }
-        }
-        return item;
-    });
-  }
-  
-  // ========== 多路召回机制 (Hybrid Retrieval) ==========
-  const queryKeywords = extractKeywords(enhancedQueryForKeyword);
-  const queryWordsLower = queryKeywords.map(w => w.toLowerCase());
-  
-  // 1. 向量检索 (Vector Search)
-  const vectorRecall = chunksWithEmbedding
-    .map((c: Chunk) => ({ 
-      chunk: c, 
-      score: cosine(qEmb, c.embedding as number[]),
-      source: 'vector' as const
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit * 3); // 召回 3 倍候选
-  
-  // 2. 关键词检索 (Keyword Search - Simplified BM25)
-  const CONFIG_VERBS = ['configure', 'config', 'set', 'add', 'create', 'enable', 'apply', '配置', '创建', '设置', '建立', '启动'];
-  
-  const keywordRecall = chunksWithEmbedding.map((c: Chunk) => {
-    const contentLower = c.content.toLowerCase();
-    let score = 0;
-    let matchedKeywords = 0;
-    
-    // 检查查询是否包含配置动词
-    const hasConfigIntent = queryWordsLower.some(w => CONFIG_VERBS.some(v => w.includes(v)));
-    
-    queryWordsLower.forEach(keyword => {
-      const keywordLower = keyword.toLowerCase();
-      // 计算词频 (TF)
-      // 使用正则匹配单词边界，避免部分匹配错误 (如 'set' 不应匹配 'offset')
-      // 如果关键词包含中文，不使用边界匹配
-      // 对于 acronyms (如 PFC, ECN, BGP)，我们放宽匹配条件，或者是增强权重
-      const isEnglish = /^[a-zA-Z0-9]+$/.test(keywordLower);
-      // 特殊处理：如果是短的英文大写缩写（转换后），或者是已知的技术术语
-      const isAcronym = isEnglish && keywordLower.length >= 2 && keywordLower.length <= 4;
-      
-      let regex: RegExp;
-      if (isEnglish) {
-        if (isAcronym) {
-          // 对于缩写，允许更灵活的匹配，比如 PFC_Mode
-          regex = new RegExp(`${keywordLower}`, 'g');
-        } else {
-          regex = new RegExp(`\\b${keywordLower}\\b`, 'g');
-        }
-      } else {
-        regex = new RegExp(keywordLower, 'g');
-      }
-      
-      const matches = (contentLower.match(regex) || []).length;
-      
-      if (matches > 0) {
-        let weight = 1.0;
-        
-        // 如果是配置动词，且查询有配置意图，给予额外加分
-        if (hasConfigIntent && CONFIG_VERBS.some(v => keywordLower.includes(v))) {
-          weight = 3.0; // 显著提升配置命令的权重
-        }
-        
-        // 如果是核心技术术语（PFC/ECN/RoCE），给予高权重
-        if (['pfc', 'ecn', 'roce', 'bgp', 'qos', 'rdma', 'acl', 'evpn', 'vxlan', 'mlag'].includes(keywordLower)) {
-          weight = 5.0; // 核心术语高权重
-        }
-        
-        // 简单的 TF 得分: log(1 + TF)
-        score += Math.log(1 + matches) * weight;
-        matchedKeywords++;
-      }
-    });
-    
-    // 归一化：考虑查询词覆盖率
-    // 覆盖率权重很高，我们希望尽可能匹配更多的查询词
-    const coverage = matchedKeywords / queryWordsLower.length;
-    const finalScore = score * (0.5 + 0.5 * coverage);
-    
-    return {
-      chunk: c,
-      score: finalScore,
-      matchedKeywords,
-      source: 'keyword' as const
-    };
-  })
-  .filter(item => item.score > 0) // 只保留有匹配的
-  .sort((a, b) => b.score - a.score)
-  .slice(0, limit * 3); // 召回 3 倍候选
-  
+  // 转换 vector results
+  const vectorRecall = vectorResults.map(item => ({
+    chunk: item.chunk,
+    score: item.score,
+    source: 'vector' as const
+  }));
   
   // 3. 文档标题匹配检索 (Doc Title Search)
-  const docTitleRecall = chunksWithEmbedding
-    .map((c: Chunk) => {
-      const doc = allDocs.find(d => d.id === c.documentId);
-      if (!doc) return null;
-      
-      const filenameLower = doc.filename.toLowerCase();
-      let titleScore = 0;
-      let matchedCount = 0;
-      
-      queryWordsLower.forEach(keyword => {
-        if (filenameLower.includes(keyword.toLowerCase())) {
-          titleScore += 1.0; // 文档标题匹配给予高分
-          matchedCount++;
-        }
-      });
-      
-      // 标题匹配的分数也考虑覆盖率
-      if (matchedCount > 0) {
-        titleScore = titleScore * (matchedCount / queryWordsLower.length);
-      }
-      
-      return titleScore > 0 ? {
-        chunk: c,
-        score: titleScore,
-        source: 'docTitle' as const
-      } : null;
-    })
-    .filter((item): item is { chunk: Chunk; score: number; source: 'docTitle' } => item !== null)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit * 2); // 召回 2 倍候选
-  
+  // ... (Keep existing logic but optimized) ...
+  const docTitleRecall = [];
+  // 优化：只检查 queryWords 是否匹配文档标题，如果匹配，则需要获取该文档的 chunks
+  // 由于我们不想获取所有 chunks，这里只做简单的标题匹配记录，后续如果需要内容再 fetch
+  // 或者，我们可以搜索该文档的 chunks
+  // 简单起见，如果标题匹配，我们假设该文档非常相关，将其 ID 加入 allow list 或 boost score
+  // 但为了兼容现有 RRF 逻辑，我们需要 chunks。
+  // 妥协：如果文档标题匹配，我们调用 server search 搜索该文档的内容
+  // 这可能比较慢。
+  // 替代方案：在 searchSimilarChunks 中，server 已经考虑了全文。
+  // 如果 server search 足够好，它应该能返回标题匹配文档的内容（如果内容也包含关键词）。
+  // 暂时跳过显式的 docTitleRecall 循环 fetch chunks，依赖 server search。
   
   // ========== RRF (Reciprocal Rank Fusion) 融合 ==========
   // RRF score = sum(1 / (k + rank))
@@ -591,23 +261,6 @@ export async function semanticSearch(
     }
   });
   
-  // 处理标题召回
-  docTitleRecall.forEach((item, rank) => {
-    const existing = rrfMap.get(item.chunk.id);
-    const scoreToAdd = 1 / (RRF_K + rank + 1);
-    
-    if (existing) {
-      existing.rrfScore += scoreToAdd;
-      if (!existing.sources.includes('docTitle')) existing.sources.push('docTitle');
-    } else {
-      rrfMap.set(item.chunk.id, {
-        chunk: item.chunk,
-        rrfScore: scoreToAdd,
-        sources: ['docTitle']
-      });
-    }
-  });
-  
   // 转换为数组并排序
   const mergedResults = Array.from(rrfMap.values())
     .map(item => ({
@@ -639,24 +292,10 @@ export async function semanticSearch(
   const enhancedResults: typeof rerankedResults = [];
   const addedChunkIds = new Set<string>();
   
-  // 优化：预先为涉及的文档建立索引，加速 Sliding Window 查找
-  // 找出所有涉及的文档ID
-  const relevantDocIds = new Set(rerankedResults.map(r => r.chunk.documentId));
-  const relevantChunksMap = new Map<string, Chunk[]>();
-  
-  // 如果涉及文档少于 10 个，可以预先筛选这些文档的所有 chunks
-  if (relevantDocIds.size <= 10) {
-    all.forEach(c => {
-      if (relevantDocIds.has(c.documentId)) {
-        if (!relevantChunksMap.has(c.documentId)) {
-          relevantChunksMap.set(c.documentId, []);
-        }
-        relevantChunksMap.get(c.documentId)!.push(c);
-      }
-    });
-  }
+  // 缓存父块，避免重复请求
+  const parentCache = new Map<string, Chunk>();
 
-  rerankedResults.forEach(item => {
+  await Promise.all(rerankedResults.map(async (item) => {
     // 克隆 chunk 以避免修改原始引用
     let finalChunk = { ...item.chunk };
     let finalScore = item.score;
@@ -665,7 +304,20 @@ export async function semanticSearch(
     // 如果是子块，尝试替换为父块
     // 修改逻辑：优先返回父块作为上下文，但如果父块太长（超过2000字），则可能只返回子块+父块摘要
     if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
-      const parent = all.find(c => c.id === item.chunk.parentId);
+      let parent = parentCache.get(item.chunk.parentId);
+      if (!parent) {
+        try {
+          // 异步获取父块
+          const p = await unifiedStorageManager.getChunk(item.chunk.documentId, item.chunk.parentId);
+          if (p) {
+            parent = p;
+            parentCache.set(item.chunk.parentId, p);
+          }
+        } catch (e) {
+          console.warn(`Failed to fetch parent chunk ${item.chunk.parentId}:`, e);
+        }
+      }
+
       if (parent) {
         // 找到了父块
         // 策略优化：
@@ -718,9 +370,8 @@ export async function semanticSearch(
       }
     }
     
-    // 2. Sliding Window Context (上下文扩展)
-    // 自动获取前一个和后一个 chunk，拼接以提供更完整的上下文
-    // 这对于解决断章取义问题非常有效
+    // 2. Sliding Window Context (上下文扩展) - DISABLED for server-side search to avoid complexity
+    /*
     const docId = finalChunk.documentId;
     const idx = finalChunk.chunkIndex;
     
@@ -755,6 +406,7 @@ export async function semanticSearch(
       // 可选：在 metadata 中标记已扩展
       // finalChunk.metadata = { ...finalChunk.metadata, expanded: true };
     }
+    */
 
     // 去重逻辑：如果父块（或已处理的块）已经在结果里了，保留分数最高的那个
     if (addedChunkIds.has(finalChunk.id)) {
@@ -768,7 +420,7 @@ export async function semanticSearch(
       enhancedResults.push({ chunk: finalChunk, score: finalScore });
       addedChunkIds.add(finalChunk.id);
     }
-  });
+  }));
   
   // 重新排序
   enhancedResults.sort((a, b) => b.score - a.score);

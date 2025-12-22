@@ -141,6 +141,21 @@ class ServerStorageManager {
     }
   }
 
+  async getChunk(documentId: string, chunkId: string): Promise<Chunk | null> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/documents/${documentId}/chunks/${chunkId}`);
+      if (!res.ok) {
+        if (res.status === 404) return null;
+        throw new Error(`获取 chunk 失败: ${res.statusText}`);
+      }
+      const data = await res.json();
+      return data.chunk || null;
+    } catch (error) {
+      console.error('获取 chunk 失败:', error);
+      return null;
+    }
+  }
+
   async getAllChunks(): Promise<Chunk[]> {
     try {
       const res = await fetch(`${this.apiUrl}/api/chunks`);
@@ -217,6 +232,24 @@ class ServerStorageManager {
       return data.chunks || [];
     } catch (error) {
       console.error('搜索 chunks 失败:', error);
+      return [];
+    }
+  }
+
+  async vectorSearchChunks(embedding: number[], limit: number = 30): Promise<{ chunk: Chunk; score: number }[]> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/chunks/vector-search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ embedding, limit })
+      });
+      if (!res.ok) {
+        throw new Error(`向量搜索失败: ${res.statusText}`);
+      }
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('向量搜索失败:', error);
       return [];
     }
   }

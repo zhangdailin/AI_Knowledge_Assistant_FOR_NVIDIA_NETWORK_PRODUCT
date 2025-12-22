@@ -320,6 +320,31 @@ app.get('/api/documents/:id/chunks', async (req, res) => {
   }
 });
 
+// 获取单个 chunk
+app.get('/api/documents/:docId/chunks/:chunkId', async (req, res) => {
+  try {
+    const chunk = await storage.getChunk(req.params.docId, req.params.chunkId);
+    if (!chunk) {
+      return res.status(404).json({ ok: false, error: 'chunk 不存在' });
+    }
+    res.json({ ok: true, chunk });
+  } catch (error) {
+    console.error('获取 chunk 失败:', error);
+    res.status(500).json({ ok: false, error: '获取 chunk 失败' });
+  }
+});
+
+// 获取文档的 chunks 统计信息 (轻量级)
+app.get('/api/documents/:id/chunk-stats', async (req, res) => {
+  try {
+    const stats = await storage.getChunkStats(req.params.id);
+    res.json({ ok: true, stats });
+  } catch (error) {
+    console.error('获取 chunks 统计失败:', error);
+    res.status(500).json({ ok: false, error: '获取 chunks 统计失败' });
+  }
+});
+
 // 创建 chunks
 app.post('/api/documents/:id/chunks', async (req, res) => {
   try {
@@ -374,6 +399,22 @@ app.get('/api/chunks/search', async (req, res) => {
   } catch (error) {
     console.error('搜索 chunks 失败:', error);
     res.status(500).json({ ok: false, error: '搜索 chunks 失败' });
+  }
+});
+
+// 向量搜索 chunks
+app.post('/api/chunks/vector-search', async (req, res) => {
+  try {
+    const { embedding, limit = 30 } = req.body;
+    if (!Array.isArray(embedding)) {
+      return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
+    }
+    
+    const results = await storage.vectorSearchChunks(embedding, parseInt(limit));
+    res.json({ ok: true, results });
+  } catch (error) {
+    console.error('向量搜索失败:', error);
+    res.status(500).json({ ok: false, error: '向量搜索失败' });
   }
 });
 

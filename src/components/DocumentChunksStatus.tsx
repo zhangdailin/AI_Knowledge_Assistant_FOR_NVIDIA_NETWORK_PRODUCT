@@ -15,24 +15,23 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
   onRegenerate,
   onReprocess
 }) => {
-  const [chunks, setChunks] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [task, setTask] = useState<any>(null);
   const [taskProgress, setTaskProgress] = useState(0);
 
   useEffect(() => {
-    const loadChunks = async () => {
+    const loadStats = async () => {
       try {
-        const docChunks = await unifiedStorageManager.getChunks(document.id);
-        setChunks(docChunks);
+        const docStats = await unifiedStorageManager.getChunkStats(document.id);
+        setStats(docStats);
       } catch (error) {
-        console.error('加载 chunks 失败:', error);
-        setChunks([]);
+        console.error('加载 chunks 统计失败:', error);
       } finally {
         setLoading(false);
       }
     };
-    loadChunks();
+    loadStats();
   }, [document.id]);
 
   // 轮询任务状态
@@ -49,8 +48,8 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
           // 如果有已完成的任务，刷新 chunks
           const completedTask = tasks.find(t => t.status === 'completed');
           if (completedTask) {
-            const docChunks = await unifiedStorageManager.getChunks(document.id);
-            setChunks(docChunks);
+            const docStats = await unifiedStorageManager.getChunkStats(document.id);
+            setStats(docStats);
           }
         }
       } catch (error) {
@@ -65,26 +64,19 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
 
   // 计算 chunks 统计（必须在所有条件渲染之前）
   // 1. 统计父块和子块
-  const parentChunks = chunks.filter(ch => ch.chunkType === 'parent');
-  const childChunks = chunks.filter(ch => ch.chunkType === 'child');
-  const normalChunks = chunks.filter(ch => ch.chunkType !== 'parent' && ch.chunkType !== 'child');
+  // 使用从后端获取的 stats
   
-  const parentChunksCount = parentChunks.length;
-  const childChunksCount = childChunks.length;
-  const normalChunksCount = normalChunks.length;
+  const parentChunksCount = stats?.parentCount || 0;
+  const childChunksCount = stats?.childCount || 0;
+  const normalChunksCount = stats?.normalCount || 0;
   
   // 2. 统计 Embedding 状态
-  // 注意：父块通常不需要 Embedding（主要用于上下文），子块和普通块需要 Embedding（用于检索）
-  // 因此，"未生成"的数量应该只计算需要 Embedding 的块
-  
-  const chunksRequiringEmbedding = [...childChunks, ...normalChunks];
-  const totalChunksRequiringEmbedding = chunksRequiringEmbedding.length;
-  
-  const chunksWithEmbedding = chunksRequiringEmbedding.filter(ch => Array.isArray(ch.embedding) && ch.embedding.length > 0).length;
+  const totalChunksRequiringEmbedding = stats?.requiringEmbedding || 0;
+  const chunksWithEmbedding = stats?.withEmbedding || 0;
   const chunksWithoutEmbedding = totalChunksRequiringEmbedding - chunksWithEmbedding;
   
-  const hasNoChunks = chunks.length === 0;
-  const isLikelyPreviewOnly = document.fileSize > 100000 && chunks.length <= 1 && document.contentPreview.length < 1000;
+  const hasNoChunks = !stats || stats.total === 0;
+  const isLikelyPreviewOnly = document.fileSize > 100000 && (stats?.total || 0) <= 1 && document.contentPreview.length < 1000;
 
   if (loading) {
     return <div className="text-xs text-gray-500">加载中...</div>;
@@ -131,7 +123,7 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
       {task && task.status === 'processing' && (
         <div className="mb-2">
           <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
-            <span>正在生成 Embedding...</span>
+            <span>正在云端生成 Embedding...</span>
             <span>{task.current}/{task.total} ({taskProgress}%)</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
@@ -140,6 +132,9 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
               style={{ width: `${taskProgress}%` }}
             />
           </div>
+          <p className="text-[10px] text-gray-400 mt-1">
+            * 任务在服务器后台运行，您可以关闭页面
+          </p>
         </div>
       )}
       

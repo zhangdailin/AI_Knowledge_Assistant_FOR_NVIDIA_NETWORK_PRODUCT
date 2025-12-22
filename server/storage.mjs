@@ -160,6 +160,40 @@ export async function getChunks(documentId) {
   return await readJSON(path.join(CHUNKS_DIR, `${documentId}.json`), []);
 }
 
+export async function getChunk(documentId, chunkId) {
+  await initStorage();
+  const chunks = await readJSON(path.join(CHUNKS_DIR, `${documentId}.json`), []);
+  return chunks.find(c => c.id === chunkId) || null;
+}
+
+export async function getChunkStats(documentId) {
+  await initStorage();
+  try {
+    const chunks = await readJSON(path.join(CHUNKS_DIR, `${documentId}.json`), []);
+    // 计算统计信息
+    const total = chunks.length;
+    const parentChunks = chunks.filter(c => c.chunkType === 'parent');
+    const childChunks = chunks.filter(c => c.chunkType === 'child');
+    const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
+    
+    // 需要 Embedding 的块
+    const chunksRequiringEmbedding = [...childChunks, ...normalChunks];
+    const withEmbedding = chunksRequiringEmbedding.filter(c => Array.isArray(c.embedding) && c.embedding.length > 0).length;
+    
+    return {
+      total,
+      parentCount: parentChunks.length,
+      childCount: childChunks.length,
+      normalCount: normalChunks.length,
+      withEmbedding,
+      requiringEmbedding: chunksRequiringEmbedding.length
+    };
+  } catch (error) {
+    console.error(`[storage] 获取统计失败: ${documentId}`, error);
+    return { total: 0, parentCount: 0, childCount: 0, normalCount: 0, withEmbedding: 0, requiringEmbedding: 0 };
+  }
+}
+
 export async function createChunks(chunksData) {
   await initStorage();
   if (chunksData.length === 0) return [];
@@ -291,22 +325,64 @@ export async function searchChunks(query, limit = 30) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   const queryLower = query.toLowerCase();
-  const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
   
+  // Improved tokenization: match English words or Chinese characters sequences
+  // This handles "检查vxlan" -> "检查", "vxlan"
+  const queryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
+    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w))); // Keep single Chinese chars, drop single English letters
+  
+  // Extract potential technical terms (English words) for higher weighting
+  const technicalTerms = queryWords.filter(w => /^[a-z0-9]+$/.test(w));
+  
+  // Load documents for filename matching
+  const documents = await getAllDocuments();
+  const docMap = new Map(documents.map(d => [d.id, d]));
+
   const results = [];
   
   // 逐个文件处理，避免 OOM
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
+    const docId = file.replace('.json', '');
+    const doc = docMap.get(docId);
+    let docScoreBonus = 0;
+    
+    // Calculate document title match bonus once per document
+    if (doc) {
+      const filenameLower = doc.filename.toLowerCase();
+      queryWords.forEach(word => {
+        if (filenameLower.includes(word)) {
+          docScoreBonus += 2; // Bonus for matching filename
+        }
+      });
+    }
+
     const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
     
     for (const chunk of chunks) {
       const contentLower = chunk.content.toLowerCase();
-      let score = 0;
+      let score = docScoreBonus; // Start with document bonus
+      let matchedCount = 0;
+      
+      // Exact match bonus
       if (contentLower.includes(queryLower)) score += 10;
+      
       queryWords.forEach(word => {
-        if (contentLower.includes(word)) score += 1;
+        if (contentLower.includes(word)) {
+          score += 1;
+          matchedCount++;
+          
+          // Technical term bonus (e.g. "vxlan")
+          if (technicalTerms.includes(word)) {
+            score += 2; 
+          }
+        }
       });
+      
+      // Bonus for matching multiple words (phrase matching approximation)
+      if (matchedCount > 1) {
+        score += matchedCount * 0.5;
+      }
       
       if (score > 0) {
         results.push({ chunk, score });
@@ -315,6 +391,47 @@ export async function searchChunks(query, limit = 30) {
   }
   
   return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
+}
+
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  // Assume a and b are same length
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom > 0 ? dot / denom : 0;
+}
+
+export async function vectorSearchChunks(queryEmbedding, limit = 30) {
+  await initStorage();
+  const files = await fs.readdir(CHUNKS_DIR);
+  let topResults = [];
+  
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
+    
+    for (const chunk of chunks) {
+      if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
+        const score = cosine(queryEmbedding, chunk.embedding);
+        // Optimization: Don't store chunks with very low scores
+        if (score > 0.1) {
+           topResults.push({ chunk, score });
+        }
+      }
+    }
+    
+    // Memory optimization: Prune results periodically if they get too large
+    if (topResults.length > limit * 5) {
+      topResults.sort((a, b) => b.score - a.score);
+      topResults = topResults.slice(0, limit * 2);
+    }
+  }
+  
+  return topResults.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
 // 设置管理
