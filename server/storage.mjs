@@ -321,6 +321,59 @@ export async function deleteChunksByDocument(documentId) {
     }
 }
 
+// Technical term mappings for cross-lingual search
+const TERM_MAPPINGS = {
+  // --- Actions ---
+  '配置': ['config', 'configuration', 'settings', 'setup', 'provisioning', 'set'],
+  'config': ['配置', '设置'],
+  '显示': ['show', 'display', 'view', 'list', 'get', 'print'],
+  '列出': ['list', 'show', 'ls', 'display', 'enumerate'],
+  '查看': ['check', 'view', 'show', 'display', 'inspect'],
+  '状态': ['status', 'state', 'health', 'condition', 'info', 'summary'],
+  '命令': ['command', 'cli', 'cmd', 'instruction', 'nv', 'nvue', 'netq', 'vtysh'],
+  '保存': ['save', 'write', 'commit', 'store'],
+  '重启': ['reboot', 'reload', 'restart', 'reset'],
+  '删除': ['delete', 'remove', 'unset', 'clear', 'erase', 'no'],
+  '开启': ['enable', 'up', 'start', 'activate', 'on'],
+  '关闭': ['disable', 'down', 'stop', 'deactivate', 'off', 'shutdown'],
+  '调试': ['debug', 'trace', 'log', 'monitor'],
+  '升级': ['upgrade', 'update', 'install', 'patch'],
+  '连接': ['connect', 'ssh', 'telnet', 'console', 'link'],
+  
+  // --- Objects / Entities ---
+  '所有': ['all', 'full', 'entire', 'everything', 'total', 'whole'],
+  '设备': ['device', 'system', 'switch', 'router', 'box', 'hardware', 'platform', 'node', 'chassis'],
+  '当前': ['current', 'currently', 'active', 'running', 'applied', 'now'],
+  '接口': ['interface', 'port', 'int', 'eth', 'swp'],
+  '路由': ['route', 'routing', 'rib', 'fib', 'forwarding'],
+  '网络': ['network', 'net', 'fabric', 'infrastructure'],
+  '版本': ['version', 'ver', 'revision', 'release', 'image'],
+  '用户': ['user', 'username', 'account', 'admin', 'role'],
+  '密码': ['password', 'passwd', 'secret', 'credential', 'auth'],
+  '邻居': ['neighbor', 'peer', 'adjacency'],
+  '日志': ['log', 'logging', 'syslog', 'journal'],
+  '错误': ['error', 'fail', 'failure', 'drop', 'discard', 'loss', 'down'],
+  
+  // --- Protocols / Technologies ---
+  'bgp': ['border gateway protocol', 'ebgp', 'ibgp'],
+  'ospf': ['open shortest path first'],
+  'evpn': ['ethernet vpn', 'vxlan'],
+  'vxlan': ['virtual extensible lan', 'vni', 'vtep', 'overlay'],
+  'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link'],
+  'stp': ['spanning tree', 'rstp', 'mstp', 'pvst'],
+  'lacp': ['link aggregation', 'bond', 'port-channel', 'lag'],
+  'lldp': ['link layer discovery'],
+  'vlan': ['virtual lan', 'bridge', 'dot1q'],
+  'vrf': ['virtual routing and forwarding', 'vpn-instance'],
+  'acl': ['access control list', 'filter', 'policy', 'rule'],
+  'bfd': ['bidirectional forwarding detection'],
+  'ptp': ['precision time protocol', '1588'],
+  'snmp': ['simple network management protocol', 'trap', 'inform'],
+  'ntp': ['network time protocol', 'time'],
+  'dhcp': ['dynamic host configuration protocol', 'relay'],
+  'dns': ['domain name system', 'resolve', 'nameserver']
+};
+
 export async function searchChunks(query, limit = 30) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
@@ -328,11 +381,51 @@ export async function searchChunks(query, limit = 30) {
   
   // Improved tokenization: match English words or Chinese characters sequences
   // This handles "检查vxlan" -> "检查", "vxlan"
-  const queryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
-    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w))); // Keep single Chinese chars, drop single English letters
+  const rawQueryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
+    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w))); 
+
+  // --- Intent Detection ---
+  const intent = {
+    isCommand: false,
+    isConcept: false,
+    isTroubleshooting: false
+  };
+
+  // Check for command-related keywords
+  if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k))) {
+    intent.isCommand = true;
+  }
+
+  // Check for concept-related keywords
+  if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理'].some(k => queryLower.includes(k))) {
+    intent.isConcept = true;
+  }
+  
+  // Check for troubleshooting keywords
+  if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错'].some(k => queryLower.includes(k))) {
+    intent.isTroubleshooting = true;
+  }
+
+  // Expand query words with synonyms/translations
+  const queryWords = new Set(rawQueryWords);
+  rawQueryWords.forEach(word => {
+    // Check if the word exists in mappings (as a key)
+    if (TERM_MAPPINGS[word]) {
+      TERM_MAPPINGS[word].forEach(synonym => queryWords.add(synonym));
+    }
+    // Also check partial matches for Chinese (e.g. "配置命令" -> contains "配置" and "命令")
+    for (const [key, values] of Object.entries(TERM_MAPPINGS)) {
+      if (word.includes(key) && word !== key) {
+        values.forEach(v => queryWords.add(v));
+      }
+    }
+  });
+  
+  // Convert back to array for iteration
+  const expandedQueryWords = Array.from(queryWords);
   
   // Extract potential technical terms (English words) for higher weighting
-  const technicalTerms = queryWords.filter(w => /^[a-z0-9]+$/.test(w));
+  const technicalTerms = expandedQueryWords.filter(w => /^[a-z0-9]+$/.test(w));
   
   // Load documents for filename matching
   const documents = await getAllDocuments();
@@ -350,7 +443,7 @@ export async function searchChunks(query, limit = 30) {
     // Calculate document title match bonus once per document
     if (doc) {
       const filenameLower = doc.filename.toLowerCase();
-      queryWords.forEach(word => {
+      expandedQueryWords.forEach(word => {
         if (filenameLower.includes(word)) {
           docScoreBonus += 2; // Bonus for matching filename
         }
@@ -364,24 +457,80 @@ export async function searchChunks(query, limit = 30) {
       let score = docScoreBonus; // Start with document bonus
       let matchedCount = 0;
       
-      // Exact match bonus
+      // Exact match bonus (original query)
       if (contentLower.includes(queryLower)) score += 10;
       
-      queryWords.forEach(word => {
-        if (contentLower.includes(word)) {
-          score += 1;
-          matchedCount++;
+      expandedQueryWords.forEach(word => {
+        if (!word) return;
+        // Simple occurrence counting (faster than regex)
+        const parts = contentLower.split(word);
+        const count = parts.length - 1;
+        
+        if (count > 0) {
+          // Term Frequency (TF) scoring: 1 + log(count)
+          // This prevents keyword stuffing from dominating, but rewards multiple mentions
+          const tf = 1 + Math.log(count);
           
-          // Technical term bonus (e.g. "vxlan")
+          let wordScore = 1;
+          // Technical term bonus (e.g. "vxlan", "config")
           if (technicalTerms.includes(word)) {
-            score += 2; 
+            wordScore = 3; 
           }
+          
+          score += tf * wordScore;
+          matchedCount++;
         }
       });
       
-      // Bonus for matching multiple words (phrase matching approximation)
+      // Bonus for matching multiple UNIQUE words (phrase matching approximation)
+      // If we matched 5 different keywords, that's better than matching 1 keyword 5 times
       if (matchedCount > 1) {
-        score += matchedCount * 0.5;
+        score += matchedCount * 1.5;
+      }
+
+      // --- Adaptive Scoring based on Intent ---
+      
+      if (score > 5) { // Only apply optimizations if we have basic relevance
+          
+          // 1. Command Intent Optimization
+          if (intent.isCommand) {
+             // RELAXED: Just check if the content contains the command keywords directly
+             // This covers both HTML tables "<td>nv show" and plain text "nv show"
+             const hasCommandKeywords = /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower) ||
+                                      contentLower.includes('nv config') ||
+                                      contentLower.includes('nv show');
+
+             const isCommandStructure = hasCommandKeywords || 
+                                      /<tr><td>\s*(nv|show|netq|vtysh)/.test(contentLower) || 
+                                      /^\s*(nv|show|netq|vtysh)/.test(contentLower) ||
+                                      contentLower.includes('```'); 
+             
+             if (isCommandStructure) {
+                 score += 10; // Boost potential command blocks
+                 
+                 // Double boost if it matches the specific action verb
+                 if (queryLower.includes('show') && contentLower.includes('show')) score += 5;
+                 if (queryLower.includes('config') && contentLower.includes('config')) score += 5;
+             }
+          }
+
+          // 2. Concept/Definition Intent Optimization
+          if (intent.isConcept) {
+             // Look for definition patterns: "X is a...", "X describes..."
+             const isDefinition = /\sis a\s|\srefers to\s|\sdescribes\s/.test(contentLower);
+             // Look for headers
+             const isHeader = /^#+\s/.test(contentLower);
+             
+             if (isDefinition) score += 5;
+             if (isHeader) score += 5;
+          }
+          
+          // 3. Troubleshooting Intent Optimization
+          if (intent.isTroubleshooting) {
+             if (contentLower.includes('error') || contentLower.includes('fail') || contentLower.includes('troubleshoot')) {
+                 score += 10;
+             }
+          }
       }
       
       if (score > 0) {
