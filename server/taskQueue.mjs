@@ -118,12 +118,34 @@ export async function processEmbeddingTask(taskId, documentId) {
     console.log(`[任务队列] [DEBUG] 获取到 ${chunks.length} 个 chunks`);
     // #endregion
     console.log(`[任务 ${taskId}] 获取到 ${chunks.length} 个 chunks`);
+    
+    // 详细统计
+    const parentChunks = chunks.filter(c => c.chunkType === 'parent');
+    const childChunks = chunks.filter(c => c.chunkType === 'child');
+    const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
+    
+    console.log(`[任务 ${taskId}] chunks 类型统计:`);
+    console.log(`[任务 ${taskId}]   - 父块: ${parentChunks.length} 个`);
+    console.log(`[任务 ${taskId}]   - 子块: ${childChunks.length} 个`);
+    console.log(`[任务 ${taskId}]   - 普通块: ${normalChunks.length} 个`);
+    
     const chunksWithoutEmbedding = chunks.filter(
       ch => !ch.embedding || !Array.isArray(ch.embedding) || ch.embedding.length === 0
     );
+    
+    // 统计需要 embedding 的 chunks 类型
+    const parentWithoutEmbedding = chunksWithoutEmbedding.filter(c => c.chunkType === 'parent');
+    const childWithoutEmbedding = chunksWithoutEmbedding.filter(c => c.chunkType === 'child');
+    const normalWithoutEmbedding = chunksWithoutEmbedding.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
+    
     // #region agent log
     console.log(`[任务队列] [DEBUG] 需要生成 embedding 的 chunks: ${chunksWithoutEmbedding.length}`);
     // #endregion
+    
+    console.log(`[任务 ${taskId}] 需要 embedding 的 chunks 统计:`);
+    console.log(`[任务 ${taskId}]   - 父块: ${parentWithoutEmbedding.length} 个`);
+    console.log(`[任务 ${taskId}]   - 子块: ${childWithoutEmbedding.length} 个`);
+    console.log(`[任务 ${taskId}]   - 普通块: ${normalWithoutEmbedding.length} 个`);
 
     if (chunksWithoutEmbedding.length === 0) {
       console.log(`[任务 ${taskId}] 所有 chunks 已有 embedding，任务完成`);

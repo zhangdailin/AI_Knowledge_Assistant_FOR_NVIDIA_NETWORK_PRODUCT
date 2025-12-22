@@ -86,7 +86,33 @@ async function processUploadedFile(documentId, file) {
     const chunks = chunking.enhancedParentChildChunking(text, 4000, parentSize, childSize);
     const chunkTime = Date.now() - chunkStartTime;
     
-    console.log(`[Async] 分块完成，耗时: ${chunkTime}ms，块数: ${chunks.length}`);
+    // 详细统计
+    const parentChunks = chunks.filter(c => c.chunkType === 'parent');
+    const childChunks = chunks.filter(c => c.chunkType === 'child');
+    const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
+    
+    console.log(`[Async] 分块完成，耗时: ${chunkTime}ms`);
+    console.log(`[Async] 块数统计: 总计 ${chunks.length} 个`);
+    console.log(`[Async]   - 父块: ${parentChunks.length} 个`);
+    console.log(`[Async]   - 子块: ${childChunks.length} 个`);
+    console.log(`[Async]   - 普通块: ${normalChunks.length} 个`);
+    
+    // 检查内容长度
+    const chunksWithContent = chunks.filter(c => c.content && c.content.trim().length > 0);
+    const emptyChunks = chunks.length - chunksWithContent.length;
+    if (emptyChunks > 0) {
+      console.warn(`[Async] 警告: 有 ${emptyChunks} 个空 chunks`);
+    }
+    
+    // 显示前几个 chunks 的内容长度
+    if (chunks.length > 0) {
+      const sampleChunks = chunks.slice(0, 5);
+      console.log(`[Async] 前 ${Math.min(5, chunks.length)} 个 chunks 内容长度:`);
+      sampleChunks.forEach((c, idx) => {
+        const contentLen = c.content ? c.content.length : 0;
+        console.log(`[Async]   [${idx + 1}] ${c.chunkType || 'normal'}: ${contentLen} 字符`);
+      });
+    }
     
     if (chunks.length === 0) {
       throw new Error('分块失败：未生成任何 chunks');
@@ -95,6 +121,7 @@ async function processUploadedFile(documentId, file) {
     // 3. 保存 chunks
     const chunksWithDocId = chunks.map(c => ({ ...c, documentId }));
     await storage.createChunks(chunksWithDocId);
+    console.log(`[Async] chunks 已保存到存储`);
     
     // 4. 生成 Embedding (复用 taskQueue)
     // 注意：taskQueue.processEmbeddingTask 需要手动触发
