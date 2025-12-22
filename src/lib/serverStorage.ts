@@ -6,12 +6,18 @@
 import { Document, Chunk } from './localStorage';
 
 function getApiServerUrl(): string {
-  // 优先使用环境变量
+  // 1. 优先使用用户在前端设置的自定义地址
+  if (typeof window !== 'undefined') {
+    const customUrl = localStorage.getItem('custom_api_server_url');
+    if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
+  }
+
+  // 2. 其次使用环境变量
   const envUrl = import.meta.env.VITE_API_SERVER_URL;
   if (envUrl) {
     return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
   }
-  // 如果没有环境变量，使用当前页面的 hostname 和默认端口
+  // 3. 如果没有环境变量，使用当前页面的 hostname 和默认端口
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol;
     const hostname = window.location.hostname;

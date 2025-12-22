@@ -27,7 +27,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentConversation: null,
   messages: [],
   isLoading: false,
-  currentModel: 'qwen3-32b',
+  currentModel: 'qwen3-32b', // 使用修正后的内部 ID，aiModelManager 会自动映射
   deepThinking: true, // 默认开启深度思考
 
   loadConversations: (userId: string) => {
@@ -124,80 +124,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       
       const searchResults = await retrieval.semanticSearch(content, 20, conversationHistoryForSearch);
       
-      // 确保references包含多个文档的chunks，而不是只选择分数最高的
-      // 按文档分组，确保每个文档至少有一些chunks被选中
-      const refsByDocMap = new Map<string, typeof searchResults>();
-      searchResults.forEach(r => {
-        if (!refsByDocMap.has(r.chunk.documentId)) {
-          refsByDocMap.set(r.chunk.documentId, []);
-        }
-        refsByDocMap.get(r.chunk.documentId)!.push(r);
-      });
+      // 直接使用检索结果的内容，不再进行复杂的重排
+      // retrieval.semanticSearch 已经处理了排序、多样性和去重
+      const references = searchResults.map(r => r.chunk.content);
       
-      // 从每个文档中选择至少1个chunk，确保多样性
-      // 增加上下文数量，从3个增加到20个（与检索的limit一致）
-      const referencesList: string[] = [];
-      const refCount = 20; // 增加上下文数量，提供更多信息
-      const docCount = refsByDocMap.size;
-      const minPerDoc = Math.max(1, Math.floor(refCount / docCount)); // 每个文档至少选择的数量
-      
-      // 第一步：从每个文档中选择至少minPerDoc个chunks（保证多样性）
-      const guaranteedByDoc = new Map<string, string[]>();
-      refsByDocMap.forEach((docRefs, docId) => {
-        const sorted = docRefs.sort((a, b) => b.score - a.score);
-        const selected = sorted.slice(0, Math.min(minPerDoc, sorted.length));
-        const selectedContents = selected.map(r => r.chunk.content);
-        guaranteedByDoc.set(docId, selectedContents);
-        referencesList.push(...selectedContents);
-      });
-      
-      // 第二步：如果还有空间，从每个文档中轮流选择，确保多样性
-      if (referencesList.length < refCount) {
-        const remainingSlots = refCount - referencesList.length;
-        const docIds = Array.from(refsByDocMap.keys());
-        let slotIndex = 0;
-        
-        // 轮流从每个文档中选择，直到填满所有slot
-        while (referencesList.length < refCount && slotIndex < remainingSlots * docCount) {
-          const docIndex = slotIndex % docIds.length;
-          const docId = docIds[docIndex];
-          const docRefs = refsByDocMap.get(docId)!;
-          const alreadySelected = guaranteedByDoc.get(docId) || [];
-          const remainingFromDoc = docRefs
-            .filter(r => !alreadySelected.includes(r.chunk.content) && !referencesList.includes(r.chunk.content))
-            .sort((a, b) => b.score - a.score);
-          
-          if (remainingFromDoc.length > 0) {
-            referencesList.push(remainingFromDoc[0].chunk.content);
-            const updated = guaranteedByDoc.get(docId) || [];
-            updated.push(remainingFromDoc[0].chunk.content);
-            guaranteedByDoc.set(docId, updated);
-          }
-          
-          slotIndex++;
-        }
-      }
-      
-      // 限制为refCount个
-      const finalReferences = referencesList.slice(0, refCount);
-      
-      const references = finalReferences;
-      
-      // 检查搜索结果的相关性分数，如果最高分数太低，视为未命中
+      // 检查搜索结果的相关性分数
+      // 降低阈值，信任检索模块的自适应阈值
+      // 只要检索模块返回了结果，就认为是有价值的
       const maxScore = searchResults.length > 0 
         ? Math.max(...searchResults.map(r => r.score))
         : 0;
-      const relevanceThreshold = 0.35; // 降低相关性阈值，避免过滤掉相关但分数稍低的文档
+      
+      // 只有当分数极低且数量很少时，才视为低相关性
+      const relevanceThreshold = 0.15; 
       const isLowRelevance = searchResults.length > 0 && maxScore < relevanceThreshold;
 
-      // 如果知识库未命中或相关性太低，直接使用 Qwen 8B 模型
-      if (searchResults.length === 0 || isLowRelevance) {
+      // 如果知识库未命中(空结果)或相关性极低，尝试使用 Qwen 8B 模型（不带参考内容）
+      // 但如果用户是在问具体的文档内容（如"总结文档"），即使分数低也应该带上参考内容
+      if (searchResults.length === 0 || (isLowRelevance && !content.includes('总结') && !content.includes('概述'))) {
         
         try {
           // 使用 Qwen 8B 模型（SiliconFlow）回答问题
+          // 注意：这里使用 qwen3-32b 作为模型ID，aiModelManager 会自动映射到正确的 Qwen3 或降级到 Qwen2.5
           const qwenResponse = await aiModelManager.generateAnswer({
             question: content,
-            model: currentModel,
+            model: currentModel || 'qwen3-32b',
             references: [],
             conversationHistory: undefined,
             deepThinking: deepThinking

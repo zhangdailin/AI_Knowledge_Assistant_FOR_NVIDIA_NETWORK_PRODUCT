@@ -1,5 +1,5 @@
 import { unifiedStorageManager, Chunk } from './localStorage';
-import { optimizeTextForEmbedding } from './chunkingEnhancements';
+// import { optimizeTextForEmbedding } from './chunkingEnhancements';
 import {
   detectQueryIntent,
   getRetrievalParamsForIntent,
@@ -9,12 +9,23 @@ import {
   calculateAdaptiveThreshold
 } from './retrievalEnhancements';
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
+import { aiModelManager } from './aiModels';
 
 const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
 const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
-const BGE_MODEL = 'BAAI/bge-m3';
-const QWEN_EMBEDDING = 'Qwen/Qwen3-Embedding-8B';
-const QWEN_RERANKER = 'Qwen/Qwen3-reranker-8B';
+// 确保查询Embedding模型与文档Embedding模型一致 (BAAI/bge-m3)
+const EMBEDDING_MODEL = 'BAAI/bge-m3'; 
+// Rerank模型配置：主模型与备用模型
+const RERANK_MODEL_PRIMARY = 'BAAI/bge-reranker-v2-m3'; // 最新最强
+const RERANK_MODEL_FALLBACK = 'BAAI/bge-reranker-large'; // 备用稳定版
+
+function optimizeTextForEmbedding(text: string, maxLength: number = 2000): string {
+  let optimized = text.trim();
+  if (optimized.length > maxLength) {
+    optimized = optimized.substring(0, maxLength);
+  }
+  return optimized.replace(/\n+/g, ' ');
+}
 
 async function embedText(text: string): Promise<number[] | null> {
   const apiKey = await unifiedStorageManager.getApiKey('siliconflow') || import.meta.env.VITE_SILICONFLOW_API_KEY;
@@ -29,7 +40,7 @@ async function embedText(text: string): Promise<number[] | null> {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: QWEN_EMBEDDING,
+        model: EMBEDDING_MODEL,
         input: text
       })
     });
@@ -77,6 +88,7 @@ export async function ensureEmbeddingsForDocument(documentId: string) {
   let successCount = 0;
   let failCount = 0;
   const errors: Array<{ chunkId: string; error: string }> = [];
+  const MAX_RETRIES = 3; // 增加最大重试次数
   
   // 对于大量chunks，先清理一些空间
   if (chunksWithoutEmbedding.length > 100) {
@@ -122,14 +134,32 @@ export async function ensureEmbeddingsForDocument(documentId: string) {
         try {
           // 优化文本用于embedding：智能截断，保留重要信息
           const optimizedText = optimizeTextForEmbedding(ch.content, 2000);
-          const emb = await embedText(optimizedText);
-      if (emb) {
+          
+          let emb: number[] | null = null;
+          let retryCount = 0;
+          
+          // 重试逻辑
+          while (retryCount < MAX_RETRIES && !emb) {
+            try {
+              if (retryCount > 0) {
+                 // 指数退避策略：1s, 2s, 4s
+                 await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount - 1)));
+                 console.warn(`Retry embedding for chunk ${ch.id} (Attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+              }
+              emb = await embedText(optimizedText);
+            } catch (err) {
+              console.warn(`Embedding attempt ${retryCount + 1} failed:`, err);
+            }
+            retryCount++;
+          }
+
+          if (emb) {
             // updateChunkEmbedding 内部会保护当前文档的chunks
             await unifiedStorageManager.updateChunkEmbedding(ch.id, emb);
             successCount++;
           } else {
             failCount++;
-            errors.push({ chunkId: ch.id, error: 'embedText returned null' });
+            errors.push({ chunkId: ch.id, error: 'embedText returned null after retries' });
           }
         } catch (error) {
           console.warn(`为chunk ${ch.id}生成embedding失败:`, error);
@@ -213,8 +243,54 @@ export async function semanticSearch(
   // 4. 提取核心查询（增强版）
   const coreQuery = extractCoreQueryEnhanced(enhancedQuery, intent);
   
+  // 简单的查询扩展（同义词）
+  // 优化：使用 LLM 自适应生成关键词，替代硬编码
+  // 并行执行：LLM 关键词生成 + 核心查询 Embedding 生成
+  let adaptiveKeywords: string[] = [];
+  let qEmb: number[] | null = null;
+  
+  try {
+    // 使用 Promise.allSettled 防止关键词生成失败导致整个检索失败
+    const results = await Promise.allSettled([
+      embedText(coreQuery),
+      // 只有当查询较长或包含复杂意图时才调用 LLM 生成关键词，避免简单查询的延迟
+      coreQuery.length > 5 || coreQuery.split(' ').length > 2 
+        ? aiModelManager.generateSearchKeywords(coreQuery)
+        : Promise.resolve([] as string[])
+    ]);
+
+    // 处理 Embedding 结果
+    if (results[0].status === 'fulfilled') {
+      qEmb = results[0].value;
+    } else {
+      console.warn('Embedding generation failed:', results[0].reason);
+    }
+
+    // 处理关键词生成结果
+    if (results[1].status === 'fulfilled') {
+      adaptiveKeywords = results[1].value;
+    } else {
+      console.warn('Adaptive keyword generation failed (using fallback):', results[1].reason);
+      // 失败时静默处理，使用空数组
+    }
+  } catch (e) {
+    console.error('Parallel processing error:', e);
+  }
+
+  const expandedTerms: string[] = [...adaptiveKeywords];
+  const lowerQuery = coreQuery.toLowerCase();
+  
+  // 保留部分核心硬编码作为兜底（因为 LLM 偶尔可能失败或超时）
+  if (lowerQuery.includes('bgp')) expandedTerms.push('边界网关协议', 'peer', 'neighbor');
+  // ... 其他硬编码可以逐步移除，或者作为快速路径保留
+  
+  // 将扩展词加入到关键词检索中
+  const enhancedQueryForKeyword = expandedTerms.length > 0 
+    ? `${coreQuery} ${expandedTerms.join(' ')}` 
+    : coreQuery;
+
   // 使用核心查询进行嵌入（更聚焦于命令本身）
-  const qEmb = await embedText(coreQuery);
+  // const qEmb = await embedText(coreQuery); // 已经在上面并行执行了
   const all = await unifiedStorageManager.getAllChunksForSearch();
   const allDocs = await unifiedStorageManager.getAllDocumentsPublic();
   
@@ -222,7 +298,24 @@ export async function semanticSearch(
   let chunksWithEmbedding = all.filter((c: Chunk) => Array.isArray(c.embedding) && c.embedding.length > 0);
   
   if (!qEmb || all.length === 0) {
-    return await unifiedStorageManager.searchSimilarChunks(query, limit);
+    const fallbackResults = await unifiedStorageManager.searchSimilarChunks(query, limit);
+    // 对 fallback 结果也应用 Parent-Child 逻辑（如果有必要）
+    // 虽然 fallback 结果没有 embedding，但如果有 parentId，我们仍然可以尝试获取父块内容
+    return fallbackResults.map(item => {
+        if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
+            const parent = all.find(c => c.id === item.chunk.parentId);
+            if (parent) {
+                return {
+                    ...item,
+                    chunk: {
+                        ...item.chunk,
+                        content: `[相关上下文]: ${parent.content}\n\n[详细内容]: ${item.chunk.content}`
+                    }
+                };
+            }
+        }
+        return item;
+    });
   }
   
   // 检查是否有 chunks 没有 embedding，如果有则生成（优先处理最近的chunks）
@@ -322,14 +415,30 @@ export async function semanticSearch(
   }
   
   if (chunksWithEmbedding.length === 0) {
-    return await unifiedStorageManager.searchSimilarChunks(query, limit);
+    const fallbackResults = await unifiedStorageManager.searchSimilarChunks(query, limit);
+    // 对 fallback 结果也应用 Parent-Child 逻辑
+    return fallbackResults.map(item => {
+        if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
+            const parent = all.find(c => c.id === item.chunk.parentId);
+            if (parent) {
+                return {
+                    ...item,
+                    chunk: {
+                        ...item.chunk,
+                        content: `[相关上下文]: ${parent.content}\n\n[详细内容]: ${item.chunk.content}`
+                    }
+                };
+            }
+        }
+        return item;
+    });
   }
   
-  // ========== 多路召回机制 ==========
-  const queryKeywords = extractKeywords(coreQuery);
+  // ========== 多路召回机制 (Hybrid Retrieval) ==========
+  const queryKeywords = extractKeywords(enhancedQueryForKeyword);
   const queryWordsLower = queryKeywords.map(w => w.toLowerCase());
   
-  // 路1：向量检索（语义相似度）- 召回更多候选
+  // 1. 向量检索 (Vector Search)
   const vectorRecall = chunksWithEmbedding
     .map((c: Chunk) => ({ 
       chunk: c, 
@@ -339,12 +448,12 @@ export async function semanticSearch(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit * 3); // 召回 3 倍候选
   
-  // 路2：关键词检索（BM25 简化版）- 召回更多候选
+  // 2. 关键词检索 (Keyword Search - Simplified BM25)
   const CONFIG_VERBS = ['configure', 'config', 'set', 'add', 'create', 'enable', 'apply', '配置', '创建', '设置', '建立', '启动'];
   
   const keywordRecall = chunksWithEmbedding.map((c: Chunk) => {
     const contentLower = c.content.toLowerCase();
-    let keywordScore = 0;
+    let score = 0;
     let matchedKeywords = 0;
     
     // 检查查询是否包含配置动词
@@ -352,9 +461,27 @@ export async function semanticSearch(
     
     queryWordsLower.forEach(keyword => {
       const keywordLower = keyword.toLowerCase();
-      // 使用更严格的边界匹配，避免部分匹配（如 'set' 匹配 'setting' 是可以的，但匹配 'asset' 不行）
-      // 这里简化处理，直接匹配
-      const matches = (contentLower.match(new RegExp(keywordLower, 'g')) || []).length;
+      // 计算词频 (TF)
+      // 使用正则匹配单词边界，避免部分匹配错误 (如 'set' 不应匹配 'offset')
+      // 如果关键词包含中文，不使用边界匹配
+      // 对于 acronyms (如 PFC, ECN, BGP)，我们放宽匹配条件，或者是增强权重
+      const isEnglish = /^[a-zA-Z0-9]+$/.test(keywordLower);
+      // 特殊处理：如果是短的英文大写缩写（转换后），或者是已知的技术术语
+      const isAcronym = isEnglish && keywordLower.length >= 2 && keywordLower.length <= 4;
+      
+      let regex: RegExp;
+      if (isEnglish) {
+        if (isAcronym) {
+          // 对于缩写，允许更灵活的匹配，比如 PFC_Mode
+          regex = new RegExp(`${keywordLower}`, 'g');
+        } else {
+          regex = new RegExp(`\\b${keywordLower}\\b`, 'g');
+        }
+      } else {
+        regex = new RegExp(keywordLower, 'g');
+      }
+      
+      const matches = (contentLower.match(regex) || []).length;
       
       if (matches > 0) {
         let weight = 1.0;
@@ -364,29 +491,35 @@ export async function semanticSearch(
           weight = 3.0; // 显著提升配置命令的权重
         }
         
-        keywordScore += Math.log(1 + matches) * weight;
+        // 如果是核心技术术语（PFC/ECN/RoCE），给予高权重
+        if (['pfc', 'ecn', 'roce', 'bgp', 'qos', 'rdma', 'acl', 'evpn', 'vxlan', 'mlag'].includes(keywordLower)) {
+          weight = 5.0; // 核心术语高权重
+        }
+        
+        // 简单的 TF 得分: log(1 + TF)
+        score += Math.log(1 + matches) * weight;
         matchedKeywords++;
       }
     });
     
-    const normalizedKeywordScore = matchedKeywords > 0 
-      ? (keywordScore / queryWordsLower.length) * (matchedKeywords / queryWordsLower.length)
-      : 0;
+    // 归一化：考虑查询词覆盖率
+    // 覆盖率权重很高，我们希望尽可能匹配更多的查询词
+    const coverage = matchedKeywords / queryWordsLower.length;
+    const finalScore = score * (0.5 + 0.5 * coverage);
     
     return {
       chunk: c,
-      score: normalizedKeywordScore,
+      score: finalScore,
       matchedKeywords,
       source: 'keyword' as const
     };
   })
   .filter(item => item.score > 0) // 只保留有匹配的
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit * 3); // 召回 3 倍候选
+  .sort((a, b) => b.score - a.score)
+  .slice(0, limit * 3); // 召回 3 倍候选
   
   
-  // 路3：文档标题匹配检索
-  
+  // 3. 文档标题匹配检索 (Doc Title Search)
   const docTitleRecall = chunksWithEmbedding
     .map((c: Chunk) => {
       const doc = allDocs.find(d => d.id === c.documentId);
@@ -394,12 +527,19 @@ export async function semanticSearch(
       
       const filenameLower = doc.filename.toLowerCase();
       let titleScore = 0;
+      let matchedCount = 0;
       
       queryWordsLower.forEach(keyword => {
         if (filenameLower.includes(keyword.toLowerCase())) {
           titleScore += 1.0; // 文档标题匹配给予高分
+          matchedCount++;
         }
       });
+      
+      // 标题匹配的分数也考虑覆盖率
+      if (matchedCount > 0) {
+        titleScore = titleScore * (matchedCount / queryWordsLower.length);
+      }
       
       return titleScore > 0 ? {
         chunk: c,
@@ -412,84 +552,72 @@ export async function semanticSearch(
     .slice(0, limit * 2); // 召回 2 倍候选
   
   
-  // 合并多路召回结果并去重
-  const recallMap = new Map<string, { chunk: Chunk; scores: number[]; sources: string[] }>();
+  // ========== RRF (Reciprocal Rank Fusion) 融合 ==========
+  // RRF score = sum(1 / (k + rank))
+  const RRF_K = 60;
+  const rrfMap = new Map<string, { chunk: Chunk; rrfScore: number; sources: string[] }>();
   
-  // 合并向量召回
-  vectorRecall.forEach(item => {
-    const existing = recallMap.get(item.chunk.id);
+  // 处理向量召回
+  vectorRecall.forEach((item, rank) => {
+    const existing = rrfMap.get(item.chunk.id);
+    const scoreToAdd = 1 / (RRF_K + rank + 1);
+    
     if (existing) {
-      existing.scores.push(item.score);
-      existing.sources.push(item.source);
+      existing.rrfScore += scoreToAdd;
+      if (!existing.sources.includes('vector')) existing.sources.push('vector');
     } else {
-      recallMap.set(item.chunk.id, {
+      rrfMap.set(item.chunk.id, {
         chunk: item.chunk,
-        scores: [item.score],
-        sources: [item.source]
+        rrfScore: scoreToAdd,
+        sources: ['vector']
       });
     }
   });
   
-  // 合并关键词召回
-  keywordRecall.forEach(item => {
-    const existing = recallMap.get(item.chunk.id);
+  // 处理关键词召回
+  keywordRecall.forEach((item, rank) => {
+    const existing = rrfMap.get(item.chunk.id);
+    const scoreToAdd = 1 / (RRF_K + rank + 1);
+    
     if (existing) {
-      existing.scores.push(item.score);
-      existing.sources.push(item.source);
+      existing.rrfScore += scoreToAdd;
+      if (!existing.sources.includes('keyword')) existing.sources.push('keyword');
     } else {
-      recallMap.set(item.chunk.id, {
+      rrfMap.set(item.chunk.id, {
         chunk: item.chunk,
-        scores: [item.score],
-        sources: [item.source]
+        rrfScore: scoreToAdd,
+        sources: ['keyword']
       });
     }
   });
   
-  // 合并文档标题召回
-  docTitleRecall.forEach(item => {
-    const existing = recallMap.get(item.chunk.id);
+  // 处理标题召回
+  docTitleRecall.forEach((item, rank) => {
+    const existing = rrfMap.get(item.chunk.id);
+    const scoreToAdd = 1 / (RRF_K + rank + 1);
+    
     if (existing) {
-      existing.scores.push(item.score);
-      existing.sources.push(item.source);
+      existing.rrfScore += scoreToAdd;
+      if (!existing.sources.includes('docTitle')) existing.sources.push('docTitle');
     } else {
-      recallMap.set(item.chunk.id, {
+      rrfMap.set(item.chunk.id, {
         chunk: item.chunk,
-        scores: [item.score],
-        sources: [item.source]
+        rrfScore: scoreToAdd,
+        sources: ['docTitle']
       });
     }
   });
   
-  // 计算综合分数（多路召回加权平均）
-  const mergedResults = Array.from(recallMap.values()).map(item => {
-    // 对不同召回源进行加权：向量 0.5，关键词 0.3，文档标题 0.2
-    let weightedScore = 0;
-    let totalWeight = 0;
-    
-    item.sources.forEach((source, idx) => {
-      const score = item.scores[idx];
-      let weight = 0.33; // 默认权重
-      
-      if (source === 'vector') weight = 0.5;
-      else if (source === 'keyword') weight = 0.3;
-      else if (source === 'docTitle') weight = 0.2;
-      
-      weightedScore += score * weight;
-      totalWeight += weight;
-    });
-    
-    const finalScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
-    
-    return {
+  // 转换为数组并排序
+  const mergedResults = Array.from(rrfMap.values())
+    .map(item => ({
       chunk: item.chunk,
-      score: finalScore,
-      sources: item.sources,
-      scores: item.scores
-    };
-  });
+      score: item.rrfScore, // 使用 RRF 分数
+      sources: item.sources
+    }))
+    .sort((a, b) => b.score - a.score);
   
-  // 按综合分数排序，选择 top k * rerankCandidatesMultiplier 作为 rerank 候选
-  mergedResults.sort((a, b) => b.score - a.score);
+  // 选择 Top K 候选进行重排
   const rerankCandidates = mergedResults.slice(0, Math.floor(adjustedLimit * rerankCandidatesMultiplier));
   
   
@@ -506,32 +634,139 @@ export async function semanticSearch(
     .sort((a, b) => b.score - a.score); // 按 rerank 分数排序
   
   
-  // 处理父子 chunk 关系：如果检索到子块，也包含其父块以提供上下文
-  const chunkIdMap = new Map(all.map(c => [c.id, c]));
+  // 处理父子 chunk 关系：如果检索到子块，自动替换为其父块以提供完整上下文（Parent-Child Indexing）
+  // 这样既利用了子块的高检索精度，又利用了父块的完整语义
   const enhancedResults: typeof rerankedResults = [];
   const addedChunkIds = new Set<string>();
   
+  // 优化：预先为涉及的文档建立索引，加速 Sliding Window 查找
+  // 找出所有涉及的文档ID
+  const relevantDocIds = new Set(rerankedResults.map(r => r.chunk.documentId));
+  const relevantChunksMap = new Map<string, Chunk[]>();
+  
+  // 如果涉及文档少于 10 个，可以预先筛选这些文档的所有 chunks
+  if (relevantDocIds.size <= 10) {
+    all.forEach(c => {
+      if (relevantDocIds.has(c.documentId)) {
+        if (!relevantChunksMap.has(c.documentId)) {
+          relevantChunksMap.set(c.documentId, []);
+        }
+        relevantChunksMap.get(c.documentId)!.push(c);
+      }
+    });
+  }
+
   rerankedResults.forEach(item => {
-    // 添加当前 chunk
-    if (!addedChunkIds.has(item.chunk.id)) {
-      enhancedResults.push(item);
-      addedChunkIds.add(item.chunk.id);
+    // 克隆 chunk 以避免修改原始引用
+    let finalChunk = { ...item.chunk };
+    let finalScore = item.score;
+
+  // 1. Parent-Child Logic
+    // 如果是子块，尝试替换为父块
+    // 修改逻辑：优先返回父块作为上下文，但如果父块太长（超过2000字），则可能只返回子块+父块摘要
+    if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
+      const parent = all.find(c => c.id === item.chunk.parentId);
+      if (parent) {
+        // 找到了父块
+        // 策略优化：
+        // 1. 如果是 QA 子块，我们希望保留 QA 的精确匹配，同时附带父块的摘要信息（如果有）
+        // 2. 如果是 Section 子块，通常父块是整个文档的摘要或上一级章节，包含父块有助于理解上下文
+        
+        // 组合内容：父块内容 + 子块内容
+        // 注意：有些父块可能就是纯摘要，有些可能是章节标题。
+        // 这里我们采用一种稳健的策略：返回 "父块上下文 \n---\n 子块详情"
+        
+        // 检查父块是否已经是子块内容的超集（避免重复）
+        if (!parent.content.includes(item.chunk.content)) {
+             // 智能截断父块内容：只保留前 1000 字符作为上下文，避免 Context Explosion
+             // 如果父块有 Header 信息，也一并保留
+             const header = item.chunk.metadata?.header || parent.metadata?.header || '';
+             let parentContext = parent.content;
+             
+             if (parentContext.length > 1000) {
+                 parentContext = parentContext.substring(0, 1000) + '...\n(上文已省略)';
+             }
+             
+             const contextPrefix = header ? `[章节: ${header}]\n` : '';
+             
+             finalChunk = { 
+                 ...item.chunk,
+                 content: `${contextPrefix}[相关上下文]: ${parentContext}\n\n[详细内容]: ${item.chunk.content}`
+             };
+        } else {
+            // 如果父块已经包含了子块（例如父块是全文，子块是切片），则直接返回父块可能更好，
+            // 但为了精确性，我们还是聚焦在子块，但标记来源
+            // 同样需要截断父块，防止过大
+            let parentContext = parent.content;
+            if (parentContext.length > 1500) { // 稍微放宽一点
+                 // 尝试找到子块在父块中的位置，截取周围内容
+                 const idx = parentContext.indexOf(item.chunk.content);
+                 if (idx !== -1) {
+                     const start = Math.max(0, idx - 500);
+                     const end = Math.min(parentContext.length, idx + item.chunk.content.length + 500);
+                     parentContext = (start > 0 ? '...' : '') + parentContext.substring(start, end) + (end < parentContext.length ? '...' : '');
+                 } else {
+                     parentContext = parentContext.substring(0, 1500) + '...';
+                 }
+            }
+            
+            finalChunk = { ...parent, content: parentContext };
+        }
+        
+        // 稍微降低一点分数以区分直接命中的父块（可选）
+        // finalScore = finalScore * 0.95;
+      }
     }
     
-    // 如果是子块，添加其父块
-    if (item.chunk.chunkType === 'child' && item.chunk.parentId) {
-      const parentChunk = all.find(c => c.id === item.chunk.parentId || 
-        (c.chunkType === 'parent' && c.documentId === item.chunk.documentId && 
-         Math.abs(c.chunkIndex - item.chunk.chunkIndex) < 10));
-      
-      if (parentChunk && !addedChunkIds.has(parentChunk.id)) {
-        // 父块的分数略低于子块，但保持相关性
-        enhancedResults.push({
-          chunk: parentChunk,
-          score: item.score * 0.8
-        });
-        addedChunkIds.add(parentChunk.id);
+    // 2. Sliding Window Context (上下文扩展)
+    // 自动获取前一个和后一个 chunk，拼接以提供更完整的上下文
+    // 这对于解决断章取义问题非常有效
+    const docId = finalChunk.documentId;
+    const idx = finalChunk.chunkIndex;
+    
+    // 获取同文档的 chunks (优先使用缓存)
+    const docChunks = relevantChunksMap.get(docId);
+    
+    const findChunk = (targetIdx: number) => {
+      if (docChunks) {
+        return docChunks.find(c => c.chunkIndex === targetIdx);
       }
+      return all.find(c => c.documentId === docId && c.chunkIndex === targetIdx);
+    };
+    
+    const prevChunk = findChunk(idx - 1);
+    const nextChunk = findChunk(idx + 1);
+    
+    let extendedContent = finalChunk.content;
+    let extensionNote = "";
+    
+    if (prevChunk) {
+      extendedContent = `${prevChunk.content}\n${extendedContent}`;
+      extensionNote += " [已包含上文]";
+    }
+    
+    if (nextChunk) {
+      extendedContent = `${extendedContent}\n${nextChunk.content}`;
+      extensionNote += " [已包含下文]";
+    }
+    
+    if (prevChunk || nextChunk) {
+      finalChunk.content = extendedContent;
+      // 可选：在 metadata 中标记已扩展
+      // finalChunk.metadata = { ...finalChunk.metadata, expanded: true };
+    }
+
+    // 去重逻辑：如果父块（或已处理的块）已经在结果里了，保留分数最高的那个
+    if (addedChunkIds.has(finalChunk.id)) {
+      const existingItem = enhancedResults.find(r => r.chunk.id === finalChunk.id);
+      if (existingItem && finalScore > existingItem.score) {
+        existingItem.score = finalScore;
+        // 更新内容（可能这次的扩展上下文不一样？一般 id 相同内容应该相同，除非 context window 动态变化）
+        // 这里假设 id 唯一对应内容
+      }
+    } else {
+      enhancedResults.push({ chunk: finalChunk, score: finalScore });
+      addedChunkIds.add(finalChunk.id);
     }
   });
   
@@ -968,7 +1203,9 @@ async function rerank(query: string, candidates: string[]): Promise<Array<{ text
       return { text: t, score };
     }).sort((a, b) => b.score - a.score);
   }
-  try {
+
+  // 辅助函数：调用API
+  const callRerankApi = async (model: string) => {
     const res = await fetch(SILICONFLOW_RERANK_URL, {
       method: 'POST',
       headers: {
@@ -976,7 +1213,7 @@ async function rerank(query: string, candidates: string[]): Promise<Array<{ text
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: QWEN_RERANKER,
+        model: model,
         query: query,
         documents: candidates
       })
@@ -987,19 +1224,32 @@ async function rerank(query: string, candidates: string[]): Promise<Array<{ text
     }
     const data = await res.json();
     const items = data?.data || data?.output || data?.results || [];
-    // 根据API返回格式解析：results数组包含{index, relevance_score}
-    // 需要根据index从candidates数组中获取对应的文本
-    const rerankedResults = items.map((it: any) => {
+    return items.map((it: any) => {
       const index = it?.index ?? it?.idx ?? -1;
       const score = it?.relevance_score ?? it?.score ?? it?.relevance ?? it?.rank ?? 0;
       const text = index >= 0 && index < candidates.length ? candidates[index] : (it?.document?.text || it?.text || '');
       return { text, score };
     }).filter((x: any) => x.text && x.text.length > 0);
+  };
+
+  try {
+    // 尝试主模型
+    return await callRerankApi(RERANK_MODEL_PRIMARY);
+  } catch (e: any) {
+    console.warn(`Rerank primary model (${RERANK_MODEL_PRIMARY}) failed:`, e.message);
     
-    return rerankedResults;
-  } catch (e) {
-    console.warn('rerank failed:', e);
-    // fallback simple
+    // 如果是 400 错误 (Model does not exist/Bad Request)，尝试备用模型
+    if (e.message && (e.message.includes('400') || e.message.includes('Model does not exist'))) {
+      try {
+        console.warn(`Switching to fallback rerank model: ${RERANK_MODEL_FALLBACK}`);
+        return await callRerankApi(RERANK_MODEL_FALLBACK);
+      } catch (fallbackError) {
+        console.warn(`Rerank fallback model (${RERANK_MODEL_FALLBACK}) also failed:`, fallbackError);
+      }
+    }
+    
+    // 如果都失败了，使用本地简单算法兜底
+    console.warn('All rerank models failed, using simple local fallback');
     return candidates.map(t => ({ text: t, score: Math.min(t.length / 500, 1) }))
       .sort((a, b) => b.score - a.score);
   }

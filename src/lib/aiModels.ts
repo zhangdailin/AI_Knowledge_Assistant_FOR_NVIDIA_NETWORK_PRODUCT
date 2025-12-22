@@ -52,11 +52,18 @@ export const FREE_AI_MODELS: AIModel[] = [
 class AIModelManager {
   private currentModel: string = 'qwen3-32b';
   private fallbackModels: string[] = ['qwen3-32b'];
-  private readonly QWEN_MODEL = 'Qwen/Qwen3-32B';
+  
+  // 使用更轻量的模型进行关键词提取，速度更快
+  private readonly FAST_MODEL = 'Qwen/Qwen2.5-7B-Instruct';
+  
+  // 主力模型：Qwen3-32B
+  private readonly QWEN_MODEL = 'Qwen/Qwen3-32B'; 
+  // 备用模型：Qwen2.5-32B
+  private readonly FALLBACK_QWEN_MODEL = 'Qwen/Qwen2.5-32B-Instruct';
 
-  // 使用硅基流动 API 调用 Qwen3-32B 模型
+  // 使用硅基流动 API 调用 AI 模型
   async generateAnswer(request: ChatRequest): Promise<ChatResponse> {
-    // 构建system message和user message（分离指令和内容）
+    // ... (rest of the function)
     let systemMessage: string;
     let userMessage: string;
     
@@ -86,7 +93,6 @@ class AIModelManager {
       userMessage = request.question;
     }
 
-
     const buildReferences = () => request.references ? request.references.map((ref, index) => {
       // 显示更多内容，如果超过500字符，显示前400字符+后100字符
       let displayContent = ref;
@@ -106,39 +112,84 @@ class AIModelManager {
     const retryDelay = 1000; // 1秒基础延迟
     let usedModel = request.model || this.currentModel;
 
+    // 如果 usedModel 是内部标识符 'qwen3-32b'，将其映射为真实的 API 模型 ID
+    if (usedModel === 'qwen3-32b') {
+      usedModel = this.QWEN_MODEL;
+    }
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const response = await this.callSiliconFlow(userMessage, usedModel, attempt, systemMessage, request.deepThinking, request.references);
+        // 如果是第一次尝试且不是关键词任务，尝试使用 Qwen3
+        // 如果失败（400），下次尝试切换到 fallback 模型
+        const modelToUse = (attempt === 0) ? usedModel : (attempt === 1 ? this.FALLBACK_QWEN_MODEL : usedModel);
+        
+        const response = await this.callSiliconFlow(userMessage, modelToUse, attempt, systemMessage, request.deepThinking, request.references);
         return {
           answer: response.answer,
           model: response.model,
           usage: response.usage,
           references: buildReferences()
         };
-      } catch (error) {
+      } catch (error: any) {
         console.error(`AI模型调用失败 (尝试 ${attempt + 1}/${maxRetries}):`, error);
+        
+        // 检查是否为 400 错误（模型不存在）
+        const isModelError = error.message && error.message.includes('400') && error.message.includes('Model does not exist');
+        
         if (attempt < maxRetries - 1) {
+          // 如果是模型不存在错误，立即重试并切换模型，无需等待
+          if (isModelError) {
+             console.warn(`模型 ${usedModel} 不存在，立即切换到备用模型 ${this.FALLBACK_QWEN_MODEL}`);
+             usedModel = this.FALLBACK_QWEN_MODEL;
+             continue;
+          }
+          
           // 线性退避等待
           await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
-          // 尝试切换到备用模型
-          const fallbackModel = this.getNextFallbackModel(usedModel);
-          if (fallbackModel && fallbackModel !== usedModel) {
-            console.log(`切换到备用模型: ${fallbackModel}`);
-            usedModel = fallbackModel;
-          }
         }
       }
     }
-
+    
     // 所有尝试都失败，返回模拟回答以提升用户体验
     console.warn('所有模型调用失败，返回模拟回答');
     const mock = this.generateEnhancedMockAnswer(userMessage, usedModel || this.currentModel, request.references, request.question);
-      return {
-        ...mock,
-        references: buildReferences()
-      };
+    return {
+      ...mock,
+      references: buildReferences()
+    };
   }
 
+
+  // 生成搜索关键词（自适应检索）
+  async generateSearchKeywords(query: string): Promise<string[]> {
+    const systemPrompt = `You are a search query optimizer for a network operating system documentation (like NVIDIA Cumulus Linux). 
+Your task is to extract relevant technical search keywords, synonyms, and command prefixes from the user's query.
+Rules:
+1. Expand acronyms (e.g., "acl" -> "access control list").
+2. Add relevant command prefixes (e.g., if query implies config, add "nv set", "net add").
+3. Include specific protocol terms (e.g., "bgp" -> "neighbor", "peer").
+4. Output ONLY the keywords separated by spaces. Do not output explanations.`;
+
+    try {
+      // 这里的 model 参数我们传 undefined，让 callSiliconFlow 内部自动选择 FAST_MODEL
+      const response = await this.callSiliconFlow(
+        query,
+        undefined, // Let callSiliconFlow pick FAST_MODEL
+        0,
+        systemPrompt,
+        false
+      );
+      
+      const text = response.answer.trim();
+      return text.split(/[\s,]+/)
+        .map(w => w.trim())
+        .filter(w => w.length > 1 && !['and', 'or', 'the', 'a', 'an', 'in', 'on', 'to', 'for', 'of', 'with'].includes(w.toLowerCase()));
+        
+    } catch (error) {
+      console.warn('Keyword generation failed, falling back to basic extraction:', error);
+      return this.extractKeywords(query);
+    }
+  }
 
   private async callSiliconFlow(
     context: string, 
@@ -158,11 +209,26 @@ class AIModelManager {
 
     const defaultSystemMessage = '你是专业的中文技术文档助手，必须严格基于提供的中文参考内容回答问题。如果知识库中没有相关信息，请明确说明，绝不编造信息。回答必须使用中文。';
     
-    // 添加超时机制
-    // 对于索引生成任务，使用更长的超时时间（因为需要处理大量文本）
-    const isIndexingTask = context.length > 5000; // 判断是否为索引任务（通常内容较长）
-    const baseTimeout = isIndexingTask ? 60000 : 10000; // 索引任务60秒（增加超时时间），普通任务10秒
-    const timeout = baseTimeout + (attempt * 10000); // 每次重试增加10秒（索引任务）或5秒（普通任务）
+    const isIndexingTask = context.length > 5000;
+    const isKeywordTask = systemMessage?.includes('search query optimizer');
+    
+    // 确定使用的模型：如果是关键词任务，优先使用轻量级模型
+    // 注意：如果 model 参数未传递，或传递的是内部标识符 'qwen3-32b'，则需要正确映射
+    let modelToUse = model;
+    if (!modelToUse || modelToUse === 'qwen3-32b') {
+      modelToUse = isKeywordTask ? this.FAST_MODEL : this.QWEN_MODEL;
+    }
+
+    // 再次确认：如果此时 modelToUse 仍为 qwen3-32b (可能因为传入的 model 就是这个)，强制映射
+    if (modelToUse === 'qwen3-32b') {
+        modelToUse = this.QWEN_MODEL;
+    }
+
+    let baseTimeout = 10000; // 默认 10s
+    if (isIndexingTask) baseTimeout = 60000; // 索引任务 60s
+    if (isKeywordTask) baseTimeout = 10000;   // 关键词生成任务 10s
+    
+    const timeout = baseTimeout + (attempt * 5000); 
     
     try {
       const controller = new AbortController();
@@ -175,7 +241,7 @@ class AIModelManager {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: this.QWEN_MODEL,
+          model: modelToUse,
           messages: [
             {
               role: 'system',
@@ -196,7 +262,6 @@ class AIModelManager {
       
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
-        
         throw new Error(`API调用失败: ${response.status} - ${errorText.substring(0, 200)}`);
       }
 

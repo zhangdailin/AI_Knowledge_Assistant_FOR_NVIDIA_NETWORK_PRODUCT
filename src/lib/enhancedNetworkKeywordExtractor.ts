@@ -20,7 +20,7 @@ export class EnhancedNetworkKeywordExtractor {
     // 厂商相关
     vendors: ['nvidia', 'mellanox', 'cumulus', 'broadcom', '思科', 'cisco', 'nv', 'nvos'],
     // 配置相关
-    config: ['configure', 'configuration', 'setup', 'enable', 'disable', 'show', 'set', 'apply', 'nv']
+    config: ['configure', 'configuration', 'setup', 'enable', 'disable', 'show', 'set', 'apply', 'nv', 'acl', 'access control list']
   };
 
   extractKeywords(query: string) {
@@ -46,6 +46,12 @@ export class EnhancedNetworkKeywordExtractor {
       });
     });
 
+    // 显式提取 ACL
+    if (queryLower.includes('acl') || queryLower.includes('access control list')) {
+        techTerms.push('acl');
+        techTerms.push('access control list');
+    }
+
     // 2. 提取数字和参数（如优先级、阈值等）
     const numberPattern = /\b\d+\b/g;
     const numbers = queryLower.match(numberPattern) || [];
@@ -65,10 +71,14 @@ export class EnhancedNetworkKeywordExtractor {
     const filteredEnglish = englishWords.filter(word => word.length >= 2);
 
     // 5. 合并所有关键词
+    // 注意：不包含 IP 和 纯数字，避免干扰通用检索（除非用户是在 troubleshoot 特定 IP）
+    // 但是，为了保留用户的原始意图，我们还是把它们放在 extracted.keywords 里，
+    // 但在 generateEnhancedQuery 时需要小心
     keywords.push(...techTerms, ...vendors, ...configTerms, ...ips, ...numbers, ...filteredChinese, ...filteredEnglish);
 
     return {
       keywords: [...new Set(keywords)],
+      searchKeywords: [...new Set([...techTerms, ...vendors, ...configTerms, ...filteredChinese, ...filteredEnglish])], // 不含 IP 和数字
       techTerms: [...new Set(techTerms)],
       vendors: [...new Set(vendors)],
       configTerms: [...new Set(configTerms)],
@@ -113,6 +123,13 @@ export class EnhancedNetworkKeywordExtractor {
       queryParts.push('bgp', 'border gateway protocol', 'ebgp', 'ibgp', 'neighbor', 'router bgp');
     }
 
+    // 添加 ACL 相关术语
+    if (extracted.techTerms.includes('acl') || extracted.techTerms.includes('access control list')) {
+      queryParts.push('acl', 'access control list', 'ip access-list', 'ipv6 access-list', 'permit', 'deny', 'rule');
+      // 显式增加 NV 命令模式
+      queryParts.push('nv set acl', 'nv config acl');
+    }
+
     // 添加QoS相关术语（仅当检测到QoS或相关流量控制意图时）
     if (extracted.hasQoS || extracted.hasPFC || extracted.hasECN || extracted.hasRoCE) {
       queryParts.push('qos', 'quality of service', 'traffic class', 'traffic priority');
@@ -125,9 +142,18 @@ export class EnhancedNetworkKeywordExtractor {
 
     // 添加配置相关术语
     queryParts.push('configure', 'configuration', 'setup', 'enable', 'command', 'cli');
+    
+    // 如果是配置意图，添加通用的 nv set 命令前缀，增加命中率
+    if (extracted.intent === 'network_config') {
+        queryParts.push('nv set', 'nv config', 'net add');
+    }
 
-    // 添加原始关键词
-    queryParts.push(...extracted.keywords);
+    // 添加原始关键词 (使用不含 IP/数字 的版本，除非没有其他关键词)
+    if (extracted.searchKeywords.length > 0) {
+        queryParts.push(...extracted.searchKeywords);
+    } else {
+        queryParts.push(...extracted.keywords);
+    }
 
     return [...new Set(queryParts)].join(' ');
   }

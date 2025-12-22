@@ -56,7 +56,8 @@ async function processUploadedFile(documentId, file) {
     });
     
     // 2. 分块
-    const chunks = chunking.enhancedParentChildChunking(text, 4000, 500, 150);
+    // 调整参数：ParentSize=1000 (提供足够上下文), ChildSize=400 (适合检索的粒度)
+    const chunks = chunking.enhancedParentChildChunking(text, 4000, 1000, 400);
     console.log(`[Async] 分块完成，块数: ${chunks.length}`);
 
     // 3. 保存 chunks

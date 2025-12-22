@@ -4,25 +4,142 @@
  * 优先保留段落、句子、代码块的完整性
  */
 
-export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 1000, childSize = 200) {
+export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 1000, childSize = 400) {
   const chunks = [];
+  let globalChunkIndex = 0;
+
+  // 1. 尝试基于 Markdown 结构切分 (Structure-Aware Split)
+  // 如果文档包含 Headers (#, ##, ###)，则优先按 Headers 分组
+  const hasHeaders = /^#{1,6}\s+.+$/m.test(text);
   
-  // 使用递归切分策略，带重叠窗口
-  // overlap 设置为 chunk size 的 15-20% 左右
-  const overlap = Math.floor(parentSize * 0.15);
-  
-  const smartChunks = recursiveSplit(text, parentSize, overlap);
-  
-  smartChunks.forEach((chunk, index) => {
-    chunks.push({
-      content: chunk,
-      chunkType: 'parent',
-      chunkIndex: index,
-      tokenCount: Math.ceil(chunk.length / 4) // 估算token
+  if (hasHeaders) {
+    console.log('[Chunking] Detected Markdown headers, using Structure-Aware splitting');
+    const sections = splitByMarkdownHeaders(text);
+    
+    sections.forEach((section, sIndex) => {
+       // 每个 Section 作为一个天然的父块 (Parent Chunk)
+       const parentContent = section.content;
+       const parentHeader = section.header;
+       
+       // 如果 section 内容过大 (超过 maxChunkSize)，可能需要进一步拆分 Parent
+       // 但为了保持结构完整性，我们暂时允许 Parent 略大，或者对其进行 Recursive Split
+       // 这里简单起见，如果 Parent 太大，我们还是得切，否则 Context Window 爆了
+       
+       let parentSubChunks = [parentContent];
+       if (parentContent.length > maxChunkSize) {
+           parentSubChunks = recursiveSplit(parentContent, maxChunkSize, 200);
+       }
+       
+       parentSubChunks.forEach((subParentContent, subIndex) => {
+           const parentId = `chunk-parent-${Date.now()}-${sIndex}-${subIndex}-${Math.random().toString(36).substr(2, 6)}`;
+           
+           // 添加父块
+           chunks.push({
+             id: parentId,
+             content: subParentContent,
+             chunkType: 'parent',
+             chunkIndex: globalChunkIndex++,
+             tokenCount: Math.ceil(subParentContent.length / 4),
+             metadata: {
+                 header: parentHeader // 保留标题信息
+             }
+           });
+           
+           // 2. 生成子块 (Recursive Split within Section)
+           const childOverlap = Math.floor(childSize * 0.2);
+           const childTexts = recursiveSplit(subParentContent, childSize, childOverlap);
+           
+           childTexts.forEach((childContent) => {
+             // 优化：子块内容可以带上父块的 Header，增加语义 (可选)
+             // const enrichedContent = parentHeader ? `[${parentHeader}]\n${childContent}` : childContent;
+             chunks.push({
+                content: childContent,
+                chunkType: 'child',
+                parentId: parentId,
+                chunkIndex: globalChunkIndex++,
+                tokenCount: Math.ceil(childContent.length / 4),
+                metadata: {
+                    header: parentHeader
+                }
+             });
+           });
+       });
     });
-  });
+    
+  } else {
+    // Fallback: 传统的递归切分 (Recursive Split)
+    console.log('[Chunking] No headers detected, using Recursive splitting');
+    const parentOverlap = Math.floor(parentSize * 0.15);
+    const parentTexts = recursiveSplit(text, parentSize, parentOverlap);
+    
+    parentTexts.forEach((parentContent, pIndex) => {
+        const parentId = `chunk-parent-${Date.now()}-${pIndex}-${Math.random().toString(36).substr(2, 6)}`;
+        chunks.push({
+            id: parentId,
+            content: parentContent,
+            chunkType: 'parent',
+            chunkIndex: globalChunkIndex++,
+            tokenCount: Math.ceil(parentContent.length / 4)
+        });
+        
+        const childOverlap = Math.floor(childSize * 0.2);
+        const childTexts = recursiveSplit(parentContent, childSize, childOverlap);
+        
+        childTexts.forEach((childContent) => {
+             chunks.push({
+                content: childContent,
+                chunkType: 'child',
+                parentId: parentId,
+                chunkIndex: globalChunkIndex++,
+                tokenCount: Math.ceil(childContent.length / 4)
+             });
+        });
+    });
+  }
   
   return chunks;
+}
+
+// 辅助函数：按 Markdown 标题切分
+function splitByMarkdownHeaders(text) {
+    const lines = text.split('\n');
+    const sections = [];
+    let currentHeader = '';
+    let currentBuffer = [];
+    
+    const flush = () => {
+        if (currentBuffer.length > 0) {
+            const content = currentBuffer.join('\n').trim();
+            if (content.length > 0) {
+                sections.push({
+                    header: currentHeader,
+                    content: content
+                });
+            }
+        }
+    };
+    
+    for (const line of lines) {
+        // 匹配 # Header (H1-H3)
+        // 只有当行首是 # 时才认为是标题，避免代码块内的注释被误判
+        // 但这里简化处理，假设 Markdown 格式规范
+        const match = line.match(/^(#{1,3})\s+(.*)/);
+        if (match) {
+            flush(); // 保存上一节
+            currentHeader = match[2].trim(); // 提取标题文本
+            currentBuffer = [line]; // 标题行也包含在内容中
+        } else {
+            currentBuffer.push(line);
+        }
+    }
+    flush(); // 保存最后一节
+    
+    // 如果没有任何标题被匹配到（但 text.test 说有），可能是 regex 差异，兜底
+    if (sections.length === 0 && text.trim().length > 0) {
+        return [{ header: '', content: text }];
+    }
+    
+    return sections;
 }
 
 // 递归切分核心逻辑
@@ -36,7 +153,30 @@ function recursiveSplit(text, chunkSize, chunkOverlap) {
     ""        // 字符（最后手段）
   ];
   
-  return splitText(text, separators, chunkSize, chunkOverlap);
+  // 1. 预处理：保护代码块不被切分
+  // 将代码块替换为占位符，切分后再还原
+  const codeBlocks = [];
+  const placeholderPrefix = "___CODE_BLOCK_";
+  
+  // 匹配 Markdown 代码块 (```...```)
+  const textWithPlaceholders = text.replace(/```[\s\S]*?```/g, (match) => {
+    const placeholder = `${placeholderPrefix}${codeBlocks.length}___`;
+    codeBlocks.push(match);
+    return placeholder;
+  });
+  
+  // 2. 执行切分
+  const rawChunks = splitText(textWithPlaceholders, separators, chunkSize, chunkOverlap);
+  
+  // 3. 还原代码块
+  const finalChunks = rawChunks.map(chunk => {
+    return chunk.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, 'g'), (match, index) => {
+      const idx = parseInt(index);
+      return codeBlocks[idx] || match;
+    });
+  });
+  
+  return finalChunks;
 }
 
 function splitText(text, separators, chunkSize, chunkOverlap) {

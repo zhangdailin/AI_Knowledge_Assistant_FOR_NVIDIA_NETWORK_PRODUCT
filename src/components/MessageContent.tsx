@@ -4,7 +4,7 @@ import { Copy, Check } from 'lucide-react';
 
 interface MessageContentProps {
   content: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
 }
 
 const MessageContent: React.FC<MessageContentProps> = ({ content, role }) => {

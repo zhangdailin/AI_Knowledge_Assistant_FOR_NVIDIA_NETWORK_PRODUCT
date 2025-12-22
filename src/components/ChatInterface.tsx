@@ -55,7 +55,7 @@ const ChatInterface: React.FC = () => {
         const timeB = new Date(b.updatedAt).getTime() || 0;
         return timeB - timeA;
       });
-      selectConversation(sorted[0].id);
+      selectConversation(sorted[0]);
     }
   }, [user, conversations, currentConversation]);
 
@@ -193,7 +193,7 @@ const ChatInterface: React.FC = () => {
                     }`}
                   >
                     <button
-                      onClick={() => selectConversation(conversation.id)}
+                      onClick={() => selectConversation(conversation)}
                       className="flex-1 text-left px-3 py-2 rounded min-w-0 overflow-hidden w-full"
                     >
                       <div className="truncate text-sm">

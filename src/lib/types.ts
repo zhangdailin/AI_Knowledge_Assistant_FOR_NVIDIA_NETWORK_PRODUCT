@@ -47,4 +47,5 @@ export interface Chunk {
   createdAt: string;
   parentId?: string; // 父 chunk 的 ID（用于父子文本切块）
   chunkType?: 'parent' | 'child'; // chunk 类型：parent 为父块（较大），child 为子块（较小）
+  metadata?: Record<string, any>; // 元数据，可存储 header 等信息
 }

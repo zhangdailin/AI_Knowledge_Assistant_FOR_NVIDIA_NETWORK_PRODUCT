@@ -64,8 +64,25 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
   }, [document.id]);
 
   // 计算 chunks 统计（必须在所有条件渲染之前）
-  const chunksWithEmbedding = chunks.filter(ch => Array.isArray(ch.embedding) && ch.embedding.length > 0).length;
-  const chunksWithoutEmbedding = chunks.length - chunksWithEmbedding;
+  // 1. 统计父块和子块
+  const parentChunks = chunks.filter(ch => ch.chunkType === 'parent');
+  const childChunks = chunks.filter(ch => ch.chunkType === 'child');
+  const normalChunks = chunks.filter(ch => ch.chunkType !== 'parent' && ch.chunkType !== 'child');
+  
+  const parentChunksCount = parentChunks.length;
+  const childChunksCount = childChunks.length;
+  const normalChunksCount = normalChunks.length;
+  
+  // 2. 统计 Embedding 状态
+  // 注意：父块通常不需要 Embedding（主要用于上下文），子块和普通块需要 Embedding（用于检索）
+  // 因此，"未生成"的数量应该只计算需要 Embedding 的块
+  
+  const chunksRequiringEmbedding = [...childChunks, ...normalChunks];
+  const totalChunksRequiringEmbedding = chunksRequiringEmbedding.length;
+  
+  const chunksWithEmbedding = chunksRequiringEmbedding.filter(ch => Array.isArray(ch.embedding) && ch.embedding.length > 0).length;
+  const chunksWithoutEmbedding = totalChunksRequiringEmbedding - chunksWithEmbedding;
+  
   const hasNoChunks = chunks.length === 0;
   const isLikelyPreviewOnly = document.fileSize > 100000 && chunks.length <= 1 && document.contentPreview.length < 1000;
 
@@ -75,11 +92,39 @@ const DocumentChunksStatus: React.FC<DocumentChunksStatusProps> = ({
 
   return (
     <div className="mt-3 pt-3 border-t border-gray-200">
-      <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
-        <span>Embedding 状态:</span>
-        <span className={hasNoChunks ? 'text-red-600' : chunksWithoutEmbedding === 0 ? (isLikelyPreviewOnly ? 'text-orange-600' : 'text-green-600') : 'text-orange-600'}>
-          {hasNoChunks ? '无 chunks' : `${chunksWithEmbedding}/${chunks.length} 已生成${isLikelyPreviewOnly ? ' (仅预览)' : ''}`}
-        </span>
+      <div className="flex flex-col gap-1 text-xs text-gray-500 mb-2">
+        <div className="flex items-center justify-between">
+          <span>Embedding 状态:</span>
+          <span className={hasNoChunks ? 'text-red-600' : chunksWithoutEmbedding === 0 ? (isLikelyPreviewOnly ? 'text-orange-600' : 'text-green-600') : 'text-orange-600'}>
+            {hasNoChunks ? '无 chunks' : `${chunksWithEmbedding}/${totalChunksRequiringEmbedding} 已生成${isLikelyPreviewOnly ? ' (仅预览)' : ''}`}
+          </span>
+        </div>
+        
+        {/* 显示结构统计 */}
+        {!hasNoChunks && (
+          <div className="flex items-center justify-between border-t border-gray-100 pt-1 mt-1">
+            <span>结构统计:</span>
+            <span className="text-gray-600">
+              {parentChunksCount > 0 ? (
+                <>
+                  <span className="text-purple-600">{parentChunksCount} 父</span>
+                  <span className="mx-1">/</span>
+                  <span className="text-green-600">{childChunksCount} 子</span>
+                  {normalChunksCount > 0 && <span className="text-gray-400"> ({normalChunksCount} 普通)</span>}
+                </>
+              ) : (
+                <span>{normalChunksCount} 普通片段</span>
+              )}
+            </span>
+          </div>
+        )}
+        
+        {/* 显示父块说明 */}
+        {parentChunksCount > 0 && (
+          <div className="text-[10px] text-gray-400 mt-1">
+            * 父块仅作上下文，不参与 Embedding 索引
+          </div>
+        )}
       </div>
       
       {/* 任务进度显示 */}

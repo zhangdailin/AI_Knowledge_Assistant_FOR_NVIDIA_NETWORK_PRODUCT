@@ -66,8 +66,10 @@ class UnifiedStorageManager {
 
   async createChunks(docId: string, chunks: any[]): Promise<any[]> {
     // 确保每个 chunk 都有 documentId
-    const chunksWithId = chunks.map(c => ({ ...c, documentId: docId }));
-    return await serverStorageManager.createChunks(chunksWithId);
+    // serverStorageManager.createChunks 需要两个参数: documentId 和 chunks
+    // 且 chunks 不需要包含 documentId (因为是作为参数传递的)
+    const chunksData = chunks.map(({ documentId, ...rest }) => rest);
+    return await serverStorageManager.createChunks(docId, chunksData);
   }
 
   async uploadDocument(file: File, userId: string, category: string): Promise<Document> {

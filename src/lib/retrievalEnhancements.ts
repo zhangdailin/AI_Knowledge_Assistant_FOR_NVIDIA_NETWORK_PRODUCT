@@ -19,12 +19,17 @@ export function detectQueryIntent(query: string): QueryIntent {
   
   // 检测网络配置意图（包含网络技术术语）
   const networkTechTerms = ['pfc', 'ecn', 'roce', 'qos', 'bgp', 'routing', 'priority flow control', 'explicit congestion notification', 
-                           'rdma', 'traffic control', 'congestion control', 'flow control', 'border gateway protocol'];
+                           'rdma', 'traffic control', 'congestion control', 'flow control', 'border gateway protocol', 'm-lag', 'mlag'];
   const hasNetworkTerms = networkTechTerms.some(term => queryLower.includes(term.toLowerCase()));
   
   // 检测网络配置命令
-  const networkConfigKeywords = ['配置', 'configure', '设置', 'setup', 'enable', 'disable'];
+  const networkConfigKeywords = ['配置', 'configure', '设置', 'setup', 'enable', 'disable', 'check', '查看', '查询', 'what is', '什么是'];
   const hasNetworkConfig = networkConfigKeywords.some(keyword => queryLower.includes(keyword));
+  
+  // 只要包含特定的强技术术语，就认为是网络技术查询，使用专用提取器
+  if (hasNetworkTerms) {
+    return 'network_config';
+  }
   
   if (hasNetworkTerms && hasNetworkConfig) {
     return 'network_config';

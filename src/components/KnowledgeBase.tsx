@@ -1,12 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, File, Search, Trash2, Download, Eye, Plus, FolderOpen, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Upload, File as FileIcon, Search, Trash2, Download, Eye, Plus, FolderOpen, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { unifiedStorageManager, Document } from '../lib/localStorage';
-import { parsePDFToText, parseDocxToText, parsePDFToTextAdvanced, parsePDFToTextSelective, diagnosePDFTextExtraction, extractViaServer, extractViaCloudOCR } from '../lib/fileParsers';
-import { retrieval } from '../lib/retrieval';
-import { llmIndexDocument } from '../lib/indexing';
 import DocumentChunksStatus from './DocumentChunksStatus';
-import { enhancedParentChildChunking } from '../lib/chunkingEnhancements';
 
 const KnowledgeBase: React.FC = () => {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -18,12 +15,14 @@ const KnowledgeBase: React.FC = () => {
   const [manualTitle, setManualTitle] = useState('手动文本文档');
   const [manualCategory, setManualCategory] = useState('default');
   const [manualContent, setManualContent] = useState('');
-  const [pdfPageLimit, setPdfPageLimit] = useState(0);
-  const [pdfGroupByPos, setPdfGroupByPos] = useState(true);
   const [regeneratingDocs, setRegeneratingDocs] = useState<Set<string>>(new Set());
   // 为每个文档的文本片段输入框维护独立的状态
-  const [manualChunkTexts, setManualChunkTexts] = useState<Record<string, string>>({});
+  const [viewingDoc, setViewingDoc] = useState<Document | null>(null);
+  const [viewingChunks, setViewingChunks] = useState<any[]>([]);
+  const [showChunkViewer, setShowChunkViewer] = useState(false);
 
+  const [manualChunkTexts, setManualChunkTexts] = useState<Record<string, string>>({});
+  
   const { user } = useAuthStore();
 
   useEffect(() => {
@@ -42,6 +41,18 @@ const KnowledgeBase: React.FC = () => {
       return () => clearInterval(timer);
     }
   }, [documents]);
+
+  const openChunkViewer = async (doc: Document) => {
+    try {
+      const chunks = await unifiedStorageManager.getChunks(doc.id);
+      setViewingDoc(doc);
+      setViewingChunks(chunks);
+      setShowChunkViewer(true);
+    } catch (error) {
+      console.error('加载文档片段失败:', error);
+      alert('加载文档片段失败');
+    }
+  };
 
   const loadDocuments = async () => {
     if (user) {
@@ -98,61 +109,6 @@ const KnowledgeBase: React.FC = () => {
       console.error('批量上传失败:', error);
     } finally {
       setIsUploading(false);
-    }
-  };
-
-  const readFileContent = async (file: File): Promise<string> => {
-    const type = file.type;
-    try {
-      if (type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-        const via = await extractViaServer(file);
-        if (via && via.length > 50) {
-          return via;
-        }
-        const cloud = await extractViaCloudOCR(file);
-        if (cloud && cloud.length > 50) {
-          return cloud;
-        }
-        const text = await parsePDFToTextSelective(file, { maxPages: pdfPageLimit, charLimit: 20000, groupByPosition: pdfGroupByPos });
-        if (text && !/^PDF文件:/.test(text) && text.length > 50) {
-          return text;
-        }
-        return `PDF文件: ${file.name}`;
-      }
-      if (
-        type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        type === 'application/msword' ||
-        file.name.toLowerCase().endsWith('.docx') ||
-        file.name.toLowerCase().endsWith('.doc')
-      ) {
-        const via = await extractViaServer(file);
-        if (via && via.length > 20) return via;
-        const text = await parseDocxToText(file);
-        return text || `Word文档: ${file.name}`;
-      }
-      // 纯文本与Markdown
-      const reader = new FileReader();
-      return await new Promise((resolve, reject) => {
-        reader.onload = (e) => resolve((e.target?.result as string) || '');
-        reader.onerror = reject;
-        reader.readAsText(file);
-      });
-    } catch (err) {
-      console.error('解析文件失败，回退到简要描述:', err);
-      return `${type.includes('pdf') ? 'PDF' : type.includes('word') ? 'Word' : '文件'}: ${file.name}`;
-    }
-  };
-
-  const diagnoseAndServerExtract = async (file: File): Promise<string | null> => {
-    try {
-      const maybe = await diagnosePDFTextExtraction(file, { inspectPages: 10, groupByPosition: pdfGroupByPos });
-      if (/加载失败|跨域|策略阻止/.test(maybe)) {
-        const via = await extractViaServer(file);
-        if (via && via.length > 50) return via;
-      }
-      return null;
-    } catch {
-      return null;
     }
   };
 
@@ -213,20 +169,6 @@ const KnowledgeBase: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const processDocumentContent = (content: string) => {
-    // 使用增强的父子分片策略（考虑语义边界）
-    const enhancedChunks = enhancedParentChildChunking(content, 4000, 500, 150);
-    
-    // 转换为原有格式（保持兼容性）
-    return enhancedChunks.map(chunk => ({
-      content: chunk.content,
-      chunkIndex: chunk.chunkIndex,
-      tokenCount: chunk.tokenCount,
-      parentId: chunk.parentId,
-      chunkType: chunk.chunkType
-    }));
-  };
-
   const deleteDocument = async (documentId: string) => {
     if (window.confirm('确定要删除这个文档吗？')) {
       try {
@@ -262,81 +204,6 @@ const KnowledgeBase: React.FC = () => {
     } catch (error) {
       console.error('重新生成 embedding 失败:', error);
       alert(`重新生成 embedding 失败: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setRegeneratingDocs(prev => {
-        const next = new Set(prev);
-        next.delete(documentId);
-        return next;
-      });
-    }
-  };
-
-  const reprocessDocument = async (documentId: string) => {
-    if (regeneratingDocs.has(documentId)) return;
-    
-    const doc = documents.find(d => d.id === documentId);
-    if (!doc) {
-      alert('文档不存在！');
-      return;
-    }
-    
-    if (!window.confirm(`确定要重新处理文档 "${doc.filename}" 吗？\n\n注意：由于原始文件内容已不可用，建议删除此文档后重新上传文件以获得完整内容。\n\n如果文档的预览内容足够，将基于预览内容重新处理。`)) {
-      return;
-    }
-    
-    setRegeneratingDocs(prev => new Set(prev).add(documentId));
-    try {
-      // 删除旧的 chunks（通过删除并重新创建文档的方式）
-      // 注意：这里只能使用 contentPreview，因为原始文件内容已经丢失
-      if (doc.contentPreview && doc.contentPreview.length > 100 && !doc.contentPreview.startsWith('PDF文件:') && !doc.contentPreview.startsWith('Word文档:')) {
-        // 删除旧的 chunks
-        const oldChunks = await unifiedStorageManager.getChunks(documentId);
-        if (oldChunks.length > 0) {
-          // 通过删除文档来删除 chunks，然后重新创建文档
-          const deleted = await unifiedStorageManager.deleteDocument(documentId);
-          if (!deleted) {
-            console.warn('删除文档失败，但继续重新处理');
-          }
-          const newDoc = await unifiedStorageManager.createDocument(
-            user!.id,
-            doc.filename,
-            doc.fileType,
-            doc.fileSize,
-            doc.contentPreview,
-            doc.category || 'default'
-          );
-          
-          // 重新处理文档内容
-          const chunks = processDocumentContent(doc.contentPreview);
-          await unifiedStorageManager.createChunks(newDoc.id, chunks);
-          // 创建后台任务生成 embedding
-          try {
-            await unifiedStorageManager.createEmbeddingTask(newDoc.id);
-            alert(`文档重新处理完成！已开始后台生成 Embedding（${chunks.length} 个 chunks），请查看进度...\n\n注意：由于原始文件内容已不可用，只基于预览内容（${doc.contentPreview.length} 字符）创建了 ${chunks.length} 个 chunks。\n\n建议删除此文档后重新上传完整文件以获得更好的检索效果。`);
-          } catch (error) {
-            console.error('创建 embedding 任务失败:', error);
-            alert(`文档重新处理完成，但创建 Embedding 任务失败：${error.message}\n\n注意：由于原始文件内容已不可用，只基于预览内容（${doc.contentPreview.length} 字符）创建了 ${chunks.length} 个 chunks。`);
-          }
-        } else {
-          // 没有旧的 chunks，直接创建新的
-          const chunks = processDocumentContent(doc.contentPreview);
-          await unifiedStorageManager.createChunks(documentId, chunks);
-          // 创建后台任务生成 embedding
-          try {
-            await unifiedStorageManager.createEmbeddingTask(documentId);
-            alert(`文档重新处理完成！已开始后台生成 Embedding（${chunks.length} 个 chunks），请查看进度...\n\n注意：由于原始文件内容已不可用，只基于预览内容（${doc.contentPreview.length} 字符）创建了 ${chunks.length} 个 chunks。\n\n建议删除此文档后重新上传完整文件以获得更好的检索效果。`);
-          } catch (error) {
-            console.error('创建 embedding 任务失败:', error);
-            alert(`文档重新处理完成，但创建 Embedding 任务失败：${error.message}\n\n注意：由于原始文件内容已不可用，只基于预览内容（${doc.contentPreview.length} 字符）创建了 ${chunks.length} 个 chunks。`);
-          }
-        }
-        loadDocuments();
-      } else {
-        alert('文档的预览内容不足或无法解析，无法重新处理。请删除此文档后重新上传文件。');
-      }
-    } catch (error) {
-      console.error('重新处理文档失败:', error);
-      alert(`重新处理文档失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setRegeneratingDocs(prev => {
         const next = new Set(prev);
@@ -392,6 +259,84 @@ const KnowledgeBase: React.FC = () => {
           </div>
         </div>
 
+        {/* 文档片段查看器 Modal */}
+        {showChunkViewer && viewingDoc && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+              <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-800">{viewingDoc.filename}</h3>
+                  <p className="text-sm text-gray-500 mt-1">
+                    共 {viewingChunks.length} 个片段 | {viewingChunks.filter(c => c.embedding && c.embedding.length > 0).length} 已索引
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setShowChunkViewer(false)}
+                  className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+                >
+                  <span className="text-2xl text-gray-500">×</span>
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+                {viewingChunks.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <p>暂无切片内容</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {viewingChunks.sort((a, b) => a.chunkIndex - b.chunkIndex).map((chunk, idx) => (
+                      <div key={chunk.id || idx} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex gap-2 items-center">
+                            <span className="bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded font-mono">
+                              #{chunk.chunkIndex + 1}
+                            </span>
+                            {chunk.chunkType && (
+                               <span className={`text-xs px-2 py-1 rounded ${
+                                 chunk.chunkType === 'parent' ? 'bg-purple-100 text-purple-700' : 
+                                 chunk.chunkType === 'child' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
+                               }`}>
+                                 {chunk.chunkType === 'parent' ? '父块 (Parent)' : chunk.chunkType === 'child' ? '子块 (Child)' : '普通块'}
+                               </span>
+                            )}
+                            <span className={`text-xs px-2 py-1 rounded ${
+                              chunk.embedding && chunk.embedding.length > 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
+                            }`}>
+                              {chunk.embedding && chunk.embedding.length > 0 ? '✓ 已Embedding' : '✗ 未Embedding'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            ID: {chunk.id?.substring(0, 8)}...
+                          </div>
+                        </div>
+                        <div className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 p-3 rounded font-mono leading-relaxed">
+                          {chunk.content}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center text-xs text-gray-500">
+                          <span>长度: {chunk.content.length} 字符</span>
+                          {chunk.parentId && (
+                            <span className="text-purple-600">所属父块: {chunk.parentId.substring(0, 8)}...</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-4 border-t border-gray-200 flex justify-end gap-3 bg-white rounded-b-xl">
+                <button
+                  onClick={() => setShowChunkViewer(false)}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 上传区域 */}
         <div className="mb-8">
           <div
@@ -438,33 +383,7 @@ const KnowledgeBase: React.FC = () => {
           </div>
           </div>
 
-        <div className="mb-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-            <h3 className="text-sm font-medium text-gray-800 mb-3">PDF解析选项</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">解析页数上限（0 不限）</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={200}
-                  value={pdfPageLimit}
-                  onChange={(e) => setPdfPageLimit(Number(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={pdfGroupByPos}
-                  onChange={(e) => setPdfGroupByPos(e.target.checked)}
-                  className="h-4 w-4"
-                />
-                <label className="text-sm text-gray-700">按行位置合并文本</label>
-              </div>
-            </div>
-          </div>
-        </div>
+        {/* 新建文本文档编辑器 */}
         {showManualEditor && (
           <div className="mb-8 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <h3 className="text-lg font-medium text-gray-800 mb-4">新建文本文档</h3>
@@ -498,19 +417,28 @@ const KnowledgeBase: React.FC = () => {
                   if (!user) return;
                   const text = manualContent.trim();
                   if (text.length < 20) { alert('请至少粘贴20个字符的正文'); return; }
-                  const doc = await unifiedStorageManager.createDocument(
-                    user.id,
-                    manualTitle || '手动文本文档',
-                    'text/plain',
-                    text.length,
-                    text.substring(0, 500),
-                    manualCategory || 'default'
-                  );
-                  const chunks = processDocumentContent(text);
-                  await unifiedStorageManager.createChunks(doc.id, chunks);
-                  setManualContent('');
-                  setShowManualEditor(false);
-                  loadDocuments();
+                  
+                  try {
+                    // 创建一个 Blob 对象
+                    const blob = new Blob([text], { type: 'text/plain' });
+                    // 创建 File 对象 (注意：在某些旧浏览器可能不兼容，但在现代浏览器没问题)
+                    const filename = (manualTitle || '新建文本文档').endsWith('.txt') 
+                      ? (manualTitle || '新建文本文档') 
+                      : `${manualTitle || '新建文本文档'}.txt`;
+                    
+                    const file = new File([blob], filename, { type: 'text/plain' });
+                    
+                    // 使用统一的上传接口
+                    await unifiedStorageManager.uploadDocument(file, user.id, manualCategory || 'default');
+                    
+                    setManualContent('');
+                    setShowManualEditor(false);
+                    loadDocuments();
+                    alert('文档已创建并上传到后台处理');
+                  } catch (error) {
+                    console.error('创建文档失败:', error);
+                    alert('创建文档失败');
+                  }
                 }}
                 className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
               >
@@ -559,7 +487,7 @@ const KnowledgeBase: React.FC = () => {
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center space-x-3 flex-1 min-w-0">
                   <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                    <File className="w-5 h-5 text-blue-600" />
+                    <FileIcon className="w-5 h-5 text-blue-600" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <h3 
@@ -598,6 +526,12 @@ const KnowledgeBase: React.FC = () => {
                           {document.errorMessage}
                         </span>
                       )}
+                      {/* 如果是 API Key 错误，显示设置链接 */}
+                      {document.errorMessage && (document.errorMessage.includes('API key') || document.errorMessage.includes('Key')) && (
+                         <Link to="/admin/settings" className="text-[10px] text-blue-500 hover:underline mt-1">
+                           去配置 API Key &rarr;
+                         </Link>
+                      )}
                     </div>
                   )}
                 </div>
@@ -619,8 +553,12 @@ const KnowledgeBase: React.FC = () => {
               <div className="flex items-center justify-between text-sm text-gray-500">
                 <span>{new Date(document.uploadedAt).toLocaleDateString()}</span>
                 <div className="flex space-x-2">
-                  <button className="p-1 hover:bg-gray-100 rounded transition-colors">
-                    <Eye className="w-4 h-4" />
+                  <button 
+                    className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    onClick={() => openChunkViewer(document)}
+                    title="查看文档切片与Embedding详情"
+                  >
+                    <Eye className="w-4 h-4 text-blue-500" />
                   </button>
                   <button 
                     className="p-1 hover:bg-gray-100 rounded transition-colors"
@@ -646,7 +584,7 @@ const KnowledgeBase: React.FC = () => {
                 document={document}
                 isRegenerating={regeneratingDocs.has(document.id)}
                 onRegenerate={() => regenerateEmbeddings(document.id)}
-                onReprocess={() => reprocessDocument(document.id)}
+                onReprocess={undefined} // 移除了前端重新处理功能
               />
 
               <div className="mt-4">
@@ -663,7 +601,7 @@ const KnowledgeBase: React.FC = () => {
                 />
               </div>
 
-              {/* 手动添加文本片段用于检索（适用于PDF/Word无法解析的情况） */}
+              {/* 手动添加文本片段用于检索 */}
               <div className="mt-4">
                 <label className="text-xs text-gray-500">添加可检索的文本片段（推荐粘贴TXT/MD内容）</label>
                 <div className="mt-1 flex gap-2">
@@ -676,15 +614,12 @@ const KnowledgeBase: React.FC = () => {
                       const text = e.target.value;
                       setManualChunkTexts(prev => ({ ...prev, [document.id]: text }));
                       
-                      // 清除之前的定时器
                       const timerKey = `saveTimer_${document.id}`;
                       if ((window as any)[timerKey]) {
                         clearTimeout((window as any)[timerKey]);
                       }
                       
-                      // 如果文本长度足够，设置自动保存（2秒后）
                       if (text.trim().length >= 10) {
-                        
                         (window as any)[timerKey] = setTimeout(async () => {
                           const currentText = manualChunkTexts[document.id] || text;
                           const trimmedText = currentText.trim();
@@ -692,11 +627,7 @@ const KnowledgeBase: React.FC = () => {
                           if (trimmedText.length >= 10) {
                             try {
                               await unifiedStorageManager.addManualChunk(document.id, trimmedText);
-                              
-                              // 清空输入框
                               setManualChunkTexts(prev => ({ ...prev, [document.id]: '' }));
-                              
-                              // 显示保存成功的提示
                               const label = e.target.parentElement?.parentElement?.querySelector('label');
                               if (label) {
                                 const originalText = label.textContent;
@@ -714,13 +645,11 @@ const KnowledgeBase: React.FC = () => {
                             }
                           }
                           delete (window as any)[timerKey];
-                        }, 2000); // 2秒后自动保存
+                        }, 2000);
                       }
                     }}
                     onBlur={async (e) => {
                       const text = (manualChunkTexts[document.id] || '').trim();
-                      
-                      // 清除定时器，立即保存
                       const timerKey = `saveTimer_${document.id}`;
                       if ((window as any)[timerKey]) {
                         clearTimeout((window as any)[timerKey]);
@@ -730,11 +659,7 @@ const KnowledgeBase: React.FC = () => {
                       if (text.length >= 10) {
                         try {
                           await unifiedStorageManager.addManualChunk(document.id, text);
-                          
-                          // 清空输入框
                           setManualChunkTexts(prev => ({ ...prev, [document.id]: '' }));
-                          
-                          // 显示保存成功的提示
                           const label = e.target.parentElement?.parentElement?.querySelector('label');
                           if (label) {
                             const originalText = label.textContent;
@@ -753,47 +678,8 @@ const KnowledgeBase: React.FC = () => {
                     }
                   }}
                 />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const text = (manualChunkTexts[document.id] || '').trim();
-                      if (text.length < 10) {
-                        alert('请至少输入10个字符');
-                        return;
-                      }
-                      
-                      try {
-                        await unifiedStorageManager.addManualChunk(document.id, text);
-                        
-                        // 保存后清空输入框（手动保存时清空）
-                        setManualChunkTexts(prev => ({ ...prev, [document.id]: '' }));
-                        
-                        // 显示保存成功的提示
-                        const labelElement = window.document.querySelector(`label[for-chunk-${document.id}]`) || 
-                                     window.document.querySelector('.text-xs.text-gray-500');
-                        const label = labelElement as HTMLElement | null;
-                        if (label) {
-                          const originalText = label.textContent;
-                          label.textContent = '✓ 已保存';
-                          label.className = 'text-xs text-green-500';
-                          setTimeout(() => {
-                            if (label) {
-                              label.textContent = originalText || '';
-                              label.className = 'text-xs text-gray-500';
-                            }
-                          }, 2000);
-                          }
-                        } catch (error) {
-                        console.error('保存文本片段失败:', error);
-                        alert('保存失败，请重试');
-                      }
-                    }}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors whitespace-nowrap"
-                  >
-                    保存
-                  </button>
                 </div>
-                <p className="mt-1 text-xs text-gray-400">提示：输入后会自动保存（2秒后或失去焦点时，内容会保留）。点击"保存"按钮可手动保存并清空输入框。目前最佳效果为上传/粘贴 `TXT` 或 `MD` 文本。</p>
+                <p className="mt-1 text-xs text-gray-400">提示：输入后会自动保存（2秒后或失去焦点时）。目前最佳效果为上传/粘贴 `TXT` 或 `MD` 文本。</p>
               </div>
             </div>
           ))}

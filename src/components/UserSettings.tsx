@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Key, Bell, Shield, Palette, Save, Eye, EyeOff, Download, Upload, FileText, AlertTriangle } from 'lucide-react';
+import { User, Key, Bell, Shield, Palette, Save, Eye, EyeOff, Download, Upload, FileText, AlertTriangle, Server } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import { localStorageManager } from '../lib/localStorage';
@@ -46,8 +46,13 @@ export default function UserSettings() {
   });
   const [showApiKeys, setShowApiKeys] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [customServerUrl, setCustomServerUrl] = useState('');
 
   useEffect(() => {
+    // 加载自定义服务器地址
+    const savedUrl = localStorage.getItem('custom_api_server_url');
+    if (savedUrl) setCustomServerUrl(savedUrl);
+
     const loadSettings = async () => {
       if (user) {
         const savedSettings = localStorageManager.getUserSettings(user.id);
@@ -101,6 +106,13 @@ export default function UserSettings() {
     
     setSaveStatus('saving');
     try {
+      // 保存自定义服务器地址
+      if (customServerUrl.trim()) {
+        localStorage.setItem('custom_api_server_url', customServerUrl.trim());
+      } else {
+        localStorage.removeItem('custom_api_server_url');
+      }
+
       // 保存用户个人设置到本地存储
       localStorageManager.saveUserSettings(user.id, {
         ...settings,
@@ -317,6 +329,31 @@ export default function UserSettings() {
                         </div>
                       ));
                     })()}
+                  </div>
+
+                  <div className="pt-6 border-t border-gray-200">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      后端服务器地址 (可选)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={customServerUrl}
+                        onChange={(e) => setCustomServerUrl(e.target.value)}
+                        placeholder="例如: http://192.168.1.100:8787"
+                        className="w-full px-3 py-2 pl-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Server className="w-4 h-4 text-gray-400" />
+                      </div>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      默认连接地址：<strong>http://localhost:8787</strong> (本地服务)。
+                      <br />
+                      如果您将后端部署在远程服务器（如 Docker 或云服务器），请在此填写该服务器的地址。
+                      <br />
+                      <span className="text-orange-500">注意：修改后需要点击右上角“保存”并刷新页面生效。</span>
+                    </p>
                   </div>
                 </div>
               )}
