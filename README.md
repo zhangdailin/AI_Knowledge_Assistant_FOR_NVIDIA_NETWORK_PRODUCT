@@ -19,9 +19,16 @@
   - **语义切片**：采用父子块 (Parent-Child Chunking) 策略，保留上下文语义。
 
 - **🧠 强大的检索能力**：
-  - **混合检索**：结合向量语义检索 (Embedding) 和关键词匹配 (BM25)。
-  - **重排序 (Rerank)**：使用 Rerank 模型对召回结果进行二次精排，大幅提升准确率。
-  - **意图识别**：自动识别用户查询意图（如配置命令、故障排查、一般问答），动态调整检索策略。
+  - **混合检索 (Hybrid Search)**：结合向量语义检索 (Embedding) 和关键词匹配 (Keyword Matching)，确保高召回率。
+  - **意图识别 (Intent Detection)**：
+    - **命令类**：优先匹配配置命令和 CLI 语法。
+    - **概念类**：优先匹配定义、解释性段落（如 "What is MLAG"）。
+    - **故障排查类**：优先匹配 Troubleshooting 指南和解决方案。
+  - **结果融合 (RRF)**：使用 Reciprocal Rank Fusion 算法融合多路检索结果，智能平衡精确匹配与语义相关性。
+
+- **🧪 内置基准测试**：
+  - 提供 `npm run test:benchmark` 工具，用于评估检索系统的准确率（Precision）和召回能力。
+  - 支持自定义测试用例，确保系统在特定领域的表现。
 
 - **🤖 多模型支持**：
   - 接入 SiliconFlow API，支持 Qwen (通义千问)、DeepSeek 等高性能大模型。
