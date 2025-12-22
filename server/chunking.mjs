@@ -57,18 +57,47 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     
     console.log(`[Chunking] 解析完成，耗时: ${parseTime}ms，解析出 ${semanticBlocks.length} 个语义块`);
     
+    // 统计语义块类型
+    const blockStats = {};
+    semanticBlocks.forEach(b => {
+      blockStats[b.type] = (blockStats[b.type] || 0) + 1;
+    });
+    console.log(`[Chunking] 语义块统计:`, blockStats);
+    
     // 检查是否有标题块
     const hasHeadings = semanticBlocks.some(b => b.type === BlockType.HEADING);
-    if (!hasHeadings) {
-      console.log('[Chunking] 文档没有标题，使用简单分块（更适合无结构文档）');
+    
+    // 检查是否有其他 Markdown 结构
+    const hasMarkdownStructures = semanticBlocks.some(b => 
+      b.type === BlockType.TABLE || 
+      b.type === BlockType.CODE_BLOCK || 
+      b.type === BlockType.LIST ||
+      b.type === BlockType.BLOCKQUOTE
+    );
+    
+    // 如果既没有标题也没有 Markdown 结构，才使用简单分块
+    if (!hasHeadings && !hasMarkdownStructures) {
+      console.log('[Chunking] 文档既没有标题也没有 Markdown 结构，使用简单分块');
       return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
     }
     
-    // 2. 根据标题层级组织父子块
+    if (!hasHeadings) {
+      console.log('[Chunking] 文档没有标题，但包含 Markdown 结构，使用 Markdown 处理');
+    } else {
+      console.log('[Chunking] 文档包含标题，使用 Markdown 层级处理');
+    }
+    
+    // 2. 根据标题层级组织父子块（即使没有标题，也会创建一个无标题的 section）
     const organizeStartTime = Date.now();
     let chunks;
     try {
       chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+      
+      // 如果组织后没有生成 chunks，可能是章节树构建失败
+      if (!chunks || chunks.length === 0) {
+        console.warn('[Chunking] organizeIntoParentChildChunks 返回空数组，尝试降级处理');
+        return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+      }
     } catch (organizeError) {
       console.error('[Chunking] 组织父子块出错:', organizeError);
       console.error('[Chunking] 错误堆栈:', organizeError.stack);
