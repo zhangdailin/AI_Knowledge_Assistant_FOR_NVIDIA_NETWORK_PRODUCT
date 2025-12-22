@@ -61,7 +61,8 @@ async function processUploadedFile(documentId, file) {
     text = (text || '').trim();
     if (!text) throw new Error('提取文本为空');
     
-    console.log(`[Async] 文本提取完成，长度: ${text.length}`);
+    const textSizeKB = Math.round(text.length / 1024);
+    console.log(`[Async] 文本提取完成，长度: ${text.length} 字符 (${textSizeKB} KB)`);
 
     // 更新预览
     await storage.updateDocument(documentId, {
@@ -69,9 +70,27 @@ async function processUploadedFile(documentId, file) {
     });
     
     // 2. 分块
-    // 调整参数：ParentSize=1000 (提供足够上下文), ChildSize=400 (适合检索的粒度)
-    const chunks = chunking.enhancedParentChildChunking(text, 4000, 1000, 400);
-    console.log(`[Async] 分块完成，块数: ${chunks.length}`);
+    // 根据文件大小调整参数
+    // 大文件使用更大的块大小，减少块数量
+    let parentSize = 2000;
+    let childSize = 600;
+    
+    if (text.length > 500 * 1024) {
+      // 大文件：使用更大的块
+      parentSize = 3000;
+      childSize = 800;
+      console.log(`[Async] 大文件检测，使用优化参数: parentSize=${parentSize}, childSize=${childSize}`);
+    }
+    
+    const chunkStartTime = Date.now();
+    const chunks = chunking.enhancedParentChildChunking(text, 4000, parentSize, childSize);
+    const chunkTime = Date.now() - chunkStartTime;
+    
+    console.log(`[Async] 分块完成，耗时: ${chunkTime}ms，块数: ${chunks.length}`);
+    
+    if (chunks.length === 0) {
+      throw new Error('分块失败：未生成任何 chunks');
+    }
 
     // 3. 保存 chunks
     const chunksWithDocId = chunks.map(c => ({ ...c, documentId }));

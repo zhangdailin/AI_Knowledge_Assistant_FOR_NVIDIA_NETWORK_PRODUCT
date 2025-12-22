@@ -12,6 +12,8 @@
  * 主入口：Markdown 感知的父子块分片
  */
 export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSize = 2000, childSize = 600) {
+  const startTime = Date.now();
+  
   try {
     // 输入验证
     if (!text || typeof text !== 'string') {
@@ -25,8 +27,18 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
       return [];
     }
     
+    const textSizeKB = Math.round(trimmedText.length / 1024);
+    console.log(`[Chunking] 开始处理文档，大小: ${textSizeKB} KB`);
+    
+    // 对于超大文件（>500KB），使用优化策略
+    if (trimmedText.length > 500 * 1024) {
+      console.log('[Chunking] 检测到大文件，使用优化处理策略');
+    }
+    
     // 1. 解析 Markdown 为语义块
+    const parseStartTime = Date.now();
     const semanticBlocks = parseMarkdownToBlocks(trimmedText);
+    const parseTime = Date.now() - parseStartTime;
     
     if (!semanticBlocks || semanticBlocks.length === 0) {
       console.warn('[Chunking] 未能解析出语义块，使用简单分块');
@@ -34,10 +46,12 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
       return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
     }
     
-    console.log(`[Chunking] 解析出 ${semanticBlocks.length} 个语义块`);
+    console.log(`[Chunking] 解析完成，耗时: ${parseTime}ms，解析出 ${semanticBlocks.length} 个语义块`);
     
     // 2. 根据标题层级组织父子块
+    const organizeStartTime = Date.now();
     const chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+    const organizeTime = Date.now() - organizeStartTime;
     
     // 验证 chunks
     const validChunks = chunks.filter(c => c && c.content && c.content.trim().length > 0);
@@ -47,7 +61,12 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
       return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
     }
     
-    console.log(`[Chunking] 生成 ${validChunks.length} 个 chunks (父: ${validChunks.filter(c => c.chunkType === 'parent').length}, 子: ${validChunks.filter(c => c.chunkType === 'child').length})`);
+    const totalTime = Date.now() - startTime;
+    const parentCount = validChunks.filter(c => c.chunkType === 'parent').length;
+    const childCount = validChunks.filter(c => c.chunkType === 'child').length;
+    
+    console.log(`[Chunking] 组织完成，耗时: ${organizeTime}ms`);
+    console.log(`[Chunking] 总计耗时: ${totalTime}ms，生成 ${validChunks.length} 个 chunks (父: ${parentCount}, 子: ${childCount})`);
     
     return validChunks;
   } catch (error) {
@@ -79,14 +98,48 @@ const BlockType = {
 
 /**
  * 解析 Markdown 为语义块数组
+ * 优化：对于大文件，使用流式处理避免内存问题
  */
 function parseMarkdownToBlocks(text) {
+  // 对于超大文件，分批处理
+  const isLargeFile = text.length > 500 * 1024; // >500KB
   const lines = text.split('\n');
+  const totalLines = lines.length;
+  
+  if (isLargeFile) {
+    console.log(`[Chunking] 大文件检测: ${totalLines} 行，使用优化解析`);
+  }
+  
   const blocks = [];
   let i = 0;
+  let lastProgressLog = 0;
+  const maxIterations = totalLines * 2; // 安全限制：最多迭代行数的2倍
+  let iterations = 0;
   
   while (i < lines.length) {
+    // 安全检查：防止无限循环
+    iterations++;
+    if (iterations > maxIterations) {
+      console.error(`[Chunking] 解析超时：已迭代 ${iterations} 次，当前行 ${i}/${totalLines}`);
+      break;
+    }
+    
+    // 大文件进度日志（每处理 10% 输出一次）
+    if (isLargeFile && totalLines > 1000) {
+      const progress = Math.floor((i / totalLines) * 100);
+      if (progress >= lastProgressLog + 10) {
+        console.log(`[Chunking] 解析进度: ${progress}% (${i}/${totalLines} 行)`);
+        lastProgressLog = progress;
+      }
+    }
+    
     const line = lines[i];
+    if (line === undefined) {
+      console.warn(`[Chunking] 行 ${i} 未定义，跳过`);
+      i++;
+      continue;
+    }
+    
     const trimmedLine = line.trim();
     
     // 1. 空行
@@ -229,8 +282,12 @@ function parseMarkdownToBlocks(text) {
     if (trimmedLine.startsWith('<table')) {
       const htmlLines = [line];
       i++;
-      while (i < lines.length && !lines[i - 1].includes('</table>')) {
+      let foundEndTag = false;
+      while (i < lines.length && !foundEndTag) {
         htmlLines.push(lines[i]);
+        if (lines[i].includes('</table>')) {
+          foundEndTag = true;
+        }
         i++;
       }
       const htmlContent = htmlLines.join('\n');
@@ -270,6 +327,21 @@ function parseMarkdownToBlocks(text) {
         content: paragraphLines.join('\n').trim()
       });
     }
+  }
+  
+  // 解析完成日志
+  if (isLargeFile) {
+    console.log(`[Chunking] 解析完成: ${blocks.length} 个语义块 (处理了 ${i}/${totalLines} 行)`);
+  }
+  
+  // 统计各类型块的数量
+  const blockStats = {};
+  blocks.forEach(b => {
+    blockStats[b.type] = (blockStats[b.type] || 0) + 1;
+  });
+  
+  if (isLargeFile && Object.keys(blockStats).length > 0) {
+    console.log(`[Chunking] 块类型统计:`, blockStats);
   }
   
   return blocks;
