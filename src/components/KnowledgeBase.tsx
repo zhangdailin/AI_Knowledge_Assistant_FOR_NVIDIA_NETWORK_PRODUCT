@@ -32,15 +32,24 @@ const KnowledgeBase: React.FC = () => {
   }, [user]);
 
   // 轮询逻辑：如果有文档正在处理中，每3秒刷新一次状态
+  // 此外，如果发现有文档 Embedding 未完成（但状态是 ready），也进行轮询，以便及时更新进度
   useEffect(() => {
-    const hasProcessing = documents.some(doc => doc.status === 'processing');
-    if (hasProcessing) {
+    const shouldPoll = documents.some(doc => {
+        // 1. 文档状态本身是 processing
+        if (doc.status === 'processing') return true;
+        // 2. 文档状态是 ready，但我们不知道它的 embedding 是否全部完成
+        // 这里无法直接判断 chunks 状态，但可以根据 regenerationDocs 集合来判断
+        if (regeneratingDocs.has(doc.id)) return true;
+        return false;
+    });
+
+    if (shouldPoll) {
       const timer = setInterval(() => {
         loadDocuments();
       }, 3000);
       return () => clearInterval(timer);
     }
-  }, [documents]);
+  }, [documents, regeneratingDocs]);
 
   const openChunkViewer = async (doc: Document) => {
     try {
@@ -200,7 +209,11 @@ const KnowledgeBase: React.FC = () => {
       // 创建后台任务生成 embedding
       await unifiedStorageManager.createEmbeddingTask(documentId);
       alert(`已开始后台生成 Embedding（${chunksWithoutEmbedding.length} 个 chunks），请查看进度...`);
+      
+      // 立即刷新一次
       loadDocuments();
+      
+      // 强制触发轮询（通过 setRegeneratingDocs 已经触发了 useEffect，但为了保险起见，这里不需要额外操作）
     } catch (error) {
       console.error('重新生成 embedding 失败:', error);
       alert(`重新生成 embedding 失败: ${error instanceof Error ? error.message : String(error)}`);

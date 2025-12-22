@@ -28,10 +28,12 @@ function getApiServerUrl(): string {
 }
 
 class ServerStorageManager {
-  private apiUrl: string;
+  private get apiUrl(): string {
+    return getApiServerUrl();
+  }
 
   constructor() {
-    this.apiUrl = getApiServerUrl();
+    // No initialization needed for dynamic property
   }
 
   // 文档管理

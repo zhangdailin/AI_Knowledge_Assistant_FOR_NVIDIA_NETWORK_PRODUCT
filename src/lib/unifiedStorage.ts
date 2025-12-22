@@ -7,20 +7,6 @@ import { Document, Chunk } from './localStorage';
 import { serverStorageManager } from './serverStorage';
 
 class UnifiedStorageManager {
-  private getApiServerUrl(): string {
-    const envUrl = import.meta.env.VITE_API_SERVER_URL;
-    if (envUrl) {
-      return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
-    }
-    if (typeof window !== 'undefined') {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = '8787';
-      return `${protocol}//${hostname}:${port}`;
-    }
-    return 'http://localhost:8787';
-  }
-
   // 文档管理
   async getDocuments(userId?: string): Promise<Document[]> {
     return await serverStorageManager.getDocuments();

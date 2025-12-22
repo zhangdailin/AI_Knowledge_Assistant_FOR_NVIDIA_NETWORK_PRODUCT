@@ -159,24 +159,36 @@ function recursiveSplit(text, chunkSize, chunkOverlap) {
   const placeholderPrefix = "___CODE_BLOCK_";
   
   // 匹配 Markdown 代码块 (```...```)
+  // 增强正则：支持```language ... ```
   const textWithPlaceholders = text.replace(/```[\s\S]*?```/g, (match) => {
+    // 增加对空代码块的过滤
+    if (!match || match.trim().length === 0) return match;
     const placeholder = `${placeholderPrefix}${codeBlocks.length}___`;
     codeBlocks.push(match);
     return placeholder;
   });
   
   // 2. 执行切分
-  const rawChunks = splitText(textWithPlaceholders, separators, chunkSize, chunkOverlap);
+  let rawChunks = splitText(textWithPlaceholders, separators, chunkSize, chunkOverlap);
+  
+  // 增加：过滤掉纯占位符且原始代码块为空的情况（防御性编程）
+  // 增加：过滤掉极短的碎片（例如仅包含分隔符的块）
+  rawChunks = rawChunks.filter(chunk => {
+      const trimmed = chunk.trim();
+      return trimmed.length > 0 && trimmed.length > 5; // 忽略小于5个字符的极小碎片
+  });
   
   // 3. 还原代码块
   const finalChunks = rawChunks.map(chunk => {
-    return chunk.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, 'g'), (match, index) => {
+    const restored = chunk.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, 'g'), (match, index) => {
       const idx = parseInt(index);
       return codeBlocks[idx] || match;
     });
+    return restored;
   });
   
-  return finalChunks;
+  // 4. 最终过滤：确保还原后也不是空块
+  return finalChunks.filter(c => c && c.trim().length > 0);
 }
 
 function splitText(text, separators, chunkSize, chunkOverlap) {

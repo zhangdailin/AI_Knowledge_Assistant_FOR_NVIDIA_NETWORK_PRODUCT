@@ -20,7 +20,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // 支持 JSON 请求体
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+});
 
 // 异步处理文件上传
 async function processUploadedFile(documentId, file) {
@@ -488,6 +491,17 @@ app.get('/api/documents/:id/tasks', async (req, res) => {
 });
 
 const port = process.env.PORT || 8787;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Extractor server listening at http://localhost:${port}`);
+});
+
+// 增加全局异常捕获，防止进程崩溃退出
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+  // 不退出进程，保持服务运行
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  // 不退出进程
 });

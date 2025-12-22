@@ -144,7 +144,8 @@ export async function processEmbeddingTask(taskId, documentId) {
     }
 
     // 批量处理
-    const batchSize = 5;
+    // 动态调整批次大小：如果chunks太多，减小并发以防超时
+    const batchSize = chunksWithoutEmbedding.length > 2000 ? 3 : 5;
     let successCount = 0;
     let failCount = 0;
     const pendingUpdates = [];
@@ -156,11 +157,40 @@ export async function processEmbeddingTask(taskId, documentId) {
       const embeddingResults = await Promise.all(
         batch.map(async (chunk) => {
           try {
-            const embedding = await embedText(chunk.content.substring(0, 2000));
+            // 优化文本用于 embedding：智能截断，保留重要信息
+            // 确保文本不是 null/undefined
+            const content = chunk.content || "";
+            const optimizedText = content.substring(0, 2000);
+            
+            // 如果优化后的文本为空，直接标记为失败但不重试，因为重试也没用
+            if (!optimizedText || optimizedText.trim().length === 0) {
+                 console.warn(`[任务 ${taskId}] Skipping empty chunk ${chunk.id}`);
+                 return { chunkId: chunk.id, embedding: null, success: false, error: "Empty content" };
+            }
+
+            let embedding = null;
+            let retryCount = 0;
+            const MAX_RETRIES = 3;
+
+            // 重试逻辑
+            while (retryCount < MAX_RETRIES && !embedding) {
+              try {
+                if (retryCount > 0) {
+                   // 指数退避策略：1s, 2s, 4s
+                   await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount - 1)));
+                   console.log(`[任务 ${taskId}] Retry embedding for chunk ${chunk.id} (Attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+                }
+                embedding = await embedText(optimizedText);
+              } catch (err) {
+                console.warn(`[任务 ${taskId}] Embedding attempt ${retryCount + 1} failed for chunk ${chunk.id}:`, err.message);
+              }
+              retryCount++;
+            }
+
             if (embedding && Array.isArray(embedding) && embedding.length > 0) {
               return { chunkId: chunk.id, embedding, success: true };
             } else {
-              console.error(`[任务 ${taskId}] chunk ${chunk.id} embedding 返回为空或格式错误`);
+              console.error(`[任务 ${taskId}] chunk ${chunk.id} embedding 返回为空或格式错误 (After ${retryCount} attempts)`);
               return { chunkId: chunk.id, embedding: null, success: false };
             }
           } catch (error) {
@@ -232,13 +262,20 @@ export async function processEmbeddingTask(taskId, documentId) {
       task.progress = Math.round((task.current / chunksWithoutEmbedding.length) * 100);
       task.updatedAt = new Date().toISOString();
       
+      // 添加心跳日志，防止看起来卡死
+      if (i % 5 === 0) { // 每5个就打印一次
+          console.log(`[任务 ${taskId}] 进度心跳: ${task.current}/${task.total} (${task.progress}%), 正在处理批次...`);
+      }
+
       if (i % 10 === 0 || i + batchSize >= chunksWithoutEmbedding.length) {
         console.log(`[任务 ${taskId}] 进度: ${task.current}/${task.total} (${task.progress}%), 成功: ${successCount}, 失败: ${failCount}`);
       }
 
       // 延迟避免 API 限流
       if (i + batchSize < chunksWithoutEmbedding.length) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // 动态延迟：如果 chunks 很多，增加休息时间
+        const delayMs = chunksWithoutEmbedding.length > 2000 ? 1500 : 1000;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
 
