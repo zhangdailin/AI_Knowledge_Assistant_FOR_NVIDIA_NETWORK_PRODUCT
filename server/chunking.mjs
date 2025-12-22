@@ -37,7 +37,16 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     
     // 1. 解析 Markdown 为语义块
     const parseStartTime = Date.now();
-    const semanticBlocks = parseMarkdownToBlocks(trimmedText);
+    let semanticBlocks;
+    try {
+      semanticBlocks = parseMarkdownToBlocks(trimmedText);
+    } catch (parseError) {
+      console.error('[Chunking] Markdown 解析出错:', parseError);
+      console.error('[Chunking] 错误堆栈:', parseError.stack);
+      console.warn('[Chunking] 降级到简单分块');
+      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+    }
+    
     const parseTime = Date.now() - parseStartTime;
     
     if (!semanticBlocks || semanticBlocks.length === 0) {
@@ -48,9 +57,25 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     
     console.log(`[Chunking] 解析完成，耗时: ${parseTime}ms，解析出 ${semanticBlocks.length} 个语义块`);
     
+    // 检查是否有标题块
+    const hasHeadings = semanticBlocks.some(b => b.type === BlockType.HEADING);
+    if (!hasHeadings) {
+      console.log('[Chunking] 文档没有标题，使用简单分块（更适合无结构文档）');
+      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+    }
+    
     // 2. 根据标题层级组织父子块
     const organizeStartTime = Date.now();
-    const chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+    let chunks;
+    try {
+      chunks = organizeIntoParentChildChunks(semanticBlocks, maxChunkSize, parentSize, childSize);
+    } catch (organizeError) {
+      console.error('[Chunking] 组织父子块出错:', organizeError);
+      console.error('[Chunking] 错误堆栈:', organizeError.stack);
+      console.warn('[Chunking] 降级到简单分块');
+      return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
+    }
+    
     const organizeTime = Date.now() - organizeStartTime;
     
     // 验证 chunks
@@ -58,6 +83,7 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     
     if (validChunks.length === 0) {
       console.warn('[Chunking] 生成的 chunks 为空，使用简单分块');
+      console.warn(`[Chunking] 原始 chunks 数量: ${chunks.length}`);
       return createSimpleChunks(trimmedText, maxChunkSize, parentSize, childSize);
     }
     
@@ -400,7 +426,17 @@ function buildSectionTree(blocks) {
   let currentSection = null;
   let currentSubSection = null;
   
+  if (!blocks || blocks.length === 0) {
+    console.warn('[Chunking] buildSectionTree: blocks 为空');
+    return sections;
+  }
+  
   for (const block of blocks) {
+    if (!block || !block.type) {
+      console.warn('[Chunking] buildSectionTree: 遇到无效 block，跳过');
+      continue;
+    }
+    
     if (block.type === BlockType.HEADING) {
       if (block.level <= 2) {
         // H1/H2: 新的主章节
@@ -455,6 +491,16 @@ function buildSectionTree(blocks) {
   }
   if (currentSection) {
     sections.push(currentSection);
+  }
+  
+  console.log(`[Chunking] buildSectionTree: 构建了 ${sections.length} 个章节`);
+  if (sections.length > 0) {
+    const sectionStats = {
+      withHeading: sections.filter(s => s.heading).length,
+      withoutHeading: sections.filter(s => !s.heading).length,
+      withSubSections: sections.filter(s => s.subSections && s.subSections.length > 0).length
+    };
+    console.log(`[Chunking] 章节统计:`, sectionStats);
   }
   
   return sections;
@@ -1051,11 +1097,36 @@ function estimateTokens(text) {
  * 降级处理：简单的段落分割（当主算法失败时使用）
  */
 function createSimpleChunks(text, maxChunkSize, parentSize, childSize) {
+  console.log('[Chunking] 使用简单分块模式');
+  
   const chunks = [];
   let globalIndex = 0;
   
+  if (!text || text.trim().length === 0) {
+    console.warn('[Chunking] createSimpleChunks: 文本为空');
+    return chunks;
+  }
+  
+  // 确保参数有效
+  parentSize = Math.max(500, parentSize || 2000);
+  childSize = Math.max(200, childSize || 600);
+  maxChunkSize = Math.max(parentSize, maxChunkSize || 4000);
+  
   // 按段落分割
-  const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+  const paragraphs = text.split(/\n\n+/).filter(p => p && p.trim().length > 0);
+  
+  if (paragraphs.length === 0) {
+    // 如果没有段落，按行分割
+    const lines = text.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length > 0) {
+      paragraphs.push(lines.join('\n'));
+    } else {
+      // 如果连行都没有，直接使用整个文本
+      paragraphs.push(text);
+    }
+  }
+  
+  console.log(`[Chunking] 简单分块: ${paragraphs.length} 个段落`);
   
   let currentParent = [];
   let currentParentLength = 0;
