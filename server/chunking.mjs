@@ -79,7 +79,9 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     // 如果既没有标题也没有 Markdown 结构，才使用简单分块
     if (!hasHeadings && !hasMarkdownStructures) {
       console.log('[Chunking] 文档既没有标题也没有 Markdown 结构，尝试作为纯文本处理');
-      // 不再使用简单分块，而是尝试将其视为一个单独的章节
+      // 启用后备机制：如果 Markdown 解析失败或结构太弱，使用滑动窗口切分
+      // 这是一种兜底策略，确保任何文档都能被索引
+      return createSlidingWindowChunks(trimmedText, maxChunkSize, childSize);
     }
     
     if (!hasHeadings) {
@@ -133,6 +135,91 @@ export function enhancedParentChildChunking(text, maxChunkSize = 4000, parentSiz
     // 不再降级处理，直接抛出错误或返回空数组
     return [];
   }
+}
+
+/**
+ * 滑动窗口分块（兜底策略）
+ * 当 Markdown 解析失效时使用，确保内容可被检索
+ */
+function createSlidingWindowChunks(text, windowSize = 1000, stepSize = 500) {
+  console.log('[Chunking] 使用滑动窗口分块策略 (Window Size: ' + windowSize + ')');
+  const chunks = [];
+  const globalIndex = 0;
+  
+  if (!text) return chunks;
+  
+  // 1. 简单的段落分割预处理
+  // 如果有明显的双换行，先按段落切分，避免跨段落切断语义
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+  
+  let currentWindow = [];
+  let currentLength = 0;
+  
+  for (const para of paragraphs) {
+     const paraLen = para.length;
+     
+     // 如果单个段落就超过窗口大小，必须强制切分
+     if (paraLen > windowSize) {
+         // 先处理掉缓冲区的内容
+         if (currentLength > 0) {
+             pushWindow(currentWindow.join('\n\n'));
+             currentWindow = [];
+             currentLength = 0;
+         }
+         
+         // 对大段落进行滑动窗口切分
+         let start = 0;
+         while (start < paraLen) {
+             const end = Math.min(start + windowSize, paraLen);
+             const segment = para.substring(start, end);
+             
+             // 尝试在句子边界切断
+             let safeEnd = segment.lastIndexOf('。');
+             if (safeEnd === -1) safeEnd = segment.lastIndexOf('.');
+             if (safeEnd > windowSize * 0.8) { // 只在窗口后半部分寻找句号
+                 const adjustedSegment = para.substring(start, start + safeEnd + 1);
+                 pushWindow(adjustedSegment);
+                 start += safeEnd + 1;
+             } else {
+                 pushWindow(segment);
+                 start += stepSize; // 强制滑动
+             }
+         }
+     } else {
+         // 段落较小，尝试累积
+         if (currentLength + paraLen > windowSize) {
+             pushWindow(currentWindow.join('\n\n'));
+             // 滑动：移除最早的段落直到可以容纳新段落 (这里简化为清空，类似滚动)
+             // 真正的滑动窗口应该保留 overlap，这里我们采用简单的重叠策略：
+             // 保留最后 20% 的内容作为上下文
+             const overlapContent = currentWindow.join('\n\n').slice(-Math.floor(windowSize * 0.2));
+             currentWindow = [overlapContent, para]; 
+             currentLength = overlapContent.length + paraLen;
+         } else {
+             currentWindow.push(para);
+             currentLength += paraLen;
+         }
+     }
+  }
+  
+  if (currentLength > 0) {
+      pushWindow(currentWindow.join('\n\n'));
+  }
+
+  function pushWindow(content) {
+      if (!content || content.trim().length === 0) return;
+      chunks.push({
+        id: generateId('window'),
+        content: content.trim(),
+        chunkType: 'window', // 新类型，标识为滑动窗口生成的
+        tokenCount: estimateTokens(content),
+        metadata: {
+            strategy: 'sliding_window'
+        }
+      });
+  }
+  
+  return chunks;
 }
 
 /**

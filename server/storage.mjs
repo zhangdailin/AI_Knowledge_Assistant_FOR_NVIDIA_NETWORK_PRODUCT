@@ -353,12 +353,15 @@ const TERM_MAPPINGS = {
   '邻居': ['neighbor', 'peer', 'adjacency'],
   '日志': ['log', 'logging', 'syslog', 'journal'],
   '错误': ['error', 'fail', 'failure', 'drop', 'discard', 'loss', 'down'],
+  '起不来': ['down', 'fail', 'failure', 'not established'],
+  '怎么办': ['troubleshoot', 'fix', 'solution', 'how to', 'debug'],
   
   // --- Protocols / Technologies ---
   'bgp': ['border gateway protocol', 'ebgp', 'ibgp'],
   'ospf': ['open shortest path first'],
   'evpn': ['ethernet vpn', 'vxlan'],
   'vxlan': ['virtual extensible lan', 'vni', 'vtep', 'overlay'],
+  'vni': ['virtual network identifier', 'segment id'],
   'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link'],
   'stp': ['spanning tree', 'rstp', 'mstp', 'pvst'],
   'lacp': ['link aggregation', 'bond', 'port-channel', 'lag'],
@@ -402,7 +405,7 @@ export async function searchChunks(query, limit = 30) {
   }
   
   // Check for troubleshooting keywords
-  if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错'].some(k => queryLower.includes(k))) {
+  if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错', '怎么办', '起不来'].some(k => queryLower.includes(k))) {
     intent.isTroubleshooting = true;
   }
 
@@ -520,7 +523,8 @@ export async function searchChunks(query, limit = 30) {
           // 2. Concept/Definition Intent Optimization
           if (intent.isConcept) {
              // Look for definition patterns: "X is a...", "X describes..."
-             const isDefinition = /\sis a\s|\srefers to\s|\sdescribes\s/.test(contentLower);
+             // 增加中文定义模式检测
+             const isDefinition = /\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower);
              // Look for headers
              const isHeader = /^#+\s/.test(contentLower);
              

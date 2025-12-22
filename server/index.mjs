@@ -4,6 +4,7 @@ import multer from 'multer';
 import { createRequire } from 'node:module';
 import * as storage from './storage.mjs';
 import * as taskQueue from './taskQueue.mjs';
+import { embedText } from './embedding.mjs';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
@@ -432,7 +433,7 @@ app.put('/api/chunks/:id/embedding', async (req, res) => {
   }
 });
 
-// 搜索 chunks
+// 搜索 chunks (混合检索：关键词 + 向量)
 app.get('/api/chunks/search', async (req, res) => {
   try {
     const { q, limit = 30 } = req.query;
@@ -440,8 +441,97 @@ app.get('/api/chunks/search', async (req, res) => {
       return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
     }
     
-    const chunks = await storage.searchChunks(q, parseInt(limit));
-    res.json({ ok: true, chunks });
+    const maxResults = parseInt(limit);
+    console.log(`[Search] Query: "${q}"`);
+
+    // 1. 并行执行：关键词搜索 + 向量生成
+    const keywordSearchPromise = storage.searchChunks(q, maxResults);
+    const vectorSearchPromise = (async () => {
+      try {
+        // 尝试生成 query embedding
+        const embedding = await embedText(q);
+        if (embedding) {
+           // 如果成功，执行向量搜索
+           return await storage.vectorSearchChunks(embedding, maxResults);
+        }
+      } catch (e) {
+        console.warn('[Search] Vector search skipped due to embedding error:', e.message);
+      }
+      return [];
+    })();
+
+    const [keywordResults, vectorResults] = await Promise.all([
+      keywordSearchPromise,
+      vectorSearchPromise
+    ]);
+
+    console.log(`[Search] Results: Keyword=${keywordResults.length}, Vector=${vectorResults.length}`);
+
+    // 2. 结果融合 (RRF - Reciprocal Rank Fusion)
+    const combinedResults = new Map();
+    const k = 60; // RRF constant
+
+    // 处理关键词结果
+    keywordResults.forEach((chunk, index) => {
+      const id = chunk.id;
+      if (!combinedResults.has(id)) {
+        combinedResults.set(id, { chunk, score: 0, sources: [] });
+      }
+      const item = combinedResults.get(id);
+      // RRF: 1 / (k + rank)
+      item.score += 1 / (k + index + 1);
+      
+      // Keyword Match Bonus: 如果关键词匹配得分极高，给予额外 RRF 权重
+      // 这解决了 RRF 对"绝对匹配"不敏感的问题
+      if (chunk.score > 20) {
+          item.score += 0.05; // 相当于提升排名的效果
+      }
+      
+      item.sources.push('keyword');
+      item.keywordScore = chunk.score; 
+    });
+
+    // 处理向量结果
+    vectorResults.forEach((item, index) => {
+      const chunk = item.chunk;
+      const id = chunk.id;
+      if (!combinedResults.has(id)) {
+        combinedResults.set(id, { chunk, score: 0, sources: [] });
+      }
+      const entry = combinedResults.get(id);
+      entry.score += 1 / (k + index + 1);
+      
+      // Vector Similarity Bonus: 如果相似度极高 (>0.85)，给予额外权重
+      if (item.score > 0.85) {
+          entry.score += 0.05;
+      }
+      
+      entry.sources.push('vector');
+      entry.vectorScore = item.score;
+    });
+
+    // 3. 排序和格式化
+    const finalResults = Array.from(combinedResults.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map(entry => {
+        // 动态截断内容：如果是向量匹配且内容极长，只返回相关部分
+        // (这里暂不实现复杂的窗口滑动，只做简单的长度保护)
+        let displayContent = entry.chunk.content;
+        
+        return {
+          ...entry.chunk,
+          content: displayContent,
+          _score: entry.score,
+          _sources: entry.sources,
+          _debug: {
+             keywordScore: entry.keywordScore,
+             vectorScore: entry.vectorScore
+          }
+        };
+      });
+
+    res.json({ ok: true, chunks: finalResults });
   } catch (error) {
     console.error('搜索 chunks 失败:', error);
     res.status(500).json({ ok: false, error: '搜索 chunks 失败' });
