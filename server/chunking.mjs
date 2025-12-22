@@ -168,15 +168,27 @@ function parseMarkdownToBlocks(text) {
   const blocks = [];
   let i = 0;
   let lastProgressLog = 0;
-  const maxIterations = totalLines * 2; // 安全限制：最多迭代行数的2倍
-  let iterations = 0;
+  
+  // 智能无限循环检测：记录连续不前进的次数
+  let stuckCount = 0;
+  let lastPosition = 0;
+  const MAX_STUCK_COUNT = 100; // 如果连续 100 次迭代位置没有变化，认为是无限循环
   
   while (i < lines.length) {
-    // 安全检查：防止无限循环
-    iterations++;
-    if (iterations > maxIterations) {
-      console.error(`[Chunking] 解析超时：已迭代 ${iterations} 次，当前行 ${i}/${totalLines}`);
-      break;
+    // 智能无限循环检测
+    if (i === lastPosition) {
+      stuckCount++;
+      if (stuckCount > MAX_STUCK_COUNT) {
+        console.error(`[Chunking] 检测到可能的无限循环：连续 ${stuckCount} 次迭代位置未变化，当前行 ${i}/${totalLines}`);
+        console.error(`[Chunking] 最后处理的块类型: ${blocks.length > 0 ? blocks[blocks.length - 1].type : 'none'}`);
+        // 强制前进一行，避免完全卡死
+        i++;
+        stuckCount = 0;
+        continue;
+      }
+    } else {
+      stuckCount = 0;
+      lastPosition = i;
     }
     
     // 大文件进度日志（每处理 10% 输出一次）
