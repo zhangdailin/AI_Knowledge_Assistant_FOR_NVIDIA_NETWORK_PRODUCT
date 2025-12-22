@@ -242,26 +242,40 @@ function parseMarkdownToBlocks(text) {
     // 3. 代码块 (```)
     if (trimmedLine.startsWith('```')) {
       const codeLines = [line];
+      const startLineIndex = i;
       i++;
       let codeBlockClosed = false;
-      while (i < lines.length) {
+      let codeBlockLines = 0;
+      const MAX_CODE_BLOCK_LINES = 10000; // 防止超长代码块导致问题
+      
+      while (i < lines.length && codeBlockLines < MAX_CODE_BLOCK_LINES) {
         const codeLine = lines[i];
         if (codeLine === undefined) {
           console.warn(`[Chunking] 代码块处理：行 ${i} 未定义，强制结束代码块`);
           break;
         }
+        
         codeLines.push(codeLine);
-        if (codeLine.trim().startsWith('```') && codeLines.length > 1) {
+        codeBlockLines++;
+        
+        // 检查是否是代码块结束标记（```）
+        const trimmedCodeLine = codeLine.trim();
+        if (trimmedCodeLine.startsWith('```') && codeLines.length > 1) {
           i++;
           codeBlockClosed = true;
           break;
         }
+        
         i++;
       }
       
-      // 如果代码块没有正确关闭，记录警告但继续处理
-      if (!codeBlockClosed && i >= lines.length) {
-        console.warn(`[Chunking] 代码块未正确关闭（文档末尾），已强制结束`);
+      // 如果代码块没有正确关闭
+      if (!codeBlockClosed) {
+        if (i >= lines.length) {
+          console.warn(`[Chunking] 代码块未正确关闭（文档末尾），起始行: ${startLineIndex}`);
+        } else if (codeBlockLines >= MAX_CODE_BLOCK_LINES) {
+          console.warn(`[Chunking] 代码块过长（${codeBlockLines} 行），强制结束，起始行: ${startLineIndex}`);
+        }
       }
       
       blocks.push({
@@ -406,7 +420,7 @@ function parseMarkdownToBlocks(text) {
       
       // 段落结束条件
       if (currentTrimmed === '' ||                    // 空行
-          currentTrimmed.startsWith('#') ||           // 标题
+          /^(#{1,6})\s+/.test(currentTrimmed) ||      // 标题（修复：必须是 # 后跟空格，避免匹配代码注释）
           currentTrimmed.startsWith('```') ||         // 代码块
           currentTrimmed.startsWith('>') ||           // 引用
           /^[\s]*[-*+]\s+/.test(currentTrimmed) ||   // 无序列表（修复：允许前导空格）
