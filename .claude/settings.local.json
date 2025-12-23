@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const fs=require(''fs''); const files=fs.readdirSync(''data/chunks''); files.forEach(f => { const d=JSON.parse(fs.readFileSync(''data/chunks/''+f)); const matches=d.filter(c=>c.content && (c.content.toLowerCase().includes(''mlag'') || c.content.includes(''nv set''))); console.log(f+'': ''+matches.length+'' chunks with mlag/nv set''); if(matches.length>0){console.log(''Sample:'', matches[0].content.substring(0,300)+''...'')} });\")",
+      "Bash(node -e \"const fs=require(''fs''); const files=fs.readdirSync(''data/chunks''); files.forEach(f => { const d=JSON.parse(fs.readFileSync(''data/chunks/''+f)); const matches=d.filter(c=>c.content && c.content.toLowerCase().includes(''nv set'') && c.content.toLowerCase().includes(''mlag'')); if(matches.length>0){console.log(f+'': ''+matches.length+'' chunks with BOTH''); matches.slice(0,2).forEach((m,i)=>console.log(''---Chunk ''+i+''---\\n''+m.content.substring(0,500)+''\\n''))} });\")",
+      "Bash(node -e \"const d=[];process.stdin.on(''''data'''',c=>d.push(c));process.stdin.on(''''end'''',()=>{try{const r=JSON.parse(d.join(''''''''));console.log(''''Total results:'''',r.length);r.slice(0,3).forEach((c,i)=>console.log(''''---Result'''',i,''''score:'''',c.score,''''---\\n'''',c.content?.substring(0,300)||''''no content''''))}catch(e){console.log(''''Error or server not running:'''',e.message)}})\")",
+      "Bash(timeout 10)",
+      "Bash(curl -s -X POST http://localhost:3000/api/chunks/search -H \"Content-Type: application/json\" -d \"{\"\"query\"\":\"\"cumulus交换机如何使用 nv set 配置 mlag\"\",\"\"limit\"\":5}\")",
+      "Bash(ping -n 8 127.0.0.1)",
+      "Bash(curl -s -X POST http://localhost:3000/api/chunks/search -H 'Content-Type: application/json' -d '{query:cumulus交换机如何使用 nv set 配置 mlag,limit:5}')",
+      "Bash(node -e \"const d=[];process.stdin.on(''''data'''',c=>d.push(c));process.stdin.on(''''end'''',()=>{try{const r=JSON.parse(d.join(''''''''));console.log(''''Results:'''',r.length);r.forEach((c,i)=>console.log(''''---#''''+i+'''' score:''''+c.score+''''---\\n''''+c.content?.substring(0,400)||''''no content''''))}catch(e){console.log(''''Raw:'''',d.join(''''''''))}})\")",
+      "Bash(npm run dev)",
+      "Bash(node -e \"\nconst fs = require(''fs'');\nconst data = JSON.parse(fs.readFileSync(''data/chunks/doc-1766481503268.json'', ''utf-8''));\n\n// 找几个包含 nv set 和 mlag 的 chunk 看看结构\nconst samples = data.filter(c => c.content && c.content.toLowerCase().includes(''nv set'') && c.content.toLowerCase().includes(''mlag'')).slice(0, 3);\n\nsamples.forEach((c, i) => {\n    console.log(''=== Chunk'', i, ''==='');\n    console.log(''Type:'', c.chunkType);\n    console.log(''ParentId:'', c.parentId || ''N/A'');\n    console.log(''Metadata:'', JSON.stringify(c.metadata, null, 2));\n    console.log(''Content Preview (500 chars):'');\n    console.log(c.content.substring(0, 500));\n    console.log(''\\n'');\n});\n\")",
+      "Bash(node -e \"const fs = require(''fs''); const data = JSON.parse(fs.readFileSync(''data/chunks/doc-1766481503268.json'', ''utf-8'')); const stats = { parent: 0, child: 0, window: 0, other: 0 }; data.forEach(c => { if (c.chunkType === ''parent'') stats.parent++; else if (c.chunkType === ''child'') stats.child++; else if (c.chunkType === ''window'') stats.window++; else stats.other++; }); console.log(''Chunk stats:'', JSON.stringify(stats)); console.log(''Total:'', data.length); const parentIds = new Set(data.filter(c => c.chunkType === ''parent'').map(c => c.id)); const orphans = data.filter(c => c.chunkType === ''child'' && c.parentId && !parentIds.has(c.parentId)).length; console.log(''Orphan children:'', orphans);\")",
+      "Bash(node analyze-chunks.js)",
+      "Bash(node analyze-chunks.mjs)",
+      "Bash(node test-chunking.mjs)",
+      "Bash(node test-chunking-real.mjs)"
+    ]
+  }
+}

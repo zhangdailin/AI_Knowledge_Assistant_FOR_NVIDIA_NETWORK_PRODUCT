@@ -362,7 +362,11 @@ const TERM_MAPPINGS = {
   'evpn': ['ethernet vpn', 'vxlan'],
   'vxlan': ['virtual extensible lan', 'vni', 'vtep', 'overlay'],
   'vni': ['virtual network identifier', 'segment id'],
-  'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link'],
+  'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link', 'peerlink', 'dual-connected', 'mlag-id', 'backup-ip'],
+  // NVUE specific command mappings
+  'nv set': ['nv config', 'nvue', 'nv set interface', 'nv set system', 'nv set mlag', 'nv set bridge', 'nv set router', 'nv set evpn', 'nv set vrf'],
+  'nvue': ['nv set', 'nv show', 'nv config', 'nv unset', 'nv action'],
+  'nv': ['nvue', 'nv set', 'nv show', 'nv config', 'nv unset'],
   'stp': ['spanning tree', 'rstp', 'mstp', 'pvst'],
   'lacp': ['link aggregation', 'bond', 'port-channel', 'lag'],
   'lldp': ['link layer discovery'],
@@ -428,7 +432,11 @@ export async function searchChunks(query, limit = 30) {
   };
 
   // Check for command-related keywords
-  if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k))) {
+  // Enhanced: detect NVUE command patterns like "nv set", "nv show", "nv config"
+  if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k)) ||
+      /nv\s+(set|show|config|unset|action)/.test(queryLower) ||
+      queryLower.includes('nvue') ||
+      queryLower.includes('如何使用')) {
     intent.isCommand = true;
   }
 
@@ -526,31 +534,41 @@ export async function searchChunks(query, limit = 30) {
       }
 
       // --- Adaptive Scoring based on Intent ---
-      
+
       if (score > 2) { // Only apply optimizations if we have basic relevance
-          
+
           // 1. Command Intent Optimization
           if (intent.isCommand) {
              // RELAXED: Just check if the content contains the command keywords directly
              // This covers both HTML tables "<td>nv show" and plain text "nv show"
              const hasCommandKeywords = /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower) ||
                                       contentLower.includes('nv config') ||
-                                      contentLower.includes('nv show');
+                                      contentLower.includes('nv show') ||
+                                      contentLower.includes('nv set');
 
-             const isCommandStructure = hasCommandKeywords || 
-                                      /<tr><td>\s*(nv|show|netq|vtysh)/.test(contentLower) || 
+             const isCommandStructure = hasCommandKeywords ||
+                                      /<tr><td>\s*(nv|show|netq|vtysh)/.test(contentLower) ||
                                       /^\s*(nv|show|netq|vtysh)/.test(contentLower) ||
-                                      contentLower.includes('```'); 
-             
+                                      contentLower.includes('```') ||
+                                      /nv set\s+\w+/.test(contentLower);
+
              if (isCommandStructure) {
                  score += 10; // Boost potential command blocks
-                 
+
                  // Double boost if it matches the specific action verb (checking both English and Chinese)
                  const hasShowIntent = queryLower.includes('show') || queryLower.includes('显示') || queryLower.includes('列出') || queryLower.includes('查看');
-                 const hasConfigIntent = queryLower.includes('config') || queryLower.includes('配置') || queryLower.includes('设置');
+                 const hasConfigIntent = queryLower.includes('config') || queryLower.includes('配置') || queryLower.includes('设置') || queryLower.includes('nv set');
+                 const hasSetIntent = queryLower.includes('nv set') || queryLower.includes('set');
 
                  if (hasShowIntent && contentLower.includes('show')) score += 5;
-                 if (hasConfigIntent && contentLower.includes('config')) score += 5;
+                 if (hasConfigIntent && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
+                 if (hasSetIntent && contentLower.includes('nv set')) score += 8;
+
+                 // Extra boost for MLAG-specific nv set commands
+                 if ((queryLower.includes('mlag') || queryLower.includes('clag')) &&
+                     (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) {
+                     score += 15;
+                 }
              }
           }
 
@@ -608,30 +626,33 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   let topResults = [];
-  
+
+  // 提高向量搜索阈值，减少低质量结果
+  const minScore = 0.3; // 从 0.1 提高到 0.3
+
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
-    
+
     // 使用缓存读取
     const chunks = await getChunksFromFile(file);
-    
+
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
         const score = cosine(queryEmbedding, chunk.embedding);
-        // Optimization: Don't store chunks with very low scores
-        if (score > 0.1) {
+        // 只保留高相似度的结果
+        if (score > minScore) {
            topResults.push({ chunk, score });
         }
       }
     }
-    
+
     // Memory optimization: Prune results periodically if they get too large
     if (topResults.length > limit * 5) {
       topResults.sort((a, b) => b.score - a.score);
       topResults = topResults.slice(0, limit * 2);
     }
   }
-  
+
   return topResults.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 

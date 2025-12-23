@@ -467,9 +467,19 @@ app.get('/api/chunks/search', async (req, res) => {
 
     console.log(`[Search] Results: Keyword=${keywordResults.length}, Vector=${vectorResults.length}`);
 
-    // 2. 结果融合 (RRF - Reciprocal Rank Fusion)
+    // 检测查询意图
+    const queryLower = q.toLowerCase();
+    const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
+                          ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
+    const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus'].some(k => queryLower.includes(k));
+
+    // 2. 结果融合 (RRF - Reciprocal Rank Fusion with Intent-Aware Weighting)
     const combinedResults = new Map();
     const k = 60; // RRF constant
+
+    // 根据查询意图调整关键词和向量的权重
+    const keywordWeight = (isCommandQuery || isTechQuery) ? 1.5 : 1.0;  // 命令/技术查询增加关键词权重
+    const vectorWeight = (isCommandQuery || isTechQuery) ? 0.8 : 1.0;   // 命令/技术查询降低向量权重
 
     // 处理关键词结果
     keywordResults.forEach((chunk, index) => {
@@ -478,17 +488,29 @@ app.get('/api/chunks/search', async (req, res) => {
         combinedResults.set(id, { chunk, score: 0, sources: [] });
       }
       const item = combinedResults.get(id);
-      // RRF: 1 / (k + rank)
-      item.score += 1 / (k + index + 1);
-      
+      // RRF: 1 / (k + rank) * weight
+      item.score += (1 / (k + index + 1)) * keywordWeight;
+
       // Keyword Match Bonus: 如果关键词匹配得分极高，给予额外 RRF 权重
       // 这解决了 RRF 对"绝对匹配"不敏感的问题
       if (chunk.score > 10) {
           item.score += 0.05; // 相当于提升排名的效果
       }
-      
+
+      // 额外加分：命令查询且内容包含 nv set/show
+      if (isCommandQuery && chunk.content) {
+          const contentLower = chunk.content.toLowerCase();
+          if (contentLower.includes('nv set') || contentLower.includes('nv show') || contentLower.includes('```')) {
+              item.score += 0.08;
+          }
+          // MLAG 特定加分
+          if (queryLower.includes('mlag') && (contentLower.includes('mlag') || contentLower.includes('bond mlag'))) {
+              item.score += 0.1;
+          }
+      }
+
       item.sources.push('keyword');
-      item.keywordScore = chunk.score; 
+      item.keywordScore = chunk.score;
     });
 
     // 处理向量结果
@@ -499,13 +521,14 @@ app.get('/api/chunks/search', async (req, res) => {
         combinedResults.set(id, { chunk, score: 0, sources: [] });
       }
       const entry = combinedResults.get(id);
-      entry.score += 1 / (k + index + 1);
-      
+      // 应用向量权重
+      entry.score += (1 / (k + index + 1)) * vectorWeight;
+
       // Vector Similarity Bonus: 如果相似度极高 (>0.85)，给予额外权重
       if (item.score > 0.85) {
           entry.score += 0.05;
       }
-      
+
       entry.sources.push('vector');
       entry.vectorScore = item.score;
     });
