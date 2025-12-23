@@ -627,8 +627,10 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
   const files = await fs.readdir(CHUNKS_DIR);
   let topResults = [];
 
-  // 提高向量搜索阈值，减少低质量结果
-  const minScore = 0.3; // 从 0.1 提高到 0.3
+  // 降低向量搜索阈值，提高召回率
+  // 0.3太高，导致很多相关chunks被过滤
+  // 降低到0.2以包含更多相关结果
+  const minScore = 0.2;
 
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
@@ -639,7 +641,7 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
         const score = cosine(queryEmbedding, chunk.embedding);
-        // 只保留高相似度的结果
+        // 只保留相似度足够的结果
         if (score > minScore) {
            topResults.push({ chunk, score });
         }
