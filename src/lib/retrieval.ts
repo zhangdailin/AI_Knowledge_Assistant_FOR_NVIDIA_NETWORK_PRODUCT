@@ -139,6 +139,7 @@ export async function semanticSearch(
   // 优化：使用 LLM 自适应生成关键词，替代硬编码
   // 并行执行：LLM 关键词生成 + 核心查询 Embedding 生成
   let adaptiveKeywords: string[] = [];
+  let llmProductNames: string[] = [];
   let qEmb: number[] | null = null;
   
   try {
@@ -147,8 +148,8 @@ export async function semanticSearch(
       embedText(coreQuery),
       // 只有当查询较长或包含复杂意图时才调用 LLM 生成关键词，避免简单查询的延迟
       coreQuery.length > 5 || coreQuery.split(' ').length > 2 
-        ? aiModelManager.generateSearchKeywords(coreQuery)
-        : Promise.resolve([] as string[])
+        ? aiModelManager.analyzeQueryForSearch(coreQuery)
+        : Promise.resolve({ keywords: [] as string[], productNames: [] as string[] })
     ]);
 
     // 处理 Embedding 结果
@@ -160,7 +161,8 @@ export async function semanticSearch(
 
     // 处理关键词生成结果
     if (results[1].status === 'fulfilled') {
-      adaptiveKeywords = results[1].value;
+      adaptiveKeywords = results[1].value.keywords;
+      llmProductNames = results[1].value.productNames;
     } else {
       console.warn('Adaptive keyword generation failed (using fallback):', results[1].reason);
       // 失败时静默处理，使用空数组
@@ -508,11 +510,9 @@ export async function semanticSearch(
   const queryWords = extractedKeywords.length > 0 ? extractedKeywords : coreQuery.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
   
   // 提取产品关键词（用于检查文档名称匹配）
-  const productKeywordsOnly = queryWords.filter(word => {
-    const isEnglishWord = /^[a-zA-Z]+$/.test(word);
-    const commonCommands = ['ip', 'set', 'get', 'show', 'config', 'configure', 'enable', 'disable', 'start', 'stop', 'restart', 'status'];
-    return isEnglishWord && word.length >= 2 && !commonCommands.includes(word.toLowerCase());
-  });
+  // 优化：直接使用 LLM 智能分析出的产品名称，替代之前的硬编码规则
+  // 这使得代码能够自适应识别 "Cumulus", "NVIDIA", "Cisco" 等特定产品，而不会误判 "BGP", "Linux" 等通用术语
+  const productKeywordsOnly = llmProductNames;
   const hasProductKeywords = productKeywordsOnly.length > 0;
   
   // 对于没有出现在chunksByDoc中的文档，如果它们有chunks且有embedding，也添加到docAvgScores中（分数设为0，后续通过关键词匹配来包含）
@@ -655,7 +655,7 @@ export async function semanticSearch(
   
   // 相关性阈值：使用自适应阈值和固定阈值的组合
   // 降低基础阈值要求，避免过滤掉潜在有用的文档
-  const baseRelevanceThreshold = maxAvgScore * 0.3; // 从 0.5 降低到 0.3
+  const baseRelevanceThreshold = maxAvgScore * 0.2; // 进一步降低到 0.2，更宽松
   const relevanceThreshold = Math.min(adaptiveThreshold, baseRelevanceThreshold); // 使用 min 而不是 max，更宽松
   
   // 过滤掉相关性低的文档，严格检查关键词匹配
@@ -667,70 +667,18 @@ export async function semanticSearch(
   docAvgScores.forEach((avgScore, docId) => {
     const keywordScore = docKeywordScores.get(docId) || 0;
     const hasKeywords = docHasKeywords.get(docId) || false;
-    const doc = allDocs.find(d => d.id === docId);
-    
-    // 检查文档是否包含产品关键词（只检查英文产品关键词，不检查中文关键词）
-    // 严格检查：只检查文档名称，不检查chunks内容（避免误判）
-    const hasProductKeywordsInDoc = productKeywordsOnly.some(keyword => {
-      const keywordLower = keyword.toLowerCase();
-      const filenameLower = doc?.filename.toLowerCase() || '';
-      // 只检查文档名称，不检查chunks内容
-      // 这样可以避免文档内容中只是提到产品名称就被误判为相关文档
-      if (keywordLower === 'nvos' || keywordLower === 'nv') {
-        // nvos -> 优先检查文件名是否直接包含nvos，或者包含nvidia（但不包括只包含ufm的文档）
-        // 如果文件名直接包含nvos，或者包含nvidia（通常nvidia-nvos文档会包含nvidia），则匹配
-        // 但是，如果文件名只包含ufm而不包含nvos或nvidia，则不匹配（避免匹配nvidia-ufm文档）
-        const hasNvos = filenameLower.includes('nvos');
-        const hasNvidia = filenameLower.includes('nvidia');
-        const hasUfm = filenameLower.includes('ufm');
-        // 如果文件名直接包含nvos，或者包含nvidia（且不只有ufm），则匹配
-        const matched = hasNvos || (hasNvidia && !hasUfm);
-        if (matched) {
-          return true;
-        }
-      } else if (filenameLower.includes(keywordLower)) {
-        return true;
-      }
-      return false;
-    });
-    
-    
-    // 如果查询中包含产品关键词，但文档不包含产品关键词，需要进一步检查
-    // 如果文档的chunks内容中包含关键词（hasKeywords），或者平均分数很高，仍然允许通过
-    // 这样可以处理文件名是自动生成（如MinerU_markdown_xxx.md）但内容相关的情况
-    if (hasProductKeywords && !hasProductKeywordsInDoc) {
-      // 如果文档内容中包含关键词，或者平均分数很高（高于阈值的1.2倍），仍然允许通过
-      // 宽松化：只要分数不是极低，或者包含任何关键词，都允许
-      if (!hasKeywords && avgScore < relevanceThreshold) {
-         // 依然排除完全不相关的
-         return; 
-      }
-      // 否则继续处理（文档内容包含关键词或分数足够高）
-    }
-    
-    // 如果文档名称或内容中不包含任何关键词，且平均分数不是特别高，直接排除
-    // 宽松化：只要分数超过阈值即可，不强制要求关键词
-    if (!hasKeywords && avgScore < relevanceThreshold) {
-      return;
-    }
-    
-    // 只要分数超过阈值，就认为是相关的
+
+    // 简化逻辑：只要分数超过阈值，就认为是相关的
+    // 避免过度过滤导致chunks丢失
     if (avgScore >= relevanceThreshold) {
-        relevantDocs.add(docId);
-    }
-    // 如果关键词匹配度很高（文档名称匹配），直接认为是相关的
-    else if (keywordScore >= 1.0 || (hasProductKeywords && hasProductKeywordsInDoc)) {
       relevantDocs.add(docId);
-    } 
-    // 如果关键词匹配度中等，降低相关性阈值要求
-    else if (keywordScore > 0.3) {
-      const adjustedThreshold = relevanceThreshold * 0.8;
-      if (avgScore >= adjustedThreshold) {
-        relevantDocs.add(docId);
-      }
     }
-    // 如果关键词匹配度低，但平均分数很高，仍然考虑
-    else if (hasKeywords && avgScore >= relevanceThreshold * 0.8) { // 降低要求
+    // 如果关键词匹配度很高，直接认为是相关的
+    else if (keywordScore >= 1.0) {
+      relevantDocs.add(docId);
+    }
+    // 如果包含任何关键词且分数不是极低，也认为是相关的
+    else if (hasKeywords && avgScore >= relevanceThreshold * 0.5) {
       relevantDocs.add(docId);
     }
   });

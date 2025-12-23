@@ -9,6 +9,61 @@
  */
 
 /**
+ * 改进 Markdown 结构 - 修复 PDF 转换的常见问题
+ * 注意：保守策略，避免过度修改导致内容破坏
+ */
+function improveMarkdownStructure(text) {
+  let result = text;
+
+  // 1. 只修复多个连续空行（最安全的操作）
+  result = result.replace(/\n\n\n+/g, '\n\n');
+
+  // 2. 修复列表缩进问题 - 标准化为 2 个空格（只处理过度缩进）
+  result = result.replace(/^(\s{4,})(-|\*|\+)\s/gm, '  $2 ');
+
+  // 3. 修复数学符号为普通文本（只处理特定的数学符号）
+  result = result.replace(/\$\\equiv\$/g, '=');
+  result = result.replace(/\$=\$/g, '=');
+
+  // 注意：移除了以下可能破坏内容的操作：
+  // - 不再修改标题层级（可能导致结构混乱）
+  // - 不再转换短代码块为行内代码（可能丢失重要信息）
+  // - 不再修改 NOTE/IMPORTANT 块格式（保持原始格式）
+
+  return result;
+}
+
+/**
+ * 将 HTML 表格转换为 Markdown 格式
+ */
+function convertHtmlTableToMarkdown(html) {
+  return html.replace(/<table[^>]*>([\s\S]*?)<\/table>/gi, (match, tableContent) => {
+    const rows = tableContent.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) || [];
+    if (rows.length === 0) return match;
+
+    const markdownRows = rows.map(row => {
+      const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+      const cellTexts = cells.map(cell => {
+        // 提取 <td>...</td> 中的文本内容
+        const text = cell.replace(/<td[^>]*>/gi, '').replace(/<\/td>/gi, '').trim();
+        // 移除嵌套的 HTML 标签
+        return text.replace(/<[^>]+>/g, '').trim();
+      });
+      return '| ' + cellTexts.join(' | ') + ' |';
+    });
+
+    if (markdownRows.length === 0) return match;
+
+    // 添加分隔符行（在第一行后）
+    const result = [markdownRows[0]];
+    result.push('| ' + markdownRows[0].split('|').slice(1, -1).map(() => '---').join(' | ') + ' |');
+    result.push(...markdownRows.slice(1));
+
+    return '\n' + result.join('\n') + '\n';
+  });
+}
+
+/**
  * 主入口：Markdown 智能分片
  * @param {string} text - Markdown 文本
  * @param {number} maxChunkSize - 最大块大小（字符数）
@@ -24,8 +79,14 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
   console.log(`[Chunking] 开始处理文档，大小: ${Math.round(text.length / 1024)} KB`);
 
   try {
-    // Step 1: 预处理 - 保护代码块
-    const { processedText, codeBlocks } = protectCodeBlocks(text);
+    // Step 0: 改进 Markdown 结构
+    let improvedText = improveMarkdownStructure(text);
+
+    // Step 1: 预处理 - 将 HTML 表格转换为 Markdown
+    let processedInput = convertHtmlTableToMarkdown(improvedText);
+
+    // Step 2: 预处理 - 保护代码块
+    const { processedText, codeBlocks } = protectCodeBlocks(processedInput);
 
     // Step 2: 按标题分割成 sections
     const sections = splitBySections(processedText);
