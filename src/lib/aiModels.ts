@@ -224,11 +224,11 @@ Rules:
         modelToUse = this.QWEN_MODEL;
     }
 
-    let baseTimeout = 10000; // 默认 10s
-    if (isIndexingTask) baseTimeout = 60000; // 索引任务 60s
-    if (isKeywordTask) baseTimeout = 10000;   // 关键词生成任务 10s
+    let baseTimeout = 60000; // 默认 60s，防止超时
+    if (isIndexingTask) baseTimeout = 120000; // 索引任务 120s
+    if (isKeywordTask) baseTimeout = 20000;   // 关键词生成任务 20s
     
-    const timeout = baseTimeout + (attempt * 5000); 
+    const timeout = baseTimeout + (attempt * 10000); // 每次重试增加 10s 
     
     try {
       const controller = new AbortController();

@@ -342,3 +342,51 @@ export function cleanupOldTasks() {
     toDelete.forEach(task => tasks.delete(task.id));
   }
 }
+
+// 恢复中断的任务（服务器启动时调用）
+export async function restoreInterruptedTasks() {
+  console.log('[任务队列] 开始检查未完成的 Embedding 任务...');
+  try {
+    const documents = await storage.getAllDocuments();
+    let restoredCount = 0;
+
+    for (const doc of documents) {
+      // 检查该文档是否已有正在运行的任务（防止重复）
+      const existingTasks = getDocumentTasks(doc.id);
+      const hasRunningTask = existingTasks.some(t => 
+        t.status === TASK_STATUS.PENDING || t.status === TASK_STATUS.PROCESSING
+      );
+
+      if (hasRunningTask) {
+        console.log(`[任务队列] 文档 ${doc.id} 已有运行中的任务，跳过检查`);
+        continue;
+      }
+
+      // 检查 chunks 状态
+      const chunks = await storage.getChunks(doc.id);
+      const chunksWithoutEmbedding = chunks.filter(
+        ch => !ch.embedding || !Array.isArray(ch.embedding) || ch.embedding.length === 0
+      );
+
+      if (chunksWithoutEmbedding.length > 0) {
+        console.log(`[任务队列] 发现文档 ${doc.id} 有 ${chunksWithoutEmbedding.length} 个 chunks 缺失 embedding，自动创建恢复任务`);
+        
+        const task = createTask('generate_embeddings', doc.id, { 
+          reason: 'auto_restore',
+          restoredAt: new Date().toISOString()
+        });
+        
+        // 异步执行，不阻塞启动流程
+        processEmbeddingTask(task.id, doc.id).catch(err => {
+          console.error(`[任务队列] 恢复任务 ${task.id} 执行失败:`, err);
+        });
+        
+        restoredCount++;
+      }
+    }
+    
+    console.log(`[任务队列] 检查完成，共恢复 ${restoredCount} 个任务`);
+  } catch (error) {
+    console.error('[任务队列] 恢复任务失败:', error);
+  }
+}

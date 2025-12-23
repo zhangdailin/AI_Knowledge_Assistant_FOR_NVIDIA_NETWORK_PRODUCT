@@ -685,6 +685,11 @@ console.log(`[Server] Max Heap Size: ${Math.round(totalHeapSize)} MB`);
 const port = process.env.PORT || 8787;
 const server = app.listen(port, () => {
   console.log(`Extractor server listening at http://localhost:${port}`);
+  
+  // 启动时尝试恢复中断的任务
+  setTimeout(() => {
+    taskQueue.restoreInterruptedTasks();
+  }, 5000); // 延迟 5 秒执行，确保服务器已完全启动
 });
 
 // 增加全局异常捕获，防止进程崩溃退出

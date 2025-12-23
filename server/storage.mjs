@@ -377,6 +377,39 @@ const TERM_MAPPINGS = {
   'dns': ['domain name system', 'resolve', 'nameserver']
 };
 
+// 简单的内存缓存
+const chunkCache = new Map(); // file -> { data: [], timestamp: number }
+const CACHE_TTL = 60 * 1000; // 1 minute
+
+async function getChunksFromFile(file) {
+    const now = Date.now();
+    const cached = chunkCache.get(file);
+    if (cached && (now - cached.timestamp < CACHE_TTL)) {
+        return cached.data;
+    }
+    
+    // 清理过期缓存
+    for (const [key, val] of chunkCache.entries()) {
+        if (now - val.timestamp > CACHE_TTL) {
+            chunkCache.delete(key);
+        }
+    }
+    
+    const filePath = path.join(CHUNKS_DIR, file);
+    try {
+        const data = await readJSON(filePath, []);
+        // 只有数据是数组时才缓存
+        if (Array.isArray(data)) {
+            chunkCache.set(file, { data, timestamp: now });
+            return data;
+        }
+        return [];
+    } catch (e) {
+        console.error(`[storage] 读取文件缓存失败: ${file}`, e);
+        return [];
+    }
+}
+
 export async function searchChunks(query, limit = 30) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
@@ -453,7 +486,8 @@ export async function searchChunks(query, limit = 30) {
       });
     }
 
-    const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
+    // 使用缓存读取，替代原本的 readJSON
+    const chunks = await getChunksFromFile(file);
     
     for (const chunk of chunks) {
       const contentLower = chunk.content.toLowerCase();
@@ -547,6 +581,12 @@ export async function searchChunks(query, limit = 30) {
         results.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
       }
     }
+
+    // 内存优化：每处理完一个文件，检查是否需要剪枝
+    if (results.length > limit * 20) {
+        results.sort((a, b) => b.score - a.score);
+        results.length = limit * 10; 
+    }
   }
   
   return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
@@ -571,7 +611,9 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
   
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
-    const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
+    
+    // 使用缓存读取
+    const chunks = await getChunksFromFile(file);
     
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {

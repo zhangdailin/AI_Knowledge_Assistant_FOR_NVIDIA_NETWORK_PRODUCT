@@ -275,16 +275,61 @@ export async function semanticSearch(
   
   
   // ========== 使用 Rerank 模型重新排序 ==========
-  // 使用核心查询对所有召回候选进行重排
+  // 策略调整：按文档分组进行 Rerank，避免一次性发送过多内容导致 Token 超限
   
-  const reranked = await rerank(coreQuery, rerankCandidates.map(t => t.chunk.content));
-  
-  // map reranked back to chunks
-  const contentToChunk = new Map(rerankCandidates.map(t => [t.chunk.content, t.chunk]));
-  const rerankedResults = reranked
-    .map(item => ({ chunk: contentToChunk.get(item.text)!, score: item.score }))
-    .filter(x => !!x.chunk)
-    .sort((a, b) => b.score - a.score); // 按 rerank 分数排序
+  // 1. 按文档 ID 分组候选 Chunks
+  const candidatesByDoc = new Map<string, typeof rerankCandidates>();
+  rerankCandidates.forEach(item => {
+    if (!candidatesByDoc.has(item.chunk.documentId)) {
+      candidatesByDoc.set(item.chunk.documentId, []);
+    }
+    candidatesByDoc.get(item.chunk.documentId)!.push(item);
+  });
+
+  const RERANK_CONTENT_MAX_LENGTH = 500; // 适当放宽单个 Chunk 的长度限制
+  let allRerankedResults: typeof rerankCandidates = [];
+
+  // 2. 对每个文档的 Chunks 分别进行 Rerank
+  for (const [docId, docCandidates] of candidatesByDoc.entries()) {
+    // 限制每个文档最多发送 20 个候选（防止单文档过多）
+    const limitedDocCandidates = docCandidates.slice(0, 20);
+    
+    // 截断内容
+    const truncatedContents = limitedDocCandidates.map(t => {
+      let content = t.chunk.content;
+      if (content.length > RERANK_CONTENT_MAX_LENGTH) {
+        content = content.substring(0, RERANK_CONTENT_MAX_LENGTH);
+      }
+      return content;
+    });
+
+    try {
+      // 调用 Rerank API
+      const reranked = await rerank(coreQuery, truncatedContents);
+      
+      // 映射回原始 Chunk
+      const truncatedToChunk = new Map<string, Chunk>();
+      limitedDocCandidates.forEach((t, i) => {
+          truncatedToChunk.set(truncatedContents[i], t.chunk);
+      });
+
+      const docRerankedResults = reranked
+        .map(item => {
+           const chunk = truncatedToChunk.get(item.text);
+           return chunk ? { chunk, score: item.score } : null;
+        })
+        .filter((x): x is { chunk: Chunk; score: number } => !!x);
+        
+      allRerankedResults.push(...docRerankedResults);
+    } catch (e) {
+      console.warn(`Rerank failed for doc ${docId}, falling back to original scores:`, e);
+      // 如果 Rerank 失败，保留原始候选（使用原始分数作为 fallback，或降低权重）
+      allRerankedResults.push(...limitedDocCandidates);
+    }
+  }
+
+  // 3. 全局排序并取 Top K
+  const rerankedResults = allRerankedResults.sort((a, b) => b.score - a.score);
   
   
   // 处理父子 chunk 关系：如果检索到子块，自动替换为其父块以提供完整上下文（Parent-Child Indexing）
@@ -606,10 +651,12 @@ export async function semanticSearch(
   });
   
   // 找出最高平均分数，用于计算相关性阈值
-  const maxAvgScore = Math.max(...Array.from(docAvgScores.values()));
+  const maxAvgScore = docAvgScores.size > 0 ? Math.max(...Array.from(docAvgScores.values())) : 0;
+  
   // 相关性阈值：使用自适应阈值和固定阈值的组合
-  const baseRelevanceThreshold = maxAvgScore * 0.5;
-  const relevanceThreshold = Math.max(adaptiveThreshold, baseRelevanceThreshold);
+  // 降低基础阈值要求，避免过滤掉潜在有用的文档
+  const baseRelevanceThreshold = maxAvgScore * 0.3; // 从 0.5 降低到 0.3
+  const relevanceThreshold = Math.min(adaptiveThreshold, baseRelevanceThreshold); // 使用 min 而不是 max，更宽松
   
   // 过滤掉相关性低的文档，严格检查关键词匹配
   // 如果查询中包含明确的产品名称或关键词，必须要求文档包含这些关键词
@@ -653,21 +700,26 @@ export async function semanticSearch(
     // 这样可以处理文件名是自动生成（如MinerU_markdown_xxx.md）但内容相关的情况
     if (hasProductKeywords && !hasProductKeywordsInDoc) {
       // 如果文档内容中包含关键词，或者平均分数很高（高于阈值的1.2倍），仍然允许通过
-      if (!hasKeywords && avgScore < relevanceThreshold * 1.2) {
-        return; // 严格排除：查询明确包含产品名称，但文档不包含产品关键词且分数不够高
+      // 宽松化：只要分数不是极低，或者包含任何关键词，都允许
+      if (!hasKeywords && avgScore < relevanceThreshold) {
+         // 依然排除完全不相关的
+         return; 
       }
       // 否则继续处理（文档内容包含关键词或分数足够高）
     }
     
     // 如果文档名称或内容中不包含任何关键词，且平均分数不是特别高，直接排除
-    if (!hasKeywords && avgScore < maxAvgScore * 0.8) {
-      // 不包含关键词且分数不够高，排除（提高阈值到80%）
+    // 宽松化：只要分数超过阈值即可，不强制要求关键词
+    if (!hasKeywords && avgScore < relevanceThreshold) {
       return;
     }
     
+    // 只要分数超过阈值，就认为是相关的
+    if (avgScore >= relevanceThreshold) {
+        relevantDocs.add(docId);
+    }
     // 如果关键词匹配度很高（文档名称匹配），直接认为是相关的
-    // 特别地，如果查询包含产品关键词（如nvos），而文档名称直接包含该关键词，强制包含
-    if (keywordScore >= 1.0 || (hasProductKeywords && hasProductKeywordsInDoc)) {
+    else if (keywordScore >= 1.0 || (hasProductKeywords && hasProductKeywordsInDoc)) {
       relevantDocs.add(docId);
     } 
     // 如果关键词匹配度中等，降低相关性阈值要求
@@ -678,12 +730,7 @@ export async function semanticSearch(
       }
     }
     // 如果关键词匹配度低，但平均分数很高，仍然考虑
-    // 特别地，如果文档内容包含关键词（hasKeywords），即使文档名称不包含产品关键词，也允许通过
-    else if (hasKeywords && avgScore >= relevanceThreshold * 1.2) {
-      relevantDocs.add(docId);
-    }
-    // 如果没有产品关键词，且平均分数很高，也允许通过
-    else if (!hasProductKeywords && avgScore >= relevanceThreshold * 1.2) {
+    else if (hasKeywords && avgScore >= relevanceThreshold * 0.8) { // 降低要求
       relevantDocs.add(docId);
     }
   });

@@ -118,30 +118,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
       
       // 获取对话历史用于查询增强和AI模型上下文
       const recentMessages = get().messages.slice(-10);
+      /*
       const conversationHistoryForSearch = recentMessages
         .filter(msg => msg.role === 'user' || msg.role === 'assistant')
         .map(msg => msg.content);
+      */
+      // 用户反馈：取消上下文传递
+      const conversationHistoryForSearch: string[] = [];
       
       const searchResults = await retrieval.semanticSearch(content, 20, conversationHistoryForSearch);
       
+      // 用户请求：只给 AI 发送 Rerank 后的 Top 10 数据
+      const topResults = searchResults.slice(0, 10);
+
       // 直接使用检索结果的内容，不再进行复杂的重排
       // retrieval.semanticSearch 已经处理了排序、多样性和去重
-      const references = searchResults.map(r => r.chunk.content);
+      const references = topResults.map(r => r.chunk.content);
       
       // 检查搜索结果的相关性分数
       // 降低阈值，信任检索模块的自适应阈值
       // 只要检索模块返回了结果，就认为是有价值的
-      const maxScore = searchResults.length > 0 
-        ? Math.max(...searchResults.map(r => r.score))
+      const maxScore = topResults.length > 0 
+        ? Math.max(...topResults.map(r => r.score))
         : 0;
       
       // 只有当分数极低且数量很少时，才视为低相关性
       const relevanceThreshold = 0.15; 
-      const isLowRelevance = searchResults.length > 0 && maxScore < relevanceThreshold;
+      const isLowRelevance = topResults.length > 0 && maxScore < relevanceThreshold;
 
       // 如果知识库未命中(空结果)或相关性极低，尝试使用 Qwen 8B 模型（不带参考内容）
       // 但如果用户是在问具体的文档内容（如"总结文档"），即使分数低也应该带上参考内容
-      if (searchResults.length === 0 || (isLowRelevance && !content.includes('总结') && !content.includes('概述'))) {
+      if (topResults.length === 0 || (isLowRelevance && !content.includes('总结') && !content.includes('概述'))) {
         
         try {
           // 使用 Qwen 8B 模型（SiliconFlow）回答问题
@@ -203,17 +210,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       // 获取对话历史作为上下文（最近5轮对话）- 用于AI模型
+      // 用户反馈：取消上下文传递，避免模型混淆或超出上下文限制
+      /*
       const conversationHistory = recentMessages
         .filter(msg => msg.role === 'user' || msg.role === 'assistant')
         .map(msg => `${msg.role === 'user' ? '用户' : '助手'}: ${msg.content}`)
         .join('\n\n');
+      */
       
       // 调用AI模型
       const chatRequest: ChatRequest = {
         question: content,
         model: currentModel,
         references,
-        conversationHistory: conversationHistory || undefined, // 传递对话历史
+        conversationHistory: undefined, // 取消传递对话历史
         deepThinking: deepThinking // 传递深度思考模式
       };
 
