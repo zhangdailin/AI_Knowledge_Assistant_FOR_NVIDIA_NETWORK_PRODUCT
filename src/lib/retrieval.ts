@@ -835,6 +835,34 @@ export async function semanticSearch(
   // 最后按分数重新排序
   finalResult.sort((a, b) => b.score - a.score);
   const result = finalResult.slice(0, limit);
+
+  // 激进的fallback：如果最终结果为空，返回所有可用的chunks
+  if (result.length === 0) {
+    console.warn('[Retrieval] 最终结果为空，使用激进fallback');
+
+    // 尝试从enhancedResults中返回
+    if (enhancedResults.length > 0) {
+      console.warn(`[Retrieval] 从enhancedResults返回${Math.min(limit, enhancedResults.length)}个chunks`);
+      return enhancedResults.slice(0, limit);
+    }
+
+    // 如果enhancedResults也为空，尝试从所有chunks中搜索
+    const allChunks = await unifiedStorageManager.getAllChunks?.() || [];
+    if (allChunks.length > 0) {
+      const queryLower = coreQuery.toLowerCase();
+      const matchingChunks = allChunks
+        .filter(c => c.content.toLowerCase().includes(queryLower) ||
+                     queryLower.split(/\s+/).some(w => c.content.toLowerCase().includes(w)))
+        .map(c => ({ chunk: c, score: 0.5 }))
+        .slice(0, limit);
+
+      if (matchingChunks.length > 0) {
+        console.warn(`[Retrieval] 从所有chunks中找到${matchingChunks.length}个匹配chunks`);
+        return matchingChunks;
+      }
+    }
+  }
+
   return result;
 }
 
