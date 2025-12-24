@@ -628,14 +628,12 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
   let topResults = [];
 
   // 降低向量搜索阈值，提高召回率
-  // 0.3太高，导致很多相关chunks被过滤
-  // 降低到0.2以包含更多相关结果
   const minScore = 0.2;
 
+  // 第一步：从所有文件中收集所有chunks
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
 
-    // 使用缓存读取
     const chunks = await getChunksFromFile(file);
 
     for (const chunk of chunks) {
@@ -647,14 +645,10 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
         }
       }
     }
-
-    // Memory optimization: Prune results periodically if they get too large
-    if (topResults.length > limit * 5) {
-      topResults.sort((a, b) => b.score - a.score);
-      topResults = topResults.slice(0, limit * 2);
-    }
   }
 
+  // 第二步：排序并返回前limit个结果
+  // 注意：不在循环中进行剪枝，而是在最后统一排序
   return topResults.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 

@@ -195,6 +195,8 @@ export async function semanticSearch(
     qEmb ? unifiedStorageManager.vectorSearchChunks(qEmb, limit * 3) : Promise.resolve([]),
     unifiedStorageManager.searchSimilarChunks(enhancedQueryForKeyword, limit * 3)
   ]);
+
+  console.log(`[Retrieval] 向量搜索: ${vectorResults.length} chunks, 关键词搜索: ${keywordResults.length} chunks`);
   
   // 转换 keyword results
   const keywordRecall = keywordResults.map(item => ({
@@ -271,6 +273,8 @@ export async function semanticSearch(
       sources: item.sources
     }))
     .sort((a, b) => b.score - a.score);
+
+  console.log(`[Retrieval] RRF融合后: ${mergedResults.length} chunks`);
   
   // 选择 Top K 候选进行重排
   const rerankCandidates = mergedResults.slice(0, Math.floor(adjustedLimit * rerankCandidatesMultiplier));
@@ -332,6 +336,9 @@ export async function semanticSearch(
 
   // 3. 全局排序并取 Top K
   const rerankedResults = allRerankedResults.sort((a, b) => b.score - a.score);
+
+  console.log(`[Retrieval] Rerank前: ${mergedResults.slice(0, 5).map(r => r.score.toFixed(6)).join(', ')}`);
+  console.log(`[Retrieval] Rerank后: ${rerankedResults.slice(0, 5).map(r => r.score.toFixed(6)).join(', ')}`);
   
   
   // 处理父子 chunk 关系：如果检索到子块，自动替换为其父块以提供完整上下文（Parent-Child Indexing）
@@ -682,7 +689,7 @@ export async function semanticSearch(
       relevantDocs.add(docId);
     }
   });
-  
+
   // 只从相关性高的文档中选择chunks
   const relevantChunksByDoc = new Map<string, typeof enhancedResults>();
   chunksByDoc.forEach((docChunks, docId) => {
@@ -690,6 +697,8 @@ export async function semanticSearch(
       relevantChunksByDoc.set(docId, docChunks);
     }
   });
+
+  console.log(`[Retrieval] 相关文档: ${relevantDocs.size}, 相关chunks: ${relevantChunksByDoc.size}`);
   
   
   // 对于被标记为相关但没有出现在chunksByDoc中的文档（如文件名直接匹配产品关键词），
@@ -699,47 +708,46 @@ export async function semanticSearch(
       // 这个文档被标记为相关，但没有出现在top chunks中
       // 从它的所有chunks中选择一些（优先选择有embedding的，如果没有embedding，也选择一些）
       let docChunks = chunksWithEmbedding.filter(c => c.documentId === docId);
-      
-      // 如果文档的chunks没有embedding，也从all中获取这个文档的所有chunks
+
+      // 如果文档的chunks没有embedding，跳过此文档
+      // (all 变量已被移除，不再获取所有chunks以避免OOM)
       if (docChunks.length === 0) {
-        docChunks = all.filter(c => c.documentId === docId);
+        continue;
       }
-      
-      if (docChunks.length > 0) {
-        let docScored: Array<{ chunk: Chunk; score: number }>;
-        
-        // 如果chunks有embedding，计算语义相似度分数
-        if (docChunks[0].embedding && Array.isArray(docChunks[0].embedding) && docChunks[0].embedding.length > 0) {
-          docScored = docChunks.map(c => ({
-            chunk: c,
-            score: cosine(qEmb, c.embedding as number[])
-          }));
-        } else {
-          // 如果chunks没有embedding，使用简单的文本匹配分数
-          const queryWordsLower = queryWords.map(w => w.toLowerCase());
-          docScored = docChunks.map(c => {
-            const contentLower = c.content.toLowerCase();
-            let score = 0;
-            queryWordsLower.forEach(word => {
-              if (contentLower.includes(word)) {
-                score += 0.1;
-              }
-            });
-            return { chunk: c, score };
+
+      let docScored: Array<{ chunk: Chunk; score: number }>;
+
+      // 如果chunks有embedding，计算语义相似度分数
+      if (docChunks[0].embedding && Array.isArray(docChunks[0].embedding) && docChunks[0].embedding.length > 0) {
+        docScored = docChunks.map(c => ({
+          chunk: c,
+          score: cosine(qEmb, c.embedding as number[])
+        }));
+      } else {
+        // 如果chunks没有embedding，使用简单的文本匹配分数
+        const queryWordsLower = queryWords.map(w => w.toLowerCase());
+        docScored = docChunks.map(c => {
+          const contentLower = c.content.toLowerCase();
+          let score = 0;
+          queryWordsLower.forEach(word => {
+            if (contentLower.includes(word)) {
+              score += 0.1;
+            }
           });
-        }
-        
-        docScored.sort((a, b) => b.score - a.score);
-        // 选择前10个chunks（或更少，如果文档chunks数量较少）
-        const selectedChunks = docScored.slice(0, Math.min(10, docScored.length));
-        // 使用重排分数（如果没有重排，使用语义相似度分数）
-        const rerankedForDoc = await rerank(coreQuery, selectedChunks.map(t => t.chunk.content));
-        const contentToChunkMap = new Map(selectedChunks.map(t => [t.chunk.content, t.chunk]));
-        const rerankedChunks = rerankedForDoc
-          .map(item => ({ chunk: contentToChunkMap.get(item.text)!, score: item.score }))
-          .filter(x => !!x.chunk);
-        relevantChunksByDoc.set(docId, rerankedChunks);
+          return { chunk: c, score };
+        });
       }
+
+      docScored.sort((a, b) => b.score - a.score);
+      // 选择前10个chunks（或更少，如果文档chunks数量较少）
+      const selectedChunks = docScored.slice(0, Math.min(10, docScored.length));
+      // 使用重排分数（如果没有重排，使用语义相似度分数）
+      const rerankedForDoc = await rerank(coreQuery, selectedChunks.map(t => t.chunk.content));
+      const contentToChunkMap = new Map(selectedChunks.map(t => [t.chunk.content, t.chunk]));
+      const rerankedChunks = rerankedForDoc
+        .map(item => ({ chunk: contentToChunkMap.get(item.text)!, score: item.score }))
+        .filter(x => !!x.chunk);
+      relevantChunksByDoc.set(docId, rerankedChunks);
     }
   }
   
@@ -835,6 +843,8 @@ export async function semanticSearch(
   // 最后按分数重新排序
   finalResult.sort((a, b) => b.score - a.score);
   const result = finalResult.slice(0, limit);
+
+  console.log(`[Retrieval] 最终结果: ${result.length} chunks`);
 
   // 激进的fallback：如果最终结果为空，返回所有可用的chunks
   if (result.length === 0) {

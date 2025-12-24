@@ -6,9 +6,9 @@
     "fileSize": 1046682,
     "category": "default",
     "contentPreview": "# Cumulus Linux 5.9 User Guide\n\nNVIDIA® Cumulus Linux is the first full-featured Debian bookworm-based, Linux operating system for the networking industry.\n\nThis user guide provides in-depth documentation on the Cumulus Linux installation process, system configuration and management, network solutions, and monitoring and troubleshooting recommendations. In addition, the quick start guide provides an end-to-end setup process to get you started.\n\nCumulus Linux 5.9 includes the NVIDIA NetQ agent an",
-    "uploadedAt": "2025-12-23T09:12:08.487Z",
+    "uploadedAt": "2025-12-23T15:24:35.663Z",
     "status": "ready",
-    "id": "doc-1766481128488"
+    "id": "doc-1766503475664"
   },
   {
     "userId": "public",
@@ -17,9 +17,9 @@
     "fileSize": 814986,
     "category": "default",
     "contentPreview": "The switch with the lower priority value is in the primary role; the default value is 32768 and the range is between 0 and 65535.\n\nWhen the MLAG service exits during switch reboot or if you stop the service on the primary switch, the peer switch that is in the secondary role becomes the primary.\n\nHowever, if the primary switch goes down without stopping the MLAG service or if the peer link goes down, the secondary switch does not change its role. If the peer switch is not alive, the switch in th",
-    "uploadedAt": "2025-12-23T09:18:23.267Z",
+    "uploadedAt": "2025-12-24T00:46:25.524Z",
     "status": "ready",
-    "id": "doc-1766481503268"
+    "id": "doc-1766537185525"
   },
   {
     "userId": "public",
@@ -28,8 +28,8 @@
     "fileSize": 1075052,
     "category": "default",
     "contentPreview": "```txt\ncumulus@spine01:~$ sudo vtysh...\nspine01# configure terminal\nspine01(config)# hostname spine01-1\nspine01-1(config)# do sh run\nBuilding configuration...\nCurrent configuration:\n!\nfrr version 7.0+cl4u3\nfrr defaults datacenter\nhostname spine01\nhostname spine01-1\n...\n```\n\nNOTE\n\nIf you configure the same numbered BGP neighbor with both the neighbor x.x.x.x and neighbor swp# interface commands, two neighbor entries are present for the same IP address in the configuration. To correct this issue, ",
-    "uploadedAt": "2025-12-23T09:30:44.522Z",
+    "uploadedAt": "2025-12-24T00:48:29.161Z",
     "status": "ready",
-    "id": "doc-1766482244523"
+    "id": "doc-1766537309162"
   }
 ]

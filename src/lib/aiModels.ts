@@ -160,34 +160,72 @@ class AIModelManager {
   }
 
 
+
+
+
+
   // 生成搜索关键词（自适应检索）
   async generateSearchKeywords(query: string): Promise<string[]> {
-    const systemPrompt = `You are a search query optimizer for a network operating system documentation (like NVIDIA Cumulus Linux). 
-Your task is to extract relevant technical search keywords, synonyms, and command prefixes from the user's query.
-Rules:
-1. Expand acronyms (e.g., "acl" -> "access control list").
-2. Add relevant command prefixes (e.g., if query implies config, add "nv set", "net add").
-3. Include specific protocol terms (e.g., "bgp" -> "neighbor", "peer").
-4. Output ONLY the keywords separated by spaces. Do not output explanations.`;
+    const { keywords } = await this.analyzeQueryForSearch(query);
+    return keywords;
+  }
+
+  // 智能分析查询意图，提取关键词并识别产品名称
+  // 让大模型自适应判断哪些是"产品名称"，哪些是"通用技术术语"
+  async analyzeQueryForSearch(query: string): Promise<{ keywords: string[], productNames: string[] }> {
+    const systemPrompt = `You are a query analyzer for a technical documentation search engine.
+Your task is to analyze the user's query and extract two types of information:
+1. "keywords": Technical terms, protocols, commands, and concepts (e.g., "bgp", "acl", "configuration", "linux"). Expand acronyms if helpful.
+2. "productNames": Specific product names, vendor names, or hardware models that explicitly limit the scope (e.g., "Cumulus", "NVIDIA", "Cisco", "ConnectX-6"). 
+   - DO NOT include general technical terms like "switch", "router", "network", "linux", "bgp", "evpn", "vxlan", "ip", "interface" in productNames.
+   - Only include names that imply the user implies "I only want docs about X".
+
+Output JSON format ONLY:
+{
+  "keywords": ["term1", "term2"],
+  "productNames": ["prod1"]
+}`;
 
     try {
-      // 这里的 model 参数我们传 undefined，让 callSiliconFlow 内部自动选择 FAST_MODEL
+      // 使用 FAST_MODEL 进行快速分析
       const response = await this.callSiliconFlow(
         query,
-        undefined, // Let callSiliconFlow pick FAST_MODEL
+        undefined, 
         0,
         systemPrompt,
         false
       );
       
       const text = response.answer.trim();
-      return text.split(/[\s,]+/)
-        .map(w => w.trim())
-        .filter(w => w.length > 1 && !['and', 'or', 'the', 'a', 'an', 'in', 'on', 'to', 'for', 'of', 'with'].includes(w.toLowerCase()));
-        
+      // 尝试解析 JSON
+      const jsonStart = text.indexOf('{');
+      const jsonEnd = text.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        const jsonStr = text.substring(jsonStart, jsonEnd + 1);
+        try {
+            const data = JSON.parse(jsonStr);
+            return {
+                keywords: Array.isArray(data.keywords) ? data.keywords : [],
+                productNames: Array.isArray(data.productNames) ? data.productNames : []
+            };
+        } catch (e) {
+            console.warn('JSON parsing failed for query analysis', e);
+        }
+      }
+      
+      // 如果 JSON 解析失败，回退到简单的文本处理
+      console.warn('Invalid JSON format from LLM, falling back to text processing');
+      return {
+          keywords: this.extractKeywords(query),
+          productNames: []
+      };
+      
     } catch (error) {
-      console.warn('Keyword generation failed, falling back to basic extraction:', error);
-      return this.extractKeywords(query);
+      console.warn('Query analysis failed, falling back to basic extraction:', error);
+      return {
+          keywords: this.extractKeywords(query),
+          productNames: [] // Fallback: assume no specific product restriction
+      };
     }
   }
 
@@ -294,25 +332,13 @@ Rules:
   private generateEnhancedMockAnswer(context: string, model: string, references?: string[], originalQuestion?: string): ChatResponse {
     // 严格的模拟回答生成 - 防止幻觉
     let hasReferences = references && references.length > 0;
-    
-    // 如果提供了原始问题，检查参考内容的相关性
-    if (hasReferences && originalQuestion) {
-      const keywords = this.extractKeywords(originalQuestion);
-      // 检查是否有任何关键词在任何参考内容中出现（不区分大小写）
-      const isRelevant = references!.some(ref => {
-        const refLower = ref.toLowerCase();
-        return keywords.some(kw => refLower.includes(kw.toLowerCase()));
-      });
-      
-      // 如果没有匹配的关键词，视为无参考内容，避免显示不相关的文档
-      if (!isRelevant) {
-        console.warn('参考内容与问题关键词不匹配，降级为无参考内容模式');
-        hasReferences = false;
-      }
-    }
-    
+
+    // 简化逻辑：只要有references就认为有相关内容
+    // 避免过度过滤导致chunks被丢弃
+    // 原来的关键词匹配逻辑太严格，导致有效的chunks被过滤掉
+
     let answer = '';
-    
+
     if (hasReferences) {
       // 如果有参考内容，生成基于参考的回答
       answer = `根据提供的参考内容：\n\n`;
@@ -329,7 +355,7 @@ Rules:
       answer += `3. 可以上传厂商官方配置指南或CLI参考手册\n\n`;
       answer += `建议上传与您问题主题相关的具体技术文档（例如：BGP、路由、接口配置等）。`;
     }
-    
+
     return {
       answer,
       model: model,

@@ -127,24 +127,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const conversationHistoryForSearch: string[] = [];
       
       const searchResults = await retrieval.semanticSearch(content, 20, conversationHistoryForSearch);
-      
+
+      console.log(`[ChatStore] 检索返回: ${searchResults.length} chunks`);
+
       // 用户请求：只给 AI 发送 Rerank 后的 Top 10 数据
       const topResults = searchResults.slice(0, 10);
 
       // 直接使用检索结果的内容，不再进行复杂的重排
       // retrieval.semanticSearch 已经处理了排序、多样性和去重
       const references = topResults.map(r => r.chunk.content);
-      
+
       // 检查搜索结果的相关性分数
-      // 降低阈值，信任检索模块的自适应阈值
-      // 只要检索模块返回了结果，就认为是有价值的
-      const maxScore = topResults.length > 0 
+      // 降低阈值以匹配 reranker 模型的实际分数范围
+      // BAAI/bge-reranker-v2-m3 和 bge-reranker-large 通常产生较低的分数
+      // 但这些分数仍然表示高相关性（0.05-0.1 已经是很好的匹配）
+      const maxScore = topResults.length > 0
         ? Math.max(...topResults.map(r => r.score))
         : 0;
-      
-      // 只有当分数极低且数量很少时，才视为低相关性
-      const relevanceThreshold = 0.15; 
+
+      console.log(`[ChatStore] 最高分数: ${maxScore.toFixed(6)}, 前10个chunks: ${topResults.length}`);
+
+      // 调整阈值以匹配 reranker 的分数范围
+      // 如果最高分 > 0.01，认为有相关结果
+      const relevanceThreshold = 0.01;
       const isLowRelevance = topResults.length > 0 && maxScore < relevanceThreshold;
+
+      console.log(`[ChatStore] 相关性阈值: ${relevanceThreshold}, 是否低相关性: ${isLowRelevance}`);
 
       // 如果知识库未命中(空结果)或相关性极低，尝试使用 Qwen 8B 模型（不带参考内容）
       // 但如果用户是在问具体的文档内容（如"总结文档"），即使分数低也应该带上参考内容
