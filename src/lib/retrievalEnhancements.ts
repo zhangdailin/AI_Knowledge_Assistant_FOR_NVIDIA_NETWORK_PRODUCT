@@ -1,8 +1,9 @@
 import { advancedKeywordExtractor } from './advancedKeywordExtractor';
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
+import { advancedIntentDetector, type QueryIntent as AdvancedQueryIntent, type IntentResult } from './advancedIntentDetector';
 
-// 查询意图类型
-export type QueryIntent = 'command' | 'question' | 'network_config' | 'general';
+// 向后兼容：保留旧的意图类型
+export type QueryIntent = 'command' | 'question' | 'network_config' | 'general' | AdvancedQueryIntent;
 
 // 检索参数接口
 export interface RetrievalParams {
@@ -12,75 +13,31 @@ export interface RetrievalParams {
 }
 
 /**
- * 检测查询意图
+ * 检测查询意图（使用高级意图识别器）
  */
-export function detectQueryIntent(query: string): QueryIntent {
-  const queryLower = query.toLowerCase();
-  
-  // 检测网络配置意图（包含网络技术术语）
-  const networkTechTerms = ['pfc', 'ecn', 'roce', 'qos', 'bgp', 'routing', 'priority flow control', 'explicit congestion notification',
-                           'rdma', 'traffic control', 'congestion control', 'flow control', 'border gateway protocol', 'm-lag', 'mlag',
-                           'nv set', 'nv show', 'nvue', 'clag', 'bond', 'lacp', 'vxlan', 'evpn', 'cumulus'];
-  const hasNetworkTerms = networkTechTerms.some(term => queryLower.includes(term.toLowerCase()));
-  
-  // 检测网络配置命令
-  const networkConfigKeywords = ['配置', 'configure', '设置', 'setup', 'enable', 'disable', 'check', '查看', '查询', 'what is', '什么是'];
-  const hasNetworkConfig = networkConfigKeywords.some(keyword => queryLower.includes(keyword));
-  
-  // 只要包含特定的强技术术语，就认为是网络技术查询，使用专用提取器
-  if (hasNetworkTerms) {
-    return 'network_config';
-  }
-  
-  if (hasNetworkTerms && hasNetworkConfig) {
-    return 'network_config';
-  }
-  
-  // 检测命令意图（包含命令关键词）
-  const commandKeywords = ['如何', '怎么', '怎样', '命令', '配置', '设置', 'show', 'config', 'how to', 'how do'];
-  if (commandKeywords.some(keyword => queryLower.includes(keyword))) {
-    return 'command';
-  }
-  
-  // 检测问题意图（包含疑问词）
-  const questionKeywords = ['什么', '哪个', '哪些', '为什么', '是否', '能否', 'what', 'which', 'why', 'when', 'where'];
-  if (questionKeywords.some(keyword => queryLower.includes(keyword))) {
-    return 'question';
-  }
-  
-  return 'general';
+export function detectQueryIntent(query: string, conversationHistory?: string[]): QueryIntent {
+  const result = advancedIntentDetector.detect(query, conversationHistory);
+  return result.intent;
+}
+
+/**
+ * 获取完整的意图识别结果（包括置信度等）
+ */
+export function detectQueryIntentAdvanced(query: string, conversationHistory?: string[]): IntentResult {
+  return advancedIntentDetector.detect(query, conversationHistory);
 }
 
 /**
  * 根据意图获取检索参数
  */
 export function getRetrievalParamsForIntent(intent: QueryIntent): RetrievalParams {
-  switch (intent) {
-    case 'command':
-      return {
-        limit: 20,
-        rerankCandidates: 60,
-        minScore: 0.3
-      };
-    case 'question':
-      return {
-        limit: 20,
-        rerankCandidates: 60,
-        minScore: 0.4
-      };
-    case 'network_config':
-      return {
-        limit: 20,
-        rerankCandidates: 60,
-        minScore: 0.25  // 降低网络配置的阈值，确保能找到技术文档
-      };
-    default:
-      return {
-        limit: 20,
-        rerankCandidates: 60,
-        minScore: 0.35
-      };
-  }
+  // 使用高级意图检测器的参数调整
+  const params = advancedIntentDetector.getRetrievalParams(intent as AdvancedQueryIntent, 0.7);
+  return {
+    limit: params.limit,
+    rerankCandidates: params.rerankCandidates,
+    minScore: params.minScore
+  };
 }
 
 /**

@@ -47,7 +47,20 @@
       "Bash(node test-server-response-format.mjs)",
       "Bash(node test-frontend-api-call.mjs)",
       "Bash(node test-bgp-keywords.mjs)",
-      "Bash(node verify-fix.mjs)"
+      "Bash(node verify-fix.mjs)",
+      "Bash(node:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr :8787)",
+      "Bash(start /B npm run server)",
+      "Bash(npm run server)",
+      "Bash(timeout /t 5 /nobreak)",
+      "Bash(curl -s \"http://localhost:8787/api/chunks/search?q=%E5%A6%82%E4%BD%95%E6%9F%A5%E8%AF%A2%E6%8E%A5%E5%8F%A3%E7%8A%B6%E6%80%81&limit=3\")",
+      "Bash(curl -s -X POST \"http://localhost:8787/api/test-ai\" -H \"Content-Type: application/json\" -d \"{\"\"question\"\":\"\"如何查询接口状态\"\",\"\"references\"\":[\"\"nv show interface命令可以显示所有接口的状态\"\"]}\")",
+      "Bash(npm run test:run -- test/advanced-intent-test.mjs)",
+      "Bash(npm test)",
+      "Bash(node test/advanced-intent-test.mjs)",
+      "Bash(node test/performance-benchmark.mjs)",
+      "Bash(node test/relay-optimization-benchmark.mjs)"
     ]
   }
 }

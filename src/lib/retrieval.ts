@@ -2,6 +2,7 @@ import { unifiedStorageManager, Chunk } from './localStorage';
 // import { optimizeTextForEmbedding } from './chunkingEnhancements';
 import {
   detectQueryIntent,
+  detectQueryIntentAdvanced,
   getRetrievalParamsForIntent,
   enhanceQueryWithHistory,
   extractCoreQueryEnhanced,
@@ -10,6 +11,7 @@ import {
 } from './retrievalEnhancements';
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
 import { aiModelManager } from './aiModels';
+import { queryCacheManager } from './queryCacheManager';
 
 const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
 const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
@@ -115,17 +117,33 @@ function extractCoreQuery(originalQuery: string): string {
  * @returns 检索结果，按相关性排序
  */
 export async function semanticSearch(
-  query: string, 
+  query: string,
   limit = 20,
   conversationHistory: string[] = []
 ): Promise<{ chunk: Chunk; score: number }[]> {
-  // 1. 查询意图识别
-  const intent = detectQueryIntent(query);
-  
+  // 0. 检查缓存
+  const cacheKey = { limit, historyLength: conversationHistory.length };
+  const cachedResult = queryCacheManager.get<{ chunk: Chunk; score: number }[]>(
+    query,
+    'semantic',
+    cacheKey
+  );
+  if (cachedResult) {
+    console.log('[Cache] 命中查询缓存');
+    return cachedResult;
+  }
+
+  // 1. 高级查询意图识别
+  const intentResult = detectQueryIntentAdvanced(query, conversationHistory);
+  const intent = intentResult.intent;
+
   // 2. 根据意图调整检索参数
   const retrievalParams = getRetrievalParamsForIntent(intent);
   const adjustedLimit = Math.max(limit, retrievalParams.limit);
   const rerankCandidatesMultiplier = retrievalParams.rerankCandidates / adjustedLimit;
+
+  // 日志：记录识别的意图和置信度
+  console.log(`[Intent] ${intent} (confidence: ${(intentResult.confidence * 100).toFixed(1)}%)`);
   
   // 3. 查询增强：基于历史对话
   const enhancedQuery = conversationHistory.length > 0 
@@ -281,8 +299,9 @@ export async function semanticSearch(
   
   
   // ========== 使用 Rerank 模型重新排序 ==========
-  // 策略调整：按文档分组进行 Rerank，避免一次性发送过多内容导致 Token 超限
-  
+  // 优化策略：批量Rerank而不是按文档分别处理
+  // 限制到前3个文档以减少API调用
+
   // 1. 按文档 ID 分组候选 Chunks
   const candidatesByDoc = new Map<string, typeof rerankCandidates>();
   rerankCandidates.forEach(item => {
@@ -292,49 +311,56 @@ export async function semanticSearch(
     candidatesByDoc.get(item.chunk.documentId)!.push(item);
   });
 
-  const RERANK_CONTENT_MAX_LENGTH = 500; // 适当放宽单个 Chunk 的长度限制
+  const RERANK_CONTENT_MAX_LENGTH = 500;
   let allRerankedResults: typeof rerankCandidates = [];
 
-  // 2. 对每个文档的 Chunks 分别进行 Rerank
-  for (const [docId, docCandidates] of candidatesByDoc.entries()) {
-    // 限制每个文档最多发送 20 个候选（防止单文档过多）
-    const limitedDocCandidates = docCandidates.slice(0, 20);
-    
-    // 截断内容
-    const truncatedContents = limitedDocCandidates.map(t => {
-      let content = t.chunk.content;
+  // 2. 优化：只对前3个文档进行Rerank，减少API调用
+  const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, 3);
+  const docsToRerank = topDocIds.map(docId => ({
+    docId,
+    candidates: candidatesByDoc.get(docId)!.slice(0, 20)
+  }));
+
+  // 3. 批量Rerank：收集所有候选，一次API调用
+  const allCandidatesForRerank: Array<{ docId: string; index: number; chunk: Chunk; content: string }> = [];
+
+  docsToRerank.forEach(({ docId, candidates }) => {
+    candidates.forEach((item, index) => {
+      let content = item.chunk.content;
       if (content.length > RERANK_CONTENT_MAX_LENGTH) {
         content = content.substring(0, RERANK_CONTENT_MAX_LENGTH);
       }
-      return content;
+      allCandidatesForRerank.push({ docId, index, chunk: item.chunk, content });
+    });
+  });
+
+  try {
+    // 单次API调用处理所有候选
+    const reranked = await rerank(coreQuery, allCandidatesForRerank.map(c => c.content));
+
+    // 映射回原始Chunk
+    const rerankedMap = new Map<string, number>();
+    reranked.forEach((item, idx) => {
+      rerankedMap.set(item.text, item.score);
     });
 
-    try {
-      // 调用 Rerank API
-      const reranked = await rerank(coreQuery, truncatedContents);
-      
-      // 映射回原始 Chunk
-      const truncatedToChunk = new Map<string, Chunk>();
-      limitedDocCandidates.forEach((t, i) => {
-          truncatedToChunk.set(truncatedContents[i], t.chunk);
-      });
+    allCandidatesForRerank.forEach(({ chunk, content }) => {
+      const score = rerankedMap.get(content) || 0;
+      allRerankedResults.push({ chunk, score });
+    });
+  } catch (e) {
+    console.warn('Batch rerank failed, falling back to original scores:', e);
+    allRerankedResults = allCandidatesForRerank.map(c => ({ chunk: c.chunk, score: 0.5 }));
+  }
 
-      const docRerankedResults = reranked
-        .map(item => {
-           const chunk = truncatedToChunk.get(item.text);
-           return chunk ? { chunk, score: item.score } : null;
-        })
-        .filter((x): x is { chunk: Chunk; score: number } => !!x);
-        
-      allRerankedResults.push(...docRerankedResults);
-    } catch (e) {
-      console.warn(`Rerank failed for doc ${docId}, falling back to original scores:`, e);
-      // 如果 Rerank 失败，保留原始候选（使用原始分数作为 fallback，或降低权重）
-      allRerankedResults.push(...limitedDocCandidates);
+  // 4. 添加未Rerank的文档候选（其他文档）
+  for (const [docId, candidates] of candidatesByDoc.entries()) {
+    if (!topDocIds.includes(docId)) {
+      allRerankedResults.push(...candidates.slice(0, 10));
     }
   }
 
-  // 3. 全局排序并取 Top K
+  // 5. 全局排序并取 Top K
   const rerankedResults = allRerankedResults.sort((a, b) => b.score - a.score);
 
   console.log(`[Retrieval] Rerank前: ${mergedResults.slice(0, 5).map(r => r.score.toFixed(6)).join(', ')}`);
@@ -846,33 +872,25 @@ export async function semanticSearch(
 
   console.log(`[Retrieval] 最终结果: ${result.length} chunks`);
 
-  // 激进的fallback：如果最终结果为空，返回所有可用的chunks
+  // 优化的fallback：如果最终结果为空，返回增强结果或空数组
   if (result.length === 0) {
-    console.warn('[Retrieval] 最终结果为空，使用激进fallback');
+    console.warn('[Retrieval] 最终结果为空，使用优化fallback');
 
     // 尝试从enhancedResults中返回
     if (enhancedResults.length > 0) {
       console.warn(`[Retrieval] 从enhancedResults返回${Math.min(limit, enhancedResults.length)}个chunks`);
-      return enhancedResults.slice(0, limit);
+      const finalResult = enhancedResults.slice(0, limit);
+      // 缓存结果
+      queryCacheManager.set(query, 'semantic', cacheKey, finalResult);
+      return finalResult;
     }
 
-    // 如果enhancedResults也为空，尝试从所有chunks中搜索
-    const allChunks = await unifiedStorageManager.getAllChunks?.() || [];
-    if (allChunks.length > 0) {
-      const queryLower = coreQuery.toLowerCase();
-      const matchingChunks = allChunks
-        .filter(c => c.content.toLowerCase().includes(queryLower) ||
-                     queryLower.split(/\s+/).some(w => c.content.toLowerCase().includes(w)))
-        .map(c => ({ chunk: c, score: 0.5 }))
-        .slice(0, limit);
-
-      if (matchingChunks.length > 0) {
-        console.warn(`[Retrieval] 从所有chunks中找到${matchingChunks.length}个匹配chunks`);
-        return matchingChunks;
-      }
-    }
+    // 如果enhancedResults也为空，返回空数组而不是扫描所有chunks
+    console.warn('[Retrieval] 无法找到相关chunks，返回空结果');
   }
 
+  // 缓存结果
+  queryCacheManager.set(query, 'semantic', cacheKey, result);
   return result;
 }
 

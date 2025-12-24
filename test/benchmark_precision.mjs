@@ -76,11 +76,37 @@ const ALL_TEST_CASES = [
   },
 
   // --- 故障排查类 (Troubleshooting) ---
-  { 
-    query: "BGP 邻居起不来怎么办", 
-    expected: ["troubleshoot", "debug", "log"], 
+  {
+    query: "BGP 邻居起不来怎么办",
+    expected: ["troubleshoot", "debug", "log"],
     minRank: 10,
     type: "troubleshoot"
+  },
+
+  // --- 接口状态查询类 (Interface Status) ---
+  {
+    query: "如何查询接口状态",
+    expected: ["nv show interface", "interface status", "接口状态"],
+    minRank: 5,
+    type: "command"
+  },
+  {
+    query: "怎么查看端口状态",
+    expected: ["nv show interface", "port status", "端口状态"],
+    minRank: 5,
+    type: "command"
+  },
+  {
+    query: "nv show interface",
+    expected: ["nv show interface"],
+    minRank: 1,
+    type: "exact_command"
+  },
+  {
+    query: "查看swp1接口状态",
+    expected: ["swp1", "nv show interface swp1"],
+    minRank: 3,
+    type: "command"
   }
 ];
 
