@@ -13,6 +13,26 @@ export interface RetrievalParams {
 }
 
 /**
+ * 计算动态RRF权重 - 根据查询意图调整向量和关键词的权重
+ */
+export function calculateDynamicRRFWeight(intent: QueryIntent): number {
+  const weights: Record<string, number> = {
+    'command': 40,           // 命令查询：更依赖关键词
+    'configuration': 50,     // 配置：平衡
+    'troubleshoot': 45,      // 故障排查：关键词重要
+    'explanation': 70,       // 解释：更依赖语义
+    'question': 65,          // 问题：语义重要
+    'general': 60,           // 通用：平衡
+    'network_config': 45,    // 网络配置：关键词重要
+    'verification': 50,      // 验证：平衡
+    'comparison': 65,        // 对比：语义重要
+    'performance': 60,       // 性能：平衡
+    'best_practice': 65,     // 最佳实践：语义重要
+  };
+  return weights[intent] || 60;
+}
+
+/**
  * 获取完整的意图识别结果（包括置信度等）
  */
 export function detectQueryIntentAdvanced(query: string, conversationHistory?: string[]): IntentResult {
@@ -99,18 +119,20 @@ export function calculateAdaptiveThreshold(
   if (results.length === 0) {
     return baseThreshold;
   }
-  
+
   // 计算分数的统计信息
   const scores = results.map(r => r.score);
   const maxScore = Math.max(...scores);
   const avgScore = scores.reduce((sum, s) => sum + s, 0) / scores.length;
-  
-  // 自适应阈值：基于最高分数和平均分数
+
+  // 改进的自适应阈值：更严格地过滤不相关的结果
+  // 原来的逻辑太宽松，导致低相关性的文档也被返回
+  // 新逻辑：使用更高的阈值来确保只返回高度相关的结果
   const adaptiveThreshold = Math.max(
     baseThreshold,
-    Math.min(maxScore * 0.7, avgScore * 1.2)
+    Math.min(maxScore * 0.85, avgScore * 1.5)  // 提高到0.85和1.5，更严格
   );
-  
+
   return adaptiveThreshold;
 }
 

@@ -190,16 +190,37 @@ class ServerStorageManager {
 
   async uploadDocument(formData: FormData): Promise<Document> {
     const url = getApiServerUrl();
-    const res = await fetch(`${url}/api/documents/upload`, {
-      method: 'POST',
-      body: formData
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || '上传失败');
+    try {
+      const controller = new AbortController();
+      // 增加超时时间到5分钟，处理大文件
+      const timeoutId = setTimeout(() => controller.abort(), 300000); // 300秒 = 5分钟
+
+      const res = await fetch(`${url}/api/documents/upload`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `上传失败: ${res.statusText}`);
+      }
+      const data = await res.json();
+      return data.document;
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          throw new Error('上传超时（超过5分钟）。文件可能过大或网络连接不稳定。请尝试：\n1. 分割文件为更小的部分\n2. 检查网络连接\n3. 稍后重试');
+        }
+        if (error.message.includes('Failed to fetch')) {
+          throw new Error('无法连接到服务器。请确保：\n1. 后端服务器运行在 http://localhost:8787\n2. 后端已配置 CORS 跨域支持\n3. 网络连接正常');
+        }
+      }
+      console.error('上传文档失败:', error);
+      throw error;
     }
-    const data = await res.json();
-    return data.document;
   }
 
   async updateChunkEmbedding(chunkId: string, embedding: number[]): Promise<boolean> {

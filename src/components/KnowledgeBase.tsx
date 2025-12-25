@@ -100,22 +100,41 @@ const KnowledgeBase: React.FC = () => {
     if (!user) return;
 
     setIsUploading(true);
-    
+    let successCount = 0;
+    let failureCount = 0;
+    const errors: string[] = [];
+
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         try {
           // 直接上传到后台处理，不再在前端解析
           await unifiedStorageManager.uploadDocument(file, user.id, 'default');
+          successCount++;
         } catch (error) {
+          failureCount++;
+          const errorMsg = error instanceof Error ? error.message : String(error);
           console.error(`上传文件 ${file.name} 失败:`, error);
-          alert(`上传 ${file.name} 失败`);
+          errors.push(`${file.name}: ${errorMsg}`);
         }
       }
+
       // 上传完成后刷新列表，此时文档状态应为 processing
-      loadDocuments();
+      if (successCount > 0) {
+        loadDocuments();
+      }
+
+      // 显示上传结果
+      if (failureCount > 0) {
+        const errorSummary = errors.slice(0, 3).join('\n');
+        const moreErrors = failureCount > 3 ? `\n... 还有 ${failureCount - 3} 个文件上传失败` : '';
+        alert(`上传完成\n成功: ${successCount} 个\n失败: ${failureCount} 个\n\n${errorSummary}${moreErrors}`);
+      } else if (successCount > 0) {
+        alert(`成功上传 ${successCount} 个文件`);
+      }
     } catch (error) {
       console.error('批量上传失败:', error);
+      alert('批量上传失败，请检查网络连接');
     } finally {
       setIsUploading(false);
     }

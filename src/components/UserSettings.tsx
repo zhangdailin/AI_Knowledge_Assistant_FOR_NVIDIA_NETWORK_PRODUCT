@@ -103,8 +103,13 @@ export default function UserSettings() {
 
   const handleSave = async () => {
     if (!user) return;
-    
+
     setSaveStatus('saving');
+    const timeoutId = setTimeout(() => {
+      console.warn('保存超时，重置状态');
+      setSaveStatus('idle');
+    }, 30000); // 30秒超时
+
     try {
       // 保存自定义服务器地址
       if (customServerUrl.trim()) {
@@ -119,28 +124,42 @@ export default function UserSettings() {
         // API keys 保存到服务器
         apiKeys: undefined // 不保存到本地
       });
-      
+
       // API keys 保存到服务器（过滤掉已删除的 openai 和 anthropic）
       const { unifiedStorageManager } = await import('../lib/localStorage');
-      const currentSettings = await unifiedStorageManager.getSettings();
-      // 从当前设置中删除不需要的 API keys（如果存在）
-      const cleanedApiKeys = { ...(currentSettings.apiKeys || {}) };
-      delete cleanedApiKeys.openai;
-      delete cleanedApiKeys.anthropic;
-      delete cleanedApiKeys.google;
-      delete cleanedApiKeys.openrouter;
-      
-      await unifiedStorageManager.updateSettings({
-        ...currentSettings,
-        apiKeys: {
-          ...cleanedApiKeys,
-          ...settings.apiKeys
-        }
-      });
-      
+      try {
+        const currentSettings = await Promise.race([
+          unifiedStorageManager.getSettings(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('获取设置超时')), 8000))
+        ]);
+
+        // 从当前设置中删除不需要的 API keys（如果存在）
+        const cleanedApiKeys = { ...(currentSettings.apiKeys || {}) };
+        delete cleanedApiKeys.openai;
+        delete cleanedApiKeys.anthropic;
+        delete cleanedApiKeys.google;
+        delete cleanedApiKeys.openrouter;
+
+        await Promise.race([
+          unifiedStorageManager.updateSettings({
+            ...currentSettings,
+            apiKeys: {
+              ...cleanedApiKeys,
+              ...settings.apiKeys
+            }
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('更新设置超时')), 8000))
+        ]);
+      } catch (serverError) {
+        console.warn('服务器设置保存失败，但本地设置已保存:', serverError);
+        // 即使服务器保存失败，本地设置已经保存，所以不抛出错误
+      }
+
+      clearTimeout(timeoutId);
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
     } catch (error) {
+      clearTimeout(timeoutId);
       console.error('Failed to save settings:', error);
       setSaveStatus('idle');
     }

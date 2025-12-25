@@ -4,6 +4,7 @@
  */
 
 import { generateChineseSystemMessage, generateChineseUserMessage } from './chinesePrompts';
+import { degradationStrategy, DegradationLevel } from './degradationStrategy';
 
 const SILICONFLOW_BASE_URL = 'https://api.siliconflow.cn/v1';
 const SILICONFLOW_CHAT_URL = `${SILICONFLOW_BASE_URL}/chat/completions`;
@@ -23,6 +24,7 @@ export interface ChatRequest {
   references?: string[];
   conversationHistory?: string; // 对话历史上下文
   deepThinking?: boolean; // 深度思考模式
+  onStream?: (chunk: string) => void; // 流式响应回调
 }
 
 export interface ChatResponse {
@@ -36,6 +38,18 @@ export interface ChatResponse {
     content: string;
     score: number;
   }>;
+  validation?: AnswerValidation;
+}
+
+/**
+ * 答案验证结果
+ */
+export interface AnswerValidation {
+  isConsistent: boolean;
+  confidenceScore: number;
+  missingReferences: string[];
+  hallucinations: string[];
+  warnings: string[];
 }
 
 // AI模型配置（使用硅基流动）
@@ -55,15 +69,30 @@ class AIModelManager {
   
   // 使用更轻量的模型进行关键词提取，速度更快
   private readonly FAST_MODEL = 'Qwen/Qwen2.5-7B-Instruct';
-  
+
   // 主力模型：Qwen3-32B
-  private readonly QWEN_MODEL = 'Qwen/Qwen3-32B'; 
+  private readonly QWEN_MODEL = 'Qwen/Qwen3-32B';
   // 备用模型：Qwen2.5-32B
   private readonly FALLBACK_QWEN_MODEL = 'Qwen/Qwen2.5-32B-Instruct';
 
   // 使用硅基流动 API 调用 AI 模型
   async generateAnswer(request: ChatRequest): Promise<ChatResponse> {
-    // ... (rest of the function)
+    // 获取当前降级级别
+    const degradationLevel = degradationStrategy.getCurrentLevel();
+
+    // 如果处于完全降级状态，直接返回模拟回答
+    if (degradationLevel === DegradationLevel.FALLBACK) {
+      console.warn('[降级策略] 系统处于完全降级状态，返回模拟回答');
+      const mock = this.generateEnhancedMockAnswer('', this.currentModel, request.references, request.question);
+      return {
+        ...mock,
+        references: request.references ? request.references.map((ref, index) => ({
+          title: `参考文档 ${index + 1}`,
+          content: ref.length > 500 ? ref.substring(0, 400) + '...' : ref,
+          score: 0.95 - (index * 0.1)
+        })) : undefined
+      };
+    }
     let systemMessage: string;
     let userMessage: string;
     
@@ -117,25 +146,47 @@ class AIModelManager {
       usedModel = this.QWEN_MODEL;
     }
 
+    // 根据降级级别选择模型
+    const recommendedModel = degradationStrategy.getRecommendedModel(degradationLevel);
+    if (recommendedModel !== 'mock' && degradationLevel !== DegradationLevel.NORMAL) {
+      usedModel = recommendedModel;
+      console.log(`[降级策略] 使用降级模型: ${usedModel} (级别: ${degradationLevel})`);
+    }
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         // 如果是第一次尝试且不是关键词任务，尝试使用 Qwen3
         // 如果失败（400），下次尝试切换到 fallback 模型
         const modelToUse = (attempt === 0) ? usedModel : (attempt === 1 ? this.FALLBACK_QWEN_MODEL : usedModel);
-        
+
         const response = await this.callSiliconFlow(userMessage, modelToUse, attempt, systemMessage, request.deepThinking, request.references);
+
+        // 集成答案验证
+        let validation: AnswerValidation | undefined;
+        if (request.references && request.references.length > 0) {
+          const { validateAnswerConsistency } = await import('./chinesePrompts');
+          validation = validateAnswerConsistency(response.answer, request.references, request.question);
+        }
+
+        // 记录成功
+        degradationStrategy.recordSuccess();
+
         return {
           answer: response.answer,
           model: response.model,
           usage: response.usage,
-          references: buildReferences()
+          references: buildReferences(),
+          validation
         };
       } catch (error: any) {
         console.error(`AI模型调用失败 (尝试 ${attempt + 1}/${maxRetries}):`, error);
-        
+
+        // 记录失败
+        degradationStrategy.recordFailure(error.message);
+
         // 检查是否为 400 错误（模型不存在）
         const isModelError = error.message && error.message.includes('400') && error.message.includes('Model does not exist');
-        
+
         if (attempt < maxRetries - 1) {
           // 如果是模型不存在错误，立即重试并切换模型，无需等待
           if (isModelError) {
@@ -143,15 +194,16 @@ class AIModelManager {
              usedModel = this.FALLBACK_QWEN_MODEL;
              continue;
           }
-          
+
           // 线性退避等待
           await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
         }
       }
     }
-    
+
     // 所有尝试都失败，返回模拟回答以提升用户体验
     console.warn('所有模型调用失败，返回模拟回答');
+    degradationStrategy.recordFailure('所有重试都失败');
     const mock = this.generateEnhancedMockAnswer(userMessage, usedModel || this.currentModel, request.references, request.question);
     return {
       ...mock,
@@ -168,6 +220,75 @@ class AIModelManager {
   async generateSearchKeywords(query: string): Promise<string[]> {
     const { keywords } = await this.analyzeQueryForSearch(query);
     return keywords;
+  }
+
+  /**
+   * 流式生成答案
+   */
+  async generateAnswerStream(request: ChatRequest): Promise<ChatResponse> {
+    const degradationLevel = degradationStrategy.getCurrentLevel();
+
+    if (degradationLevel === DegradationLevel.FALLBACK) {
+      console.warn('[降级策略] 系统处于完全降级状态，返回模拟回答');
+      const mock = this.generateEnhancedMockAnswer('', this.currentModel, request.references, request.question);
+      if (request.onStream) {
+        request.onStream(mock.answer);
+      }
+      return mock;
+    }
+
+    let systemMessage: string;
+    let userMessage: string;
+
+    const isNetworkConfig = request.question.toLowerCase().includes('pfc') ||
+                           request.question.toLowerCase().includes('ecn') ||
+                           request.question.toLowerCase().includes('配置') ||
+                           request.question.toLowerCase().includes('configure');
+
+    if (request.references && request.references.length > 0) {
+      systemMessage = generateChineseSystemMessage(true, request.deepThinking || false, isNetworkConfig);
+      userMessage = generateChineseUserMessage(request.question, request.references, request.conversationHistory);
+    } else {
+      systemMessage = generateChineseSystemMessage(false, request.deepThinking || false, isNetworkConfig);
+      userMessage = request.question;
+    }
+
+    let usedModel = request.model || this.currentModel;
+    if (usedModel === 'qwen3-32b') {
+      usedModel = this.QWEN_MODEL;
+    }
+
+    const recommendedModel = degradationStrategy.getRecommendedModel(degradationLevel);
+    if (recommendedModel !== 'mock' && degradationLevel !== DegradationLevel.NORMAL) {
+      usedModel = recommendedModel;
+    }
+
+    try {
+      const answer = await this.callSiliconFlowStream(userMessage, usedModel, systemMessage, request.deepThinking, request.onStream);
+      degradationStrategy.recordSuccess();
+
+      let validation: AnswerValidation | undefined;
+      if (request.references && request.references.length > 0) {
+        const { validateAnswerConsistency } = await import('./chinesePrompts');
+        validation = validateAnswerConsistency(answer, request.references, request.question);
+      }
+
+      return {
+        answer,
+        model: usedModel,
+        usage: { tokens: 0 },
+        references: request.references ? request.references.map((ref, index) => ({
+          title: `参考文档 ${index + 1}`,
+          content: ref.length > 500 ? ref.substring(0, 400) + '...' : ref,
+          score: 0.95 - (index * 0.1)
+        })) : undefined,
+        validation
+      };
+    } catch (error: any) {
+      console.error('流式调用失败:', error);
+      degradationStrategy.recordFailure(error.message);
+      throw error;
+    }
   }
 
   // 智能分析查询意图，提取关键词并识别产品名称
@@ -325,6 +446,95 @@ Output JSON format ONLY:
         throw new Error('API调用超时');
       }
       console.error('硅基流动 API调用失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 流式调用硅基流动API
+   */
+  private async callSiliconFlowStream(
+    context: string,
+    model: string,
+    systemMessage: string,
+    deepThinking?: boolean,
+    onStream?: (chunk: string) => void
+  ): Promise<string> {
+    const { unifiedStorageManager } = await import('./localStorage');
+    const apiKey = await unifiedStorageManager.getApiKey('siliconflow') || import.meta.env.VITE_SILICONFLOW_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('硅基流动 API密钥未配置');
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+    try {
+      const response = await fetch(SILICONFLOW_CHAT_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemMessage },
+            { role: 'user', content: context }
+          ],
+          max_tokens: 8192,
+          temperature: deepThinking ? 0.5 : 0.7,
+          stream: true
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`API调用失败: ${response.status}`);
+      }
+
+      let fullAnswer = '';
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('无法读取响应流');
+
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              if (content) {
+                fullAnswer += content;
+                if (onStream) {
+                  onStream(content);
+                }
+              }
+            } catch (e) {
+              // 忽略JSON解析错误
+            }
+          }
+        }
+      }
+
+      return fullAnswer;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('流式API调用超时');
+      }
       throw error;
     }
   }

@@ -5,7 +5,8 @@ import {
   enhanceQueryWithHistory,
   extractCoreQueryEnhanced,
   deduplicateAndMergeChunks,
-  calculateAdaptiveThreshold
+  calculateAdaptiveThreshold,
+  calculateDynamicRRFWeight
 } from './retrievalEnhancements';
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
 import { aiModelManager } from './aiModels';
@@ -221,15 +222,17 @@ export async function semanticSearch(
   // 暂时跳过显式的 docTitleRecall 循环 fetch chunks，依赖 server search。
   
   // ========== RRF (Reciprocal Rank Fusion) 融合 ==========
-  // RRF score = sum(1 / (k + rank))
-  const RRF_K = 60;
+  // 使用动态RRF权重，根据查询意图调整向量和关键词的权重
+  const dynamicRRFWeight = calculateDynamicRRFWeight(intent);
+  const RRF_K = dynamicRRFWeight;  // 动态调整K值
   const rrfMap = new Map<string, { chunk: Chunk; rrfScore: number; sources: string[] }>();
-  
-  // 处理向量召回
+
+  // 处理向量召回 - 语义查询权重更高
+  const vectorWeight = intent === 'explanation' || intent === 'question' ? 1.2 : 1.0;
   vectorRecall.forEach((item, rank) => {
     const existing = rrfMap.get(item.chunk.id);
-    const scoreToAdd = 1 / (RRF_K + rank + 1);
-    
+    const scoreToAdd = (1 / (RRF_K + rank + 1)) * vectorWeight;
+
     if (existing) {
       existing.rrfScore += scoreToAdd;
       if (!existing.sources.includes('vector')) existing.sources.push('vector');
@@ -241,11 +244,12 @@ export async function semanticSearch(
       });
     }
   });
-  
-  // 处理关键词召回
+
+  // 处理关键词召回 - 命令查询权重更高
+  const keywordWeight = intent === 'command' || intent === 'configuration' ? 1.2 : 1.0;
   keywordRecall.forEach((item, rank) => {
     const existing = rrfMap.get(item.chunk.id);
-    const scoreToAdd = 1 / (RRF_K + rank + 1);
+    const scoreToAdd = (1 / (RRF_K + rank + 1)) * keywordWeight;
     
     if (existing) {
       existing.rrfScore += scoreToAdd;
@@ -290,11 +294,13 @@ export async function semanticSearch(
   const RERANK_CONTENT_MAX_LENGTH = 500;
   let allRerankedResults: Array<{ chunk: Chunk; score: number; sources?: string[] }> = [];
 
-  // 2. 优化：只对前3个文档进行Rerank，减少API调用
-  const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, 3);
+  // 2. 改进：扩展Rerank范围从3个文档到5个，提高检索精度
+  const RERANK_DOC_LIMIT = 5;  // 从3扩展到5
+  const RERANK_CHUNKS_PER_DOC = 15;  // 每个文档15个chunks
+  const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, RERANK_DOC_LIMIT);
   const docsToRerank = topDocIds.map(docId => ({
     docId,
-    candidates: candidatesByDoc.get(docId)!.slice(0, 20)
+    candidates: candidatesByDoc.get(docId)!.slice(0, RERANK_CHUNKS_PER_DOC)
   }));
 
   // 3. 批量Rerank：收集所有候选，一次API调用

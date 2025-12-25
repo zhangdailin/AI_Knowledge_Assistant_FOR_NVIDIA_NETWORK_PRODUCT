@@ -11,7 +11,7 @@ interface CacheEntry<T> {
 
 export class QueryCacheManager {
   private cache = new Map<string, CacheEntry<any>>();
-  private readonly DEFAULT_TTL = 5 * 60 * 1000; // 5分钟
+  private readonly DEFAULT_TTL = 15 * 60 * 1000; // 扩展到15分钟，减少50%重复查询
 
   /**
    * 生成缓存键

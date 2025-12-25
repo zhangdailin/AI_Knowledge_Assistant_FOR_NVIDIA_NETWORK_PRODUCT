@@ -28,9 +28,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import * as chunking from './chunking.mjs';
 
 const app = express();
+// 配置 CORS 允许前端跨域请求
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
+}));
 // 增加 payload 限制，防止大请求导致 OOM
-app.use(cors());
-app.use(express.json({ limit: '100mb' })); 
+app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 const upload = multer({
@@ -203,16 +210,19 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
       uploadedAt: new Date().toISOString(),
       status: 'processing'
     };
-    
+
     const document = await storage.createDocument(docData);
-    
+    console.log(`[Upload] 文档创建成功: ${document.id}, 文件: ${fixedFilename}, 大小: ${file.size} 字节`);
+
     // 2. 立即响应前端
     res.json({ ok: true, document });
-    
+
     // 3. 异步处理
     // 注意：这里没有 await，故意让它在后台运行
-    processUploadedFile(document.id, file);
-    
+    processUploadedFile(document.id, file).catch(err => {
+      console.error(`[Upload] 后台处理失败: ${document.id}`, err);
+    });
+
   } catch (error) {
     console.error('上传处理失败:', error);
     res.status(500).json({ ok: false, error: '上传失败' });

@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import { localStorageManager, unifiedStorageManager, Conversation, Message } from '../lib/localStorage';
 import { aiModelManager, ChatRequest } from '../lib/aiModels';
 import { retrieval } from '../lib/retrieval';
+import { metricsCollector } from '../lib/metricsCollector';
+import { errorHandler } from '../lib/errorHandler';
+import { feedbackManager } from '../lib/feedbackManager';
 
 interface ChatState {
   conversations: Conversation[];
@@ -10,7 +13,7 @@ interface ChatState {
   isLoading: boolean;
   currentModel: string;
   deepThinking: boolean; // 深度思考模式
-  
+
   // 方法
   loadConversations: (userId: string) => void;
   createConversation: (userId: string, title: string) => void;
@@ -20,6 +23,7 @@ interface ChatState {
   setCurrentModel: (model: string) => void;
   setDeepThinking: (enabled: boolean) => void;
   clearHistory: () => void;
+  submitFeedback: (messageId: string, rating: number, comment?: string, flags?: { helpful?: boolean; accurate?: boolean; complete?: boolean }) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -87,13 +91,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (content: string) => {
     const { currentConversation, currentModel, deepThinking } = get();
-    
+
     if (!currentConversation) {
       console.error('没有选择对话');
       return;
     }
 
     set({ isLoading: true });
+    const startTime = performance.now();
 
     try {
       // 添加用户消息
@@ -107,8 +112,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 立即更新UI显示用户消息，并刷新对话列表（确保新对话能立即显示）
       const userId = currentConversation.userId;
       const updatedConversations = localStorageManager.getConversations(userId);
-      
-      set({ 
+
+      set({
         conversations: updatedConversations,
         messages: [...get().messages, userMessage],
         isLoading: true 
@@ -118,14 +123,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       
       // 获取对话历史用于查询增强和AI模型上下文
       const recentMessages = get().messages.slice(-10);
-      /*
+
+      // 启用多轮对话：使用最近的对话历史来增强查询和提供上下文
       const conversationHistoryForSearch = recentMessages
         .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-        .map(msg => msg.content);
-      */
-      // 用户反馈：取消上下文传递
-      const conversationHistoryForSearch: string[] = [];
-      
+        .map(msg => msg.content)
+        .slice(-6);  // 只使用最近6条消息以避免上下文过长
+
       const searchResults = await retrieval.semanticSearch(content, 20, conversationHistoryForSearch);
 
       console.log(`[ChatStore] 检索返回: ${searchResults.length} chunks`);
@@ -232,10 +236,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model: currentModel,
         references,
         conversationHistory: undefined, // 取消传递对话历史
-        deepThinking: deepThinking // 传递深度思考模式
+        deepThinking: deepThinking, // 传递深度思考模式
+        onStream: (chunk: string) => {
+          // 更新临时消息的内容
+          const updatedMessages = get().messages.map(msg =>
+            msg.id === tempAssistantMessage.id
+              ? { ...msg, content: msg.content + chunk }
+              : msg
+          );
+          set({ messages: updatedMessages });
+        }
       };
 
-      const response = await aiModelManager.generateAnswer(chatRequest);
+      // 创建临时消息用于流式更新
+      const tempAssistantMessage: Message = {
+        id: `msg-${Date.now()}`,
+        conversationId: currentConversation.id,
+        role: 'assistant',
+        content: '',
+        metadata: { model: currentModel, streaming: true },
+        createdAt: new Date().toISOString()
+      };
+
+      // 添加临时消息到UI
+      const messagesWithTemp = [...get().messages, tempAssistantMessage];
+      set({ messages: messagesWithTemp });
+
+      const response = await aiModelManager.generateAnswerStream(chatRequest);
+
+      // 记录响应时间
+      const duration = performance.now() - startTime;
+      metricsCollector.recordResponseTime(duration);
 
       // 添加AI回复消息
       const assistantMessage = localStorageManager.addMessage({
@@ -249,21 +280,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       });
 
-      // 更新当前消息列表
-      const messages = [...get().messages, assistantMessage];
+      // 替换临时消息为最终消息
+      const messages = get().messages.map(msg =>
+        msg.id === tempAssistantMessage.id ? assistantMessage : msg
+      );
       set({ messages, isLoading: false });
 
     } catch (error) {
       console.error('发送消息失败:', error);
-      
+      // 记录响应时间
+      const duration = performance.now() - startTime;
+      metricsCollector.recordResponseTime(duration);
+
+      // 使用改进的错误处理器
+      const appError = errorHandler.handle(error);
+
       // 尝试添加错误消息，但如果存储失败，至少显示在界面上
       let errorMessage: Message;
       try {
         errorMessage = localStorageManager.addMessage({
           conversationId: currentConversation.id,
           role: 'assistant',
-          content: '抱歉，处理您的消息时出现了错误。请稍后再试。',
-          metadata: { error: true }
+          content: appError.userMessage,
+          metadata: { error: true, errorType: appError.type, retryable: appError.retryable }
         });
       } catch (storageError) {
         console.error('存储错误消息失败:', storageError);
@@ -272,8 +311,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           id: `msg-${Date.now()}`,
           conversationId: currentConversation.id,
           role: 'assistant',
-          content: '抱歉，处理您的消息时出现了错误。请稍后再试。',
-          metadata: { error: true },
+          content: appError.userMessage,
+          metadata: { error: true, errorType: appError.type, retryable: appError.retryable },
           createdAt: new Date().toISOString()
         };
       }
@@ -296,12 +335,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 清空本地存储中的对话和消息
     localStorage.removeItem('ai_assistant_conversations');
     localStorage.removeItem('ai_assistant_messages');
-    
+
     // 重置状态
-    set({ 
-      conversations: [], 
-      currentConversation: null, 
-      messages: [] 
+    set({
+      conversations: [],
+      currentConversation: null,
+      messages: []
     });
+  },
+
+  submitFeedback: (messageId: string, rating: number, comment?: string, flags?: { helpful?: boolean; accurate?: boolean; complete?: boolean }) => {
+    const { currentConversation } = get();
+    if (!currentConversation) return;
+
+    const feedback = feedbackManager.submitFeedback({
+      messageId,
+      conversationId: currentConversation.id,
+      rating,
+      comment,
+      helpful: flags?.helpful,
+      accurate: flags?.accurate,
+      complete: flags?.complete
+    });
+
+    console.log('[反馈] 用户反馈已记录:', feedback);
   }
 }));

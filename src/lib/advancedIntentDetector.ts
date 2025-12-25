@@ -246,21 +246,21 @@ export class AdvancedIntentDetector {
     const baseParams = {
       limit: 20,
       rerankCandidates: 60,
-      minScore: 0.3
+      minScore: 0.5  // 提高基础阈值从0.3到0.5
     };
 
     // 根据意图调整参数
     const adjustments: { [key in QueryIntent]?: Partial<typeof baseParams> } = {
-      command: { minScore: 0.25 },           // 命令查询降低阈值
-      troubleshoot: { limit: 25, minScore: 0.2 }, // 故障排查需要更多结果
-      configuration: { minScore: 0.28 },    // 配置查询
-      explanation: { limit: 15, minScore: 0.35 }, // 概念解释需要高相关性
-      comparison: { limit: 25, minScore: 0.3 },   // 对比需要更多结果
-      performance: { minScore: 0.3 },       // 性能优化
-      best_practice: { minScore: 0.32 },    // 最佳实践
-      verification: { minScore: 0.25 },     // 验证检查
-      question: { minScore: 0.35 },         // 问题查询
-      general: { minScore: 0.35 }           // 通用查询
+      command: { minScore: 0.45 },           // 命令查询提高阈值
+      troubleshoot: { limit: 25, minScore: 0.48 }, // 故障排查提高阈值
+      configuration: { minScore: 0.50 },    // 配置查询
+      explanation: { limit: 15, minScore: 0.55 }, // 概念解释需要高相关性
+      comparison: { limit: 25, minScore: 0.50 },   // 对比需要高相关性
+      performance: { minScore: 0.50 },       // 性能优化
+      best_practice: { minScore: 0.52 },    // 最佳实践
+      verification: { minScore: 0.48 },     // 验证检查
+      question: { minScore: 0.55 },         // 问题查询
+      general: { minScore: 0.55 }           // 通用查询
     };
 
     const adjustment = adjustments[intent] || {};
