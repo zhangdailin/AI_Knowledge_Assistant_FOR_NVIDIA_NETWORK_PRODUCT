@@ -194,7 +194,10 @@ class ServerStorageManager {
       method: 'POST',
       body: formData
     });
-    if (!res.ok) throw new Error('上传失败');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '上传失败');
+    }
     const data = await res.json();
     return data.document;
   }

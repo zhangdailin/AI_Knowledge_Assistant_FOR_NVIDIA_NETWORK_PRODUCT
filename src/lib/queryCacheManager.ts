@@ -18,7 +18,7 @@ export class QueryCacheManager {
    */
   private generateKey(query: string, intent: string, params: Record<string, any>): string {
     const key = `${query}|${intent}|${JSON.stringify(params)}`;
-    return Buffer.from(key).toString('base64');
+    return btoa(encodeURIComponent(key));
   }
 
   /**

@@ -31,21 +31,48 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-const upload = multer({ 
-  storage: multer.memoryStorage(), 
+const upload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB
 });
+
+// 修复中文文件名编码问题
+function fixFilename(filename) {
+  if (!filename) return filename;
+  try {
+    // 尝试修复 ISO-8859-1 编码的中文文件名
+    // 当浏览器发送中文文件名时，可能被错误编码为 ISO-8859-1
+    // 需要转换回 UTF-8
+    const buffer = Buffer.from(filename, 'latin1');
+    const decoded = buffer.toString('utf8');
+    // 验证是否成功解码（检查是否包含有效的 UTF-8 字符）
+    if (decoded !== filename && /[\u4e00-\u9fff]/.test(decoded)) {
+      console.log(`[fixFilename] 修复文件名: ${filename} -> ${decoded}`);
+      return decoded;
+    }
+  } catch (e) {
+    // 如果转换失败，返回原始文件名
+    console.warn(`[fixFilename] 转换失败，使用原始文件名: ${filename}`, e.message);
+  }
+  return filename;
+}
 
 // 异步处理文件上传
 async function processUploadedFile(documentId, file) {
   try {
-    console.log(`[Async] 开始处理文档: ${documentId}, 文件: ${file.originalname}`);
-    
+    const fixedFilename = fixFilename(file.originalname);
+    console.log(`[Async] 开始处理文档: ${documentId}, 文件: ${fixedFilename}`);
+
     // 1. 解析文本
     let text = '';
     const mime = file.mimetype || '';
-    const name = file.originalname.toLowerCase();
-    
+    const name = fixedFilename.toLowerCase();
+
+    // 检查是否为不支持的文件类型
+    if (name.endsWith('.xlsx') || name.endsWith('.xls') || mime.includes('spreadsheet') || mime.includes('excel')) {
+      throw new Error('暂不支持 Excel 文件（.xlsx/.xls）。请将内容复制到文本文件或 Word 文档后上传。');
+    }
+
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
        const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
        const parser = new PdfParseClass({ data: file.buffer });
@@ -54,14 +81,18 @@ async function processUploadedFile(documentId, file) {
     } else if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) {
        const result = await mammoth.extractRawText({ buffer: file.buffer });
        text = result.value;
+    } else if (name.endsWith('.txt') || name.endsWith('.md') || mime.includes('text')) {
+       // 文本文件
+       text = file.buffer.toString('utf-8');
     } else {
-       // 默认作为文本处理
+       // 其他未知类型，尝试作为文本处理
+       console.warn(`[Async] 未知文件类型: ${mime}, 尝试作为文本处理`);
        text = file.buffer.toString('utf-8');
     }
-    
+
     text = (text || '').trim();
-    if (!text) throw new Error('提取文本为空');
-    
+    if (!text) throw new Error('提取文本为空，请确保文件包含可读取的文本内容');
+
     const textSizeKB = Math.round(text.length / 1024);
     console.log(`[Async] 文本提取完成，长度: ${text.length} 字符 (${textSizeKB} KB)`);
 
@@ -148,11 +179,23 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'no_file' });
     const { userId, category } = req.body;
-    
+
+    // 检查文件类型（在创建文档之前）
+    const fixedFilename = fixFilename(file.originalname);
+    const name = fixedFilename.toLowerCase();
+    const mime = file.mimetype || '';
+
+    if (name.endsWith('.xlsx') || name.endsWith('.xls') || mime.includes('spreadsheet') || mime.includes('excel')) {
+      return res.status(400).json({
+        ok: false,
+        error: '暂不支持 Excel 文件（.xlsx/.xls）。请将内容复制到文本文件或 Word 文档后上传。'
+      });
+    }
+
     // 1. 创建文档记录 (status: processing)
     const docData = {
       userId,
-      filename: file.originalname,
+      filename: fixedFilename,
       fileType: file.mimetype,
       fileSize: file.size,
       category: category || 'default',
@@ -180,7 +223,7 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'no_file' });
-    const name = file.originalname.toLowerCase();
+    const name = fixFilename(file.originalname).toLowerCase();
     const mime = file.mimetype || '';
     let text = '';
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
@@ -708,20 +751,63 @@ console.log(`[Server] Max Heap Size: ${Math.round(totalHeapSize)} MB`);
 const port = process.env.PORT || 8787;
 const server = app.listen(port, () => {
   console.log(`Extractor server listening at http://localhost:${port}`);
-  
+  console.log('[Server] 服务器已启动，等待请求...');
+
   // 启动时尝试恢复中断的任务
   setTimeout(() => {
-    taskQueue.restoreInterruptedTasks();
+    console.log('[Server] 开始恢复中断的任务...');
+    taskQueue.restoreInterruptedTasks().then(() => {
+      console.log('[Server] 任务恢复完成');
+    }).catch(err => {
+      console.error('[Server] 任务恢复失败:', err);
+    });
   }, 5000); // 延迟 5 秒执行，确保服务器已完全启动
+});
+
+// 确保服务器保持运行
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
+// 添加一个心跳定时器，确保事件循环保持活跃
+const heartbeat = setInterval(() => {
+  // 这个定时器会保持事件循环活跃
+  // 不需要做任何事情，只是为了防止进程退出
+}, 30000);
+
+// 监听服务器关闭事件
+server.on('close', () => {
+  console.log('[Server] 服务器正在关闭...');
+  clearInterval(heartbeat);
 });
 
 // 增加全局异常捕获，防止进程崩溃退出
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught Exception:', err);
+  console.error('[FATAL] Stack:', err.stack);
   // 不退出进程，保持服务运行
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
   // 不退出进程
+});
+
+process.on('exit', (code) => {
+  console.log(`[Server] 进程即将退出，退出码: ${code}`);
+});
+
+process.on('SIGINT', () => {
+  console.log('[Server] 收到 SIGINT 信号，正在关闭服务器...');
+  server.close(() => {
+    console.log('[Server] 服务器已关闭');
+    process.exit(0);
+  });
+});
+
+process.on('SIGTERM', () => {
+  console.log('[Server] 收到 SIGTERM 信号，正在关闭服务器...');
+  server.close(() => {
+    console.log('[Server] 服务器已关闭');
+    process.exit(0);
+  });
 });

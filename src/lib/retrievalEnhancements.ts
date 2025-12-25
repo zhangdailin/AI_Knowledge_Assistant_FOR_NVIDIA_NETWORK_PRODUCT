@@ -13,14 +13,6 @@ export interface RetrievalParams {
 }
 
 /**
- * 检测查询意图（使用高级意图识别器）
- */
-export function detectQueryIntent(query: string, conversationHistory?: string[]): QueryIntent {
-  const result = advancedIntentDetector.detect(query, conversationHistory);
-  return result.intent;
-}
-
-/**
  * 获取完整的意图识别结果（包括置信度等）
  */
 export function detectQueryIntentAdvanced(query: string, conversationHistory?: string[]): IntentResult {

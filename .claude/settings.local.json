@@ -60,7 +60,10 @@
       "Bash(npm test)",
       "Bash(node test/advanced-intent-test.mjs)",
       "Bash(node test/performance-benchmark.mjs)",
-      "Bash(node test/relay-optimization-benchmark.mjs)"
+      "Bash(node test/relay-optimization-benchmark.mjs)",
+      "Bash(node --check \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\server\\\\index.mjs\")",
+      "Bash(grep -rn \"process.exit\" \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\server\"\" --include=\"*.mjs\" --include=\"*.js \")",
+      "Bash(ls -lh \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\"/analyze-chunks.* \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\"/fix-chunks.*)"
     ]
   }
 }

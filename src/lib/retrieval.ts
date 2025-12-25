@@ -1,7 +1,5 @@
 import { unifiedStorageManager, Chunk } from './localStorage';
-// import { optimizeTextForEmbedding } from './chunkingEnhancements';
 import {
-  detectQueryIntent,
   detectQueryIntentAdvanced,
   getRetrievalParamsForIntent,
   enhanceQueryWithHistory,
