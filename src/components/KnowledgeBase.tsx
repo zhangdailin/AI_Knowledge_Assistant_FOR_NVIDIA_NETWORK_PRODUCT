@@ -368,12 +368,12 @@ const KnowledgeBase: React.FC = () => {
               拖拽文件到此处上传
             </h3>
             <p className="text-gray-500 mb-4">
-              支持 PDF、Word、TXT 等格式的文档
+              支持 PDF、Word、Excel、TXT 等格式的文档
             </p>
             <input
               type="file"
               multiple
-              accept=".txt,.md,.pdf,.doc,.docx"
+              accept=".txt,.md,.pdf,.doc,.docx,.xlsx,.xls"
               onChange={handleFileInput}
               className="hidden"
               id="file-upload"

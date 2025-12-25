@@ -69,16 +69,6 @@ export class QueryCacheManager {
   clear(): void {
     this.cache.clear();
   }
-
-  /**
-   * 获取缓存统计
-   */
-  getStats(): { size: number; entries: number } {
-    return {
-      size: this.cache.size,
-      entries: Array.from(this.cache.values()).reduce((sum, entry) => sum + 1, 0)
-    };
-  }
 }
 
 export const queryCacheManager = new QueryCacheManager();

@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import * as storage from './storage.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText } from './embedding.mjs';
+import { validateFileType, getFileCategory } from './fileValidation.mjs';
+import XLSX from 'xlsx';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
@@ -66,26 +68,27 @@ async function processUploadedFile(documentId, file) {
     // 1. 解析文本
     let text = '';
     const mime = file.mimetype || '';
-    const name = fixedFilename.toLowerCase();
+    const fileCategory = getFileCategory(fixedFilename, mime);
 
-    // 检查是否为不支持的文件类型
-    if (name.endsWith('.xlsx') || name.endsWith('.xls') || mime.includes('spreadsheet') || mime.includes('excel')) {
-      throw new Error('暂不支持 Excel 文件（.xlsx/.xls）。请将内容复制到文本文件或 Word 文档后上传。');
-    }
-
-    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+    if (fileCategory === 'pdf') {
        const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
        const parser = new PdfParseClass({ data: file.buffer });
        const result = await parser.getText({});
        text = result?.text || '';
-    } else if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) {
+    } else if (fileCategory === 'word') {
        const result = await mammoth.extractRawText({ buffer: file.buffer });
        text = result.value;
-    } else if (name.endsWith('.txt') || name.endsWith('.md') || mime.includes('text')) {
-       // 文本文件
+    } else if (fileCategory === 'excel') {
+       const workbook = XLSX.read(file.buffer, { type: 'buffer', cellFormula: false, cellStyles: false });
+       const sheets = workbook.SheetNames.map(name => {
+         const sheet = workbook.Sheets[name];
+         const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+         return `【${name}】\n${csv}`;
+       });
+       text = sheets.join('\n\n');
+    } else if (fileCategory === 'text') {
        text = file.buffer.toString('utf-8');
     } else {
-       // 其他未知类型，尝试作为文本处理
        console.warn(`[Async] 未知文件类型: ${mime}, 尝试作为文本处理`);
        text = file.buffer.toString('utf-8');
     }
@@ -182,14 +185,11 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
 
     // 检查文件类型（在创建文档之前）
     const fixedFilename = fixFilename(file.originalname);
-    const name = fixedFilename.toLowerCase();
     const mime = file.mimetype || '';
 
-    if (name.endsWith('.xlsx') || name.endsWith('.xls') || mime.includes('spreadsheet') || mime.includes('excel')) {
-      return res.status(400).json({
-        ok: false,
-        error: '暂不支持 Excel 文件（.xlsx/.xls）。请将内容复制到文本文件或 Word 文档后上传。'
-      });
+    const validation = validateFileType(fixedFilename, mime);
+    if (!validation.valid) {
+      return res.status(400).json({ ok: false, error: validation.error });
     }
 
     // 1. 创建文档记录 (status: processing)
@@ -223,50 +223,55 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'no_file' });
-    const name = fixFilename(file.originalname).toLowerCase();
+    const fixedFilename = fixFilename(file.originalname);
     const mime = file.mimetype || '';
+    const fileCategory = getFileCategory(fixedFilename, mime);
     let text = '';
-    if (mime.includes('pdf') || name.endsWith('.pdf')) {
-      let data;
+
+    if (fileCategory === 'pdf') {
       try {
         const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
         if (typeof PdfParseClass !== 'function') {
           throw new Error(`PdfParseClass not callable, type: ${typeof PdfParseClass}`);
         }
-
         if (typeof PdfParseClass.setWorker === 'function') {
           PdfParseClass.setWorker(PdfParseClass.setWorker());
         }
-
         const parser = new PdfParseClass({ data: file.buffer });
         if (typeof parser.getText !== 'function') {
           throw new Error('PdfParse instance has no getText');
         }
-
         const result = await parser.getText({});
-        data = { text: result?.text || '', numpages: result?.total || result?.pages?.length || 0, info: result?.info || {} };
-
+        const data = { text: result?.text || '', numpages: result?.total || result?.pages?.length || 0, info: result?.info || {} };
         if (typeof parser.destroy === 'function') {
           await parser.destroy();
         }
+        text = (data.text || '').trim();
+        if (text.length === 0) {
+          return res.status(500).json({ ok: false, error: 'extract_empty', detail: 'PDF解析成功但未提取到文本内容，可能是扫描件或受保护文档' });
+        }
+        return res.json({ ok: true, text, meta: { pages: data.numpages, info: data.info } });
       } catch (callError) {
         console.error('extract error', callError);
         return res.status(500).json({ ok: false, error: 'extract_failed', detail: String(callError) });
       }
-      text = (data.text || '').trim();
-      if (text.length === 0) {
-        return res.status(500).json({ ok: false, error: 'extract_empty', detail: 'PDF解析成功但未提取到文本内容，可能是扫描件或受保护文档' });
-      }
-      return res.json({ ok: true, text, meta: { pages: data.numpages, info: data.info } });
-    }
-    if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) {
+    } else if (fileCategory === 'word') {
       const result = await mammoth.extractRawText({ buffer: file.buffer });
       text = (result.value || '').trim();
       return res.json({ ok: true, text, meta: {} });
+    } else if (fileCategory === 'excel') {
+      const workbook = XLSX.read(file.buffer, { type: 'buffer', cellFormula: false, cellStyles: false });
+      const sheets = workbook.SheetNames.map(name => {
+        const sheet = workbook.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+        return `【${name}】\n${csv}`;
+      });
+      text = sheets.join('\n\n').trim();
+      return res.json({ ok: true, text, meta: { sheets: workbook.SheetNames.length } });
+    } else {
+      text = Buffer.from(file.buffer).toString('utf-8');
+      return res.json({ ok: true, text, meta: {} });
     }
-    // fallback to utf-8 text
-    text = Buffer.from(file.buffer).toString('utf-8');
-    return res.json({ ok: true, text, meta: {} });
   } catch (e) {
     console.error('extract error', e);
     return res.status(500).json({ ok: false, error: 'extract_failed' });

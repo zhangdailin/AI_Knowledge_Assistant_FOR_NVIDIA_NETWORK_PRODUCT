@@ -80,32 +80,12 @@ export async function ensureEmbeddingsForDocument(documentId: string) {
 }
 
 /**
- * 提取查询中的核心命令和关键词
- */
-/**
  * 自动提取查询中的关键词
  * 使用高级语义分析识别网络配置、IP地址、命令等复杂技术信息
  */
 function extractKeywords(query: string): string[] {
-  // 使用增强的网络关键词提取器
   const extracted = enhancedNetworkKeywordExtractor.extractKeywords(query);
-  
-  // 返回所有提取的关键词，包括网络地址、命令等
   return extracted.keywords;
-}
-
-function extractCoreQuery(originalQuery: string): string {
-  // 使用自动关键词提取
-  const keywords = extractKeywords(originalQuery);
-  
-  if (keywords.length > 0) {
-    // 如果提取到关键词，使用关键词构建核心查询
-    // 保留原始查询中的关键信息，但去除停用词和无关词汇
-    return keywords.join(' ');
-  }
-  
-  // 如果没有提取到关键词，返回原始查询
-  return originalQuery;
 }
 
 /**
@@ -203,9 +183,7 @@ export async function semanticSearch(
   // const qEmb = await embedText(coreQuery); // 已经在上面并行执行了
   // const all = await unifiedStorageManager.getAllChunksForSearch(); // REMOVED: Do not fetch all chunks
   const allDocs = await unifiedStorageManager.getAllDocumentsPublic();
-  
-  let chunksWithEmbedding: Chunk[] = [];
-  
+
   // 并行执行向量检索和关键词检索（在服务器端）
   const [vectorResults, keywordResults] = await Promise.all([
     qEmb ? unifiedStorageManager.vectorSearchChunks(qEmb, limit * 3) : Promise.resolve([]),
@@ -310,7 +288,7 @@ export async function semanticSearch(
   });
 
   const RERANK_CONTENT_MAX_LENGTH = 500;
-  let allRerankedResults: typeof rerankCandidates = [];
+  let allRerankedResults: Array<{ chunk: Chunk; score: number; sources?: string[] }> = [];
 
   // 2. 优化：只对前3个文档进行Rerank，减少API调用
   const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, 3);
@@ -344,11 +322,11 @@ export async function semanticSearch(
 
     allCandidatesForRerank.forEach(({ chunk, content }) => {
       const score = rerankedMap.get(content) || 0;
-      allRerankedResults.push({ chunk, score });
+      allRerankedResults.push({ chunk, score, sources: ['rerank'] });
     });
   } catch (e) {
     console.warn('Batch rerank failed, falling back to original scores:', e);
-    allRerankedResults = allCandidatesForRerank.map(c => ({ chunk: c.chunk, score: 0.5 }));
+    allRerankedResults = allCandidatesForRerank.map(c => ({ chunk: c.chunk, score: 0.5, sources: ['fallback'] }));
   }
 
   // 4. 添加未Rerank的文档候选（其他文档）
@@ -495,7 +473,7 @@ export async function semanticSearch(
         // 这里假设 id 唯一对应内容
       }
     } else {
-      enhancedResults.push({ chunk: finalChunk, score: finalScore });
+      enhancedResults.push({ chunk: finalChunk, score: finalScore, sources: ['enhanced'] });
       addedChunkIds.add(finalChunk.id);
     }
   }));
@@ -512,7 +490,7 @@ export async function semanticSearch(
   
   // 确保结果中包含多个文档的chunks，但只从相关性高的文档中选择
   // 按文档分组，并计算每个文档的平均相关性分数
-  const chunksByDoc = new Map<string, typeof deduplicatedResults>();
+  const chunksByDoc = new Map<string, Array<{ chunk: Chunk; score: number; sources?: string[] }>>();
   deduplicatedResults.forEach(item => {
     if (!chunksByDoc.has(item.chunk.documentId)) {
       chunksByDoc.set(item.chunk.documentId, []);
@@ -531,9 +509,8 @@ export async function semanticSearch(
   // 如果文档没有出现在chunksByDoc中，但它的chunks有embedding，也检查一下是否需要强制包含
   // 特别是当查询包含产品关键词，而文档名称直接包含该关键词时
   const allDocsWithChunks = new Set<string>();
-  chunksWithEmbedding.forEach(c => {
-    allDocsWithChunks.add(c.documentId);
-  });
+  // Note: We don't fetch all chunks to avoid OOM, so we can't populate this set
+  // This means documents not in chunksByDoc won't be force-included based on embedding availability
   
   // 提取查询中的关键词（用于文档名称匹配）
   // 使用extractKeywords函数提取关键词，确保包含产品名称等关键信息
@@ -715,7 +692,7 @@ export async function semanticSearch(
   });
 
   // 只从相关性高的文档中选择chunks
-  const relevantChunksByDoc = new Map<string, typeof enhancedResults>();
+  const relevantChunksByDoc = new Map<string, Array<{ chunk: Chunk; score: number; sources?: string[] }>>();
   chunksByDoc.forEach((docChunks, docId) => {
     if (relevantDocs.has(docId)) {
       relevantChunksByDoc.set(docId, docChunks);
@@ -730,48 +707,9 @@ export async function semanticSearch(
   for (const docId of relevantDocs) {
     if (!relevantChunksByDoc.has(docId)) {
       // 这个文档被标记为相关，但没有出现在top chunks中
-      // 从它的所有chunks中选择一些（优先选择有embedding的，如果没有embedding，也选择一些）
-      let docChunks = chunksWithEmbedding.filter(c => c.documentId === docId);
-
-      // 如果文档的chunks没有embedding，跳过此文档
-      // (all 变量已被移除，不再获取所有chunks以避免OOM)
-      if (docChunks.length === 0) {
-        continue;
-      }
-
-      let docScored: Array<{ chunk: Chunk; score: number }>;
-
-      // 如果chunks有embedding，计算语义相似度分数
-      if (docChunks[0].embedding && Array.isArray(docChunks[0].embedding) && docChunks[0].embedding.length > 0) {
-        docScored = docChunks.map(c => ({
-          chunk: c,
-          score: cosine(qEmb, c.embedding as number[])
-        }));
-      } else {
-        // 如果chunks没有embedding，使用简单的文本匹配分数
-        const queryWordsLower = queryWords.map(w => w.toLowerCase());
-        docScored = docChunks.map(c => {
-          const contentLower = c.content.toLowerCase();
-          let score = 0;
-          queryWordsLower.forEach(word => {
-            if (contentLower.includes(word)) {
-              score += 0.1;
-            }
-          });
-          return { chunk: c, score };
-        });
-      }
-
-      docScored.sort((a, b) => b.score - a.score);
-      // 选择前10个chunks（或更少，如果文档chunks数量较少）
-      const selectedChunks = docScored.slice(0, Math.min(10, docScored.length));
-      // 使用重排分数（如果没有重排，使用语义相似度分数）
-      const rerankedForDoc = await rerank(coreQuery, selectedChunks.map(t => t.chunk.content));
-      const contentToChunkMap = new Map(selectedChunks.map(t => [t.chunk.content, t.chunk]));
-      const rerankedChunks = rerankedForDoc
-        .map(item => ({ chunk: contentToChunkMap.get(item.text)!, score: item.score }))
-        .filter(x => !!x.chunk);
-      relevantChunksByDoc.set(docId, rerankedChunks);
+      // 由于我们不获取所有chunks以避免OOM，无法为这些文档选择chunks
+      // 这些文档将不会出现在最终结果中
+      continue;
     }
   }
   
