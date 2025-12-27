@@ -30,7 +30,7 @@ import * as chunking from './chunking.mjs';
 const app = express();
 // 配置 CORS 允许前端跨域请求
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
+  origin: true,  // 允许所有来源（生产环境可配置具体域名）
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
