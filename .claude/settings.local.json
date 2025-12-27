@@ -7,7 +7,8 @@
       "Bash(netstat -ano)",
       "Bash(findstr \":5173\")",
       "Bash(findstr \":8787\")",
-      "Bash(xargs -I {} taskkill //PID {} //F)"
+      "Bash(xargs -I {} taskkill //PID {} //F)",
+      "Bash(dir /b \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\")"
     ]
   }
 }
