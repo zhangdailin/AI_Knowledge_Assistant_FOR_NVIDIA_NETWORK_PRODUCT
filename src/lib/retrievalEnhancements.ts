@@ -63,7 +63,6 @@ export function extractCoreQueryEnhanced(query: string, intent: QueryIntent): st
     return enhancedNetworkKeywordExtractor.generateEnhancedQuery(query);
   } else {
     // 使用通用的高级关键词提取器
-    const extracted = advancedKeywordExtractor.extractKeywords(query);
     return advancedKeywordExtractor.generateEnhancedQuery(query);
   }
 }
