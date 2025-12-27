@@ -24,7 +24,8 @@ const ChatInterface: React.FC = () => {
     conversations,
     selectConversation,
     loadConversations,
-    deleteConversation
+    deleteConversation,
+    stopGeneration
   } = useChatStore();
 
   // 初始化对话：加强版
@@ -97,11 +98,9 @@ const ChatInterface: React.FC = () => {
     }
   };
 
-  // 新增：中断处理
+  // 停止生成
   const handleStop = () => {
-    // 这里可以添加中断逻辑，比如取消API请求
-    console.log('用户中断处理');
-    // 可以添加一个中断标志到chatStore
+    stopGeneration();
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

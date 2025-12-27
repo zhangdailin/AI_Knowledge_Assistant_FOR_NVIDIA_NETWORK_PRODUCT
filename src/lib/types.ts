@@ -19,8 +19,26 @@ export interface Message {
   conversationId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  metadata?: Record<string, any>;
+  metadata?: MessageMetadata;
   createdAt: string;
+}
+
+export interface MessageMetadata {
+  model?: string;
+  usage?: {
+    tokens: number;
+  };
+  references?: Array<{
+    title: string;
+    content: string;
+    score: number;
+  }>;
+  deepThinking?: boolean;
+  fallbackToQwen?: boolean;
+  hint?: boolean;
+  error?: boolean;
+  errorMessage?: string;
+  [key: string]: unknown; // 允许其他元数据字段
 }
 
 export interface Document {
@@ -47,5 +65,45 @@ export interface Chunk {
   createdAt: string;
   parentId?: string; // 父 chunk 的 ID（用于父子文本切块）
   chunkType?: 'parent' | 'child'; // chunk 类型：parent 为父块（较大），child 为子块（较小）
-  metadata?: Record<string, any>; // 元数据，可存储 header 等信息
+  metadata?: ChunkMetadata; // 元数据，可存储 header 等信息
+}
+
+export interface ChunkMetadata {
+  header?: string;
+  [key: string]: unknown; // 允许其他元数据字段
+}
+
+// 设置相关类型
+export interface Settings {
+  theme?: string;
+  language?: string;
+  [key: string]: unknown;
+}
+
+// 任务相关类型
+export interface EmbeddingTask {
+  id: string;
+  documentId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  createdAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
+// Chunk统计信息
+export interface ChunkStats {
+  total: number;
+  withEmbedding: number;
+  withoutEmbedding: number;
+  processing: number;
+}
+
+// 用于创建chunk的数据结构
+export interface ChunkData {
+  content: string;
+  chunkIndex: number;
+  tokenCount: number;
+  parentId?: string;
+  chunkType?: 'parent' | 'child';
+  metadata?: ChunkMetadata;
 }
