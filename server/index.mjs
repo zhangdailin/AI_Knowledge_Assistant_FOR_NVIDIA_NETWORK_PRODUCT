@@ -1014,9 +1014,29 @@ app.post('/api/sn-to-address', async (req, res) => {
       const snTrimmed = sn.trim().toUpperCase();
       if (!snTrimmed) continue;
 
-      // 1. 查找 SN 对应的主机名
-      // 格式: GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,MDC-DH1E-M09-POD1-GPU-214
-      const snPattern = new RegExp(`${snTrimmed}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+      // 数据格式: SN,SN,SN,SN,SN,主机名,别名,带外地址,带内地址
+      // 例如: GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,MDC-DH1E-A07-POD1-GPU-001,hgx001,10.240.8.1,10.240.0.1
+
+      // 匹配整行数据，提取主机名、带外地址、带内地址
+      // 格式: SN重复多次,主机名,别名,带外IP,带内IP
+      const linePattern = new RegExp(
+        `${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)[^,]*,([^,]*),(\\d+\\.\\d+\\.\\d+\\.\\d+),(\\d+\\.\\d+\\.\\d+\\.\\d+)`,
+        'i'
+      );
+      const lineMatch = allContent.match(linePattern);
+
+      if (lineMatch) {
+        results.push({
+          sn: snTrimmed,
+          hostname: lineMatch[1],
+          outband: lineMatch[3],  // 带外地址
+          inband: lineMatch[4]    // 带内地址
+        });
+        continue;
+      }
+
+      // 备用方案：先找主机名，再分别找地址
+      const snPattern = new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
       const snMatch = allContent.match(snPattern);
 
       if (!snMatch) {
@@ -1025,41 +1045,33 @@ app.post('/api/sn-to-address', async (req, res) => {
       }
 
       const hostname = snMatch[1];
-
-      // 2. 查找主机名对应的带内地址 (inband)
-      // 常见格式: hostname,IP 或 hostname IP 或 hostname: IP
-      // 带内地址通常是 10.x.x.x 或 192.168.x.x
       let inband = '';
-      const inbandPatterns = [
-        new RegExp(`${hostname}[,\\s:]+?(10\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
-        new RegExp(`${hostname}[,\\s:]+?(192\\.168\\.\\d+\\.\\d+)`, 'i'),
-        new RegExp(`${hostname}[^\\n]*?inband[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
-        new RegExp(`inband[^\\n]*?${hostname}[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i')
-      ];
-
-      for (const pattern of inbandPatterns) {
-        const match = allContent.match(pattern);
-        if (match) {
-          inband = match[1];
-          break;
-        }
-      }
-
-      // 3. 查找主机名对应的带外地址 (outband/BMC/IPMI)
-      // 带外地址通常是 BMC 或 IPMI 地址
       let outband = '';
-      const outbandPatterns = [
-        new RegExp(`${hostname}[^\\n]*?(?:bmc|ipmi|outband|oob)[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
-        new RegExp(`(?:bmc|ipmi|outband|oob)[^\\n]*?${hostname}[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
-        // 尝试从主机名推断 BMC 地址 (hostname-bmc 格式)
-        new RegExp(`${hostname}-(?:bmc|ipmi)[,\\s:]+?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i')
-      ];
 
-      for (const pattern of outbandPatterns) {
-        const match = allContent.match(pattern);
-        if (match) {
-          outband = match[1];
-          break;
+      // 尝试从同一行提取 IP 地址
+      // 查找包含该主机名的完整行
+      const fullLinePattern = new RegExp(`[^\\r\\n]*${hostname}[^\\r\\n]*`, 'i');
+      const fullLineMatch = allContent.match(fullLinePattern);
+
+      if (fullLineMatch) {
+        const line = fullLineMatch[0];
+        // 提取该行中的所有 IP 地址
+        const ipMatches = line.match(/\d+\.\d+\.\d+\.\d+/g) || [];
+
+        // 根据 IP 段判断带内带外
+        // 带外通常是 10.240.8.x，带内通常是 10.240.0.x
+        for (const ip of ipMatches) {
+          if (ip.startsWith('10.240.8.') || ip.startsWith('10.240.9.') ||
+              ip.startsWith('10.240.10.') || ip.startsWith('10.240.11.') ||
+              ip.startsWith('10.240.12.') || ip.startsWith('10.240.13.') ||
+              ip.startsWith('10.240.14.') || ip.startsWith('10.240.15.')) {
+            outband = ip;  // BMC IP 段
+          } else if (ip.startsWith('10.240.0.') || ip.startsWith('10.240.1.') ||
+                     ip.startsWith('10.240.2.') || ip.startsWith('10.240.3.') ||
+                     ip.startsWith('10.240.4.') || ip.startsWith('10.240.5.') ||
+                     ip.startsWith('10.240.6.') || ip.startsWith('10.240.7.')) {
+            inband = ip;  // InBand IP 段
+          }
         }
       }
 
@@ -1083,6 +1095,300 @@ app.post('/api/sn-to-address', async (req, res) => {
     });
   } catch (error) {
     console.error('[SN-Address] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ========== SN to Topology 查询 API ==========
+
+app.post('/api/sn-to-topology', async (req, res) => {
+  try {
+    const { sn } = req.body;
+    if (!sn) {
+      return res.status(400).json({ ok: false, error: '请提供 SN' });
+    }
+
+    const snTrimmed = sn.trim().toUpperCase();
+
+    // 获取所有 chunks
+    const allChunks = await storage.getAllChunks();
+    const allContent = allChunks.map(c => c.content).join('\n');
+
+    // 1. 查找 SN 对应的主机名
+    const snPattern = new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+    const snMatch = allContent.match(snPattern);
+
+    if (!snMatch) {
+      return res.status(404).json({ ok: false, error: '未找到该 SN 对应的服务器' });
+    }
+
+    const hostname = snMatch[1];
+
+    // 提取机架信息和 POD 信息
+    const rackMatch = hostname.match(/MDC-([A-Z0-9]+)-([A-Z])(\d+)-/i);
+    const rack = rackMatch ? `${rackMatch[1]}-${rackMatch[2]}${rackMatch[3]}` : '';
+    const podMatch = hostname.match(/POD(\d+)/i);
+    const podNum = podMatch ? podMatch[1].padStart(2, '0') : '01';
+
+    // 存储所有层级的设备和连接
+    const connections = [];
+    const devicesByLayer = {
+      server: new Set([hostname]),
+      iblf: new Set(),
+      spine: new Set(),
+      core: new Set(),
+      edge: new Set(),
+      leaf: new Set(),  // HSS-LEAF, STL-LEAF
+      oobSpine: new Set(),
+      oobLeaf: new Set()
+    };
+
+    // 2. 查找服务器到 IBLF 的连接
+    const connPattern = new RegExp(
+      `${hostname},(\\d+)[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(MDC-[A-Z0-9-]+-IBLF-\\d+),(\\d+/\\d+)`,
+      'gi'
+    );
+
+    let match;
+    while ((match = connPattern.exec(allContent)) !== null) {
+      connections.push({
+        layer: 'server-iblf',
+        sourceDevice: hostname,
+        sourcePort: match[1],
+        destDevice: match[2],
+        destPort: match[3],
+        cableType: 'MPO'
+      });
+      devicesByLayer.iblf.add(match[2]);
+    }
+
+    // 备用方案：查找包含主机名和 IBLF 的行
+    if (devicesByLayer.iblf.size === 0) {
+      const lines = allContent.split(/[\r\n]+/);
+      for (const line of lines) {
+        if (line.includes(hostname) && line.includes('IBLF')) {
+          const iblfMatch = line.match(/(MDC-[A-Z0-9-]+-IBLF-\d+)/gi);
+          if (iblfMatch) {
+            iblfMatch.forEach(iblf => {
+              devicesByLayer.iblf.add(iblf);
+              const portMatch = line.match(new RegExp(`${hostname}[^,]*,(\\d+)`, 'i'));
+              const iblfPortMatch = line.match(/IBLF-\d+,(\d+\/\d+)/i);
+              connections.push({
+                layer: 'server-iblf',
+                sourceDevice: hostname,
+                sourcePort: portMatch ? portMatch[1] : '',
+                destDevice: iblf,
+                destPort: iblfPortMatch ? iblfPortMatch[1] : '',
+                cableType: 'MPO'
+              });
+            });
+          }
+        }
+      }
+    }
+
+    // 3. 添加 SPINE 设备（基于 POD）并查找 IBLF 到 SPINE 的连接
+    devicesByLayer.spine.add(`POD${podNum}-SPINE01`);
+    devicesByLayer.spine.add(`POD${podNum}-SPINE02`);
+
+    // 查找 IBLF 到 SPINE 的连接
+    // 格式: MDC-xxx-IBLF-01,swp1,POD01-SPINE01,swp1,...
+    const iblfSpinePattern = /(MDC-[A-Z0-9-]+-IBLF-\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi;
+    while ((match = iblfSpinePattern.exec(allContent)) !== null) {
+      const iblfName = match[1];
+      const spineName = match[3];
+      if (devicesByLayer.iblf.has(iblfName) || devicesByLayer.spine.has(spineName)) {
+        devicesByLayer.iblf.add(iblfName);
+        devicesByLayer.spine.add(spineName);
+        connections.push({
+          layer: 'iblf-spine',
+          sourceDevice: iblfName,
+          sourcePort: match[2],
+          destDevice: spineName,
+          destPort: match[4]
+        });
+      }
+    }
+
+    // 如果没有找到 IBLF-SPINE 连接，为每个 IBLF 创建到 SPINE 的逻辑连接
+    if (!connections.some(c => c.layer === 'iblf-spine') && devicesByLayer.iblf.size > 0) {
+      devicesByLayer.iblf.forEach(iblf => {
+        devicesByLayer.spine.forEach(spine => {
+          connections.push({
+            layer: 'iblf-spine',
+            sourceDevice: iblf,
+            sourcePort: '',
+            destDevice: spine,
+            destPort: '',
+            cableType: 'logical'
+          });
+        });
+      });
+    }
+
+    // 4. 查找 SPINE 到 CORE 的连接
+    // 格式: POD01-SPINE01,swp33s0,CORE01,swp1s0,...
+    const spinePattern = /POD(\d+)-SPINE(\d+),([^,]+),(CORE\d+),([^,]+)/gi;
+    while ((match = spinePattern.exec(allContent)) !== null) {
+      const spineName = `POD${match[1]}-SPINE${match[2]}`;
+      if (devicesByLayer.spine.has(spineName)) {
+        devicesByLayer.core.add(match[4]);
+        connections.push({
+          layer: 'spine-core',
+          sourceDevice: spineName,
+          sourcePort: match[3],
+          destDevice: match[4],
+          destPort: match[5]
+        });
+      }
+    }
+
+    // 也尝试反向匹配: CORE01,swp1s0,POD01-SPINE01,swp33s0
+    const coreSpinePattern = /(CORE\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi;
+    while ((match = coreSpinePattern.exec(allContent)) !== null) {
+      const spineName = match[3];
+      if (devicesByLayer.spine.has(spineName)) {
+        devicesByLayer.core.add(match[1]);
+        connections.push({
+          layer: 'spine-core',
+          sourceDevice: spineName,
+          sourcePort: match[4],
+          destDevice: match[1],
+          destPort: match[2]
+        });
+      }
+    }
+
+    // 如果没有找到 SPINE-CORE 连接，添加默认 CORE 设备和逻辑连接
+    if (devicesByLayer.core.size === 0 && devicesByLayer.spine.size > 0) {
+      devicesByLayer.core.add('CORE01');
+      devicesByLayer.core.add('CORE02');
+      devicesByLayer.spine.forEach(spine => {
+        devicesByLayer.core.forEach(core => {
+          connections.push({
+            layer: 'spine-core',
+            sourceDevice: spine,
+            sourcePort: '',
+            destDevice: core,
+            destPort: '',
+            cableType: 'logical'
+          });
+        });
+      });
+    }
+
+    // 5. 查找 CORE 到 EDGE/LEAF 的连接
+    // 格式: CORE01,swp64s0,EDGE01,swp1,...
+    const coreEdgePattern = /(CORE\d+),([^,]+),(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+)/gi;
+    while ((match = coreEdgePattern.exec(allContent)) !== null) {
+      if (devicesByLayer.core.has(match[1])) {
+        const destDevice = match[3];
+        if (destDevice.includes('EDGE')) {
+          devicesByLayer.edge.add(destDevice);
+        } else {
+          devicesByLayer.leaf.add(destDevice);
+        }
+        connections.push({
+          layer: 'core-edge',
+          sourceDevice: match[1],
+          sourcePort: match[2],
+          destDevice: destDevice,
+          destPort: match[4]
+        });
+      }
+    }
+
+    // 也尝试反向匹配: EDGE01,swp1,CORE01,swp64s0
+    const edgeCorePattern = /(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+),(CORE\d+),([^,]+)/gi;
+    while ((match = edgeCorePattern.exec(allContent)) !== null) {
+      if (devicesByLayer.core.has(match[3])) {
+        const srcDevice = match[1];
+        if (srcDevice.includes('EDGE')) {
+          devicesByLayer.edge.add(srcDevice);
+        } else {
+          devicesByLayer.leaf.add(srcDevice);
+        }
+        connections.push({
+          layer: 'core-edge',
+          sourceDevice: match[3],
+          sourcePort: match[4],
+          destDevice: srcDevice,
+          destPort: match[2]
+        });
+      }
+    }
+
+    // 如果没有找到 CORE-EDGE 连接，添加默认 EDGE 设备和逻辑连接
+    if (devicesByLayer.edge.size === 0 && devicesByLayer.core.size > 0) {
+      devicesByLayer.edge.add('EDGE01');
+      devicesByLayer.edge.add('EDGE02');
+      devicesByLayer.core.forEach(core => {
+        devicesByLayer.edge.forEach(edge => {
+          connections.push({
+            layer: 'core-edge',
+            sourceDevice: core,
+            sourcePort: '',
+            destDevice: edge,
+            destPort: '',
+            cableType: 'logical'
+          });
+        });
+      });
+    }
+
+    // 6. 查找 OOB 网络连接（带外管理网络）
+    // 格式: OOB-SPINE01,swp1,OOB-LEAF01,swp49,...
+    const oobPattern = /(OOB-SPINE\d+),([^,]+),(OOB-LEAF\d+|EDGE\d+),([^,]+)/gi;
+    while ((match = oobPattern.exec(allContent)) !== null) {
+      devicesByLayer.oobSpine.add(match[1]);
+      if (match[3].includes('OOB-LEAF')) {
+        devicesByLayer.oobLeaf.add(match[3]);
+      }
+      connections.push({
+        layer: 'oob',
+        sourceDevice: match[1],
+        sourcePort: match[2],
+        destDevice: match[3],
+        destPort: match[4]
+      });
+    }
+
+    // 去重连接
+    const uniqueConnections = [];
+    const connSet = new Set();
+    for (const conn of connections) {
+      const key = `${conn.sourceDevice}-${conn.sourcePort}-${conn.destDevice}-${conn.destPort}`;
+      if (!connSet.has(key)) {
+        connSet.add(key);
+        uniqueConnections.push(conn);
+      }
+    }
+
+    // 限制连接数量，避免前端渲染过多
+    const limitedConnections = uniqueConnections.slice(0, 100);
+
+    res.json({
+      ok: true,
+      server: {
+        sn: snTrimmed,
+        hostname,
+        rack,
+        pod: `POD${podNum}`
+      },
+      connections: limitedConnections,
+      devices: {
+        iblf: Array.from(devicesByLayer.iblf),
+        spine: Array.from(devicesByLayer.spine),
+        core: Array.from(devicesByLayer.core),
+        edge: Array.from(devicesByLayer.edge),
+        leaf: Array.from(devicesByLayer.leaf),
+        oobSpine: Array.from(devicesByLayer.oobSpine),
+        oobLeaf: Array.from(devicesByLayer.oobLeaf).slice(0, 10) // 限制 OOB-LEAF 数量
+      },
+      totalConnections: uniqueConnections.length
+    });
+  } catch (error) {
+    console.error('[SN-Topology] Error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 });

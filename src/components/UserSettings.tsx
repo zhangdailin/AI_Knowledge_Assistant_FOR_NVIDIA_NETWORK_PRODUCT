@@ -101,7 +101,7 @@ export default function UserSettings() {
       }
 
       // 保存用户个人设置到本地存储
-      localStorageManager.saveUserSettings(user.id, settings);
+      localStorageManager.saveUserSettings(user.id, settings as unknown as Record<string, unknown>);
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);

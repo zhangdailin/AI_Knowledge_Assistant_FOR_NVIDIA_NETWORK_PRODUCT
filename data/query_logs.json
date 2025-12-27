@@ -28,5 +28,23 @@
     "query": "你好现在上海的天气怎么样",
     "responseTime": 5639,
     "timestamp": "2025-12-27T15:24:41.119Z"
+  },
+  {
+    "id": "log-1766849547213",
+    "query": "如何检查vxlan隧道的状态",
+    "responseTime": 42337,
+    "timestamp": "2025-12-27T15:32:27.213Z"
+  },
+  {
+    "id": "log-1766849955572",
+    "query": "如何配置MLAG？",
+    "responseTime": 39960,
+    "timestamp": "2025-12-27T15:39:15.572Z"
+  },
+  {
+    "id": "log-1766851814534",
+    "query": "还原 GOG4X8312A0040 的拓扑",
+    "responseTime": 12063,
+    "timestamp": "2025-12-27T16:10:14.534Z"
   }
 ]

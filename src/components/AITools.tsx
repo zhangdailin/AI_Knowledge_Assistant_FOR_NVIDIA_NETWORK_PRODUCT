@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Search, Wrench, ChevronRight, X, Network } from 'lucide-react';
+import { Search, Wrench, ChevronRight, X, Network, GitBranch } from 'lucide-react';
 
 // 导入插件
 import SnToIblfTool, { pluginMeta as snIblfMeta } from '../plugins/sn-iblf';
 import SnAddressTool, { pluginMeta as snAddressMeta } from '../plugins/sn-address';
+import SnTopologyTool, { pluginMeta as snTopologyMeta } from '../plugins/sn-topology';
 
 // 插件注册表
 const plugins = [
@@ -14,6 +15,10 @@ const plugins = [
   {
     ...snAddressMeta,
     component: SnAddressTool
+  },
+  {
+    ...snTopologyMeta,
+    component: SnTopologyTool
   }
 ];
 
@@ -28,6 +33,7 @@ const AITools: React.FC = () => {
   const getIcon = (iconName: string) => {
     switch (iconName) {
       case 'Network': return Network;
+      case 'GitBranch': return GitBranch;
       default: return Search;
     }
   };

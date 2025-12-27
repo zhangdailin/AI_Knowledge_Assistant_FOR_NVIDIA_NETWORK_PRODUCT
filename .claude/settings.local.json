@@ -28,7 +28,10 @@
       "Bash(tasklist)",
       "Bash(findstr node)",
       "Bash(curl -s http://localhost:8787/api/categories)",
-      "Bash(del \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\components\\\\SnToIblfTool.tsx\")"
+      "Bash(del \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\components\\\\SnToIblfTool.tsx\")",
+      "Bash(more +1)",
+      "Bash(dir \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\data\\\\chunks\"\")",
+      "Bash(grep -i \"inband\\\\|带内\\\\|带外\\\\|outband\\\\|oob\\\\|bmc\\\\|ipmi\" \"D:/Github Code HUB/AI_Knowledge_Assistant/data/chunks/\"*.json)"
     ]
   }
 }
