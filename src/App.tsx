@@ -8,6 +8,7 @@ import ConversationHistory from './components/ConversationHistory';
 import UserSettings from './components/UserSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import AdminLayout from './components/AdminLayout';
+import SnToIblfTool from './components/SnToIblfTool';
 
 function App() {
   const { isAuthenticated, checkAuth, user } = useAuthStore();
@@ -71,13 +72,21 @@ function App() {
                 </div>
               } 
             />
-            <Route 
-              path="settings" 
+            <Route
+              path="settings"
               element={
                 <div className="h-full">
                   <UserSettings />
                 </div>
-              } 
+              }
+            />
+            <Route
+              path="sn-iblf"
+              element={
+                <div className="h-full overflow-auto">
+                  <SnToIblfTool />
+                </div>
+              }
             />
           </Route>
           

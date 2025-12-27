@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { FolderOpen, History, Settings, Home } from 'lucide-react';
+import { FolderOpen, History, Settings, Home, Search } from 'lucide-react';
 
 const AdminLayout: React.FC = () => {
   const location = useLocation();
@@ -8,6 +8,7 @@ const AdminLayout: React.FC = () => {
   const navItems = [
     { path: '/admin/knowledge', label: '知识库', icon: FolderOpen },
     { path: '/admin/history', label: '历史记录', icon: History },
+    { path: '/admin/sn-iblf', label: 'SN-IBLF查询', icon: Search },
     { path: '/admin/settings', label: '设置', icon: Settings },
   ];
 

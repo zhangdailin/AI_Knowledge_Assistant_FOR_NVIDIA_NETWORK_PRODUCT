@@ -31,5 +31,38 @@
     "uploadedAt": "2025-12-24T00:48:29.161Z",
     "status": "ready",
     "id": "doc-1766537309162"
+  },
+  {
+    "userId": "public",
+    "filename": "Magaspeed_IP_Allocation v4.0-0731-Network (2).xlsx",
+    "fileType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "fileSize": 967002,
+    "category": "default",
+    "contentPreview": "【Changes】\n,Change log:,,,,,,,,,,,,,,,,,,,,,,,\n,V1,Initial draft ,Wei song,,,,,,,,,,,,,,,,,,,,,\n,V3.1,\"update FW info in sheet\"\"Edge-FW\"\",\"\"IP Allocation\"\",\"\"HSS+CTL\"\",\"\"OOB\"\"\",,,,,,,,,,,,,,,,,,,,,,\n,v3.3,\"update EDGE04, IFW BGP AS, IPOIB \",,,,,,,,,,,,,,,,,,,,,,\n,,,,,,,,今天会议MOM：,,,,,,,,,,,,,,,,\n,,,,,,,,\"1. 以太网采用EVPN-VXLAN架构，按设备类型分多个网段(vlan),但同属于一个vrf，允许客户控制所有资源。\",,,,,,,,,,,,,,,,\n,,,,,,,,2. 部署完移交后交换机配置不变，服务器OS最终用户可能按需重新安装。,,,,,,,,,,,,,,,,\n,,,,,,,,3. NVIDIA BCM只有90天试用License，magaspeed维护团队会部署其他pxe服务",
+    "uploadedAt": "2025-12-27T10:00:12.231Z",
+    "status": "ready",
+    "id": "doc-1766829612233"
+  },
+  {
+    "userId": "public",
+    "filename": "Megaspeed P2P v4.1-0725.xlsx",
+    "fileType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "fileSize": 6456325,
+    "category": "default",
+    "contentPreview": "【Changes】\nv1.0,Shude,Initial draft,,,,,,,,,,,,,,,\nV2.0,Shude,update DDN MPO fiber to DAC,,,,,,,,,,,,,,,\nV3.1,Shude,update POD3's cables,,,,,,,,,,,,,,,\nV3.2,Shude,update cable's label,,,,,,,,,,,,,,,\nV3.3,Shude,update the Rack elevation,,,,,,,,,,,,,,,\nV3.4,Shude,update pod3 server count,,,,,,,,,,,,,,,\nV3.5,Shude,update the switch location,,,,,,,,,,,,,,,\nV3.7,Jipeng,Update Eth breakout cable connections,,,,,,,,,,,,,,,\nV3.8,songwei,\"Update sheet \"\"MGMT&DDN-SL“, \"\"TO-FW\"\",\"\"OTHER OOB\"\" according to F",
+    "uploadedAt": "2025-12-27T10:00:26.910Z",
+    "status": "ready",
+    "id": "doc-1766829626912"
+  },
+  {
+    "userId": "public",
+    "filename": "7月14日服务器SN核对 - Sheet1.csv",
+    "fileType": "text/csv",
+    "fileSize": 90177,
+    "category": "default",
+    "contentPreview": "cmdb数据库SN,交付清单SN,猎豹SN,BMC界面SN,飞书云文档SN,主机名,别名,带外地址,带内地址,是否一致,,,,,,,,,,,,,,,,,\r\n,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,MDC-DH1E-A07-POD1-GPU-001,hgx001,10.240.8.1,10.240.0.1,一致,,,,,,,,,,,,,,,,,\r\n,GOG4X8312A0028,GOG4X8312A0028,GOG4X8312A0028,GOG4X8312A0028,MDC-DH1E-A08-POD1-GPU-002,hgx002,10.240.8.2,10.240.0.2,一致,,,,,,,,,,,,,,,,,\r\n,GOG4X8312A0069,GOG4X8312A0069,GOG4X8312A0069,GOG4X8312A0069,MDC-DH1E-A09-POD1-GPU-003,hgx003,10.240.8.3,10.240.0.3,一致,,,,,,,,,,,,,,,,,\r\n,GOG4X8312A",
+    "uploadedAt": "2025-12-27T10:02:06.117Z",
+    "status": "ready",
+    "id": "doc-1766829726118"
   }
 ]

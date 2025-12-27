@@ -498,9 +498,9 @@ app.get('/api/chunks/search', async (req, res) => {
     if (!q) {
       return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
     }
-    
+
     const maxResults = parseInt(limit);
-    console.log(`[Search] Query: "${q}"`);
+    const startTime = Date.now();
 
     // 1. 并行执行：关键词搜索 + 向量生成
     const keywordSearchPromise = storage.searchChunks(q, maxResults);
@@ -513,7 +513,7 @@ app.get('/api/chunks/search', async (req, res) => {
            return await storage.vectorSearchChunks(embedding, maxResults);
         }
       } catch (e) {
-        console.warn('[Search] Vector search skipped due to embedding error:', e.message);
+        // 向量搜索失败不影响关键词搜索
       }
       return [];
     })();
@@ -523,7 +523,7 @@ app.get('/api/chunks/search', async (req, res) => {
       vectorSearchPromise
     ]);
 
-    console.log(`[Search] Results: Keyword=${keywordResults.length}, Vector=${vectorResults.length}`);
+    console.log(`[Search] Query: "${q}" | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
 
     // 检测查询意图
     const queryLower = q.toLowerCase();
@@ -755,6 +755,201 @@ app.get('/api/documents/:id/tasks', async (req, res) => {
   } catch (error) {
     console.error('[API] 获取文档任务失败:', error);
     res.status(500).json({ ok: false, error: '获取文档任务失败' });
+  }
+});
+
+// ========== SN to IBLF 查询 API ==========
+
+app.post('/api/sn-to-iblf', async (req, res) => {
+  try {
+    const { snList } = req.body;
+    if (!snList || !Array.isArray(snList) || snList.length === 0) {
+      return res.status(400).json({ ok: false, error: '请提供 SN 列表' });
+    }
+
+    // 获取所有 chunks
+    const allChunks = await storage.getAllChunks();
+    const allContent = allChunks.map(c => c.content).join('\n');
+
+    const results = [];
+    const notFound = [];
+
+    for (const sn of snList) {
+      const snTrimmed = sn.trim().toUpperCase();
+      if (!snTrimmed) continue;
+
+      // 1. 查找 SN 对应的主机名
+      // 格式: GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,MDC-DH1E-M09-POD1-GPU-214
+      const snPattern = new RegExp(`${snTrimmed}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+      const snMatch = allContent.match(snPattern);
+
+      if (!snMatch) {
+        notFound.push(snTrimmed);
+        continue;
+      }
+
+      const hostname = snMatch[1];
+
+      // 2. 查找主机名连接的 IBLF
+      // 格式: MDC-DH1E-A07-POD1-GPU-001 连接到多个 IBLF
+      const iblfPattern = new RegExp(`${hostname}[^\\n]*?(MDC-[A-Z0-9-]+-IBLF-\\d+)`, 'gi');
+      const iblfMatches = [...allContent.matchAll(iblfPattern)];
+
+      // 去重
+      const iblfs = [...new Set(iblfMatches.map(m => m[1]))];
+
+      if (iblfs.length === 0) {
+        // 尝试通过主机名的位置信息推断 IBLF
+        // 从主机名提取位置信息 (如 MDC-DH1E-M09-POD1-GPU-214 -> DH1E, POD1)
+        const locMatch = hostname.match(/MDC-(DH\d[EW])-[A-Z](\d+)-POD(\d)/i);
+        if (locMatch) {
+          const [, building, rack, pod] = locMatch;
+          // 搜索同一 POD 的 IBLF
+          const podIblfPattern = new RegExp(`MDC-${building}-[GH]\\d+-\\d+U-POD${pod}-RAIL\\d-IBLF-\\d+`, 'gi');
+          const podIblfs = [...allContent.matchAll(podIblfPattern)];
+          const uniquePodIblfs = [...new Set(podIblfs.map(m => m[0]))];
+
+          // 根据 rack 位置筛选合适的 IBLF 组
+          const rackNum = parseInt(rack);
+          // IBLF 编号规则: 每8台服务器共享一组 IBLF
+          const iblfGroup = Math.ceil(rackNum / 8);
+          const filteredIblfs = uniquePodIblfs.filter(iblf => {
+            const iblfNum = iblf.match(/IBLF-(\d+)/)?.[1];
+            return iblfNum && parseInt(iblfNum) === iblfGroup;
+          });
+
+          if (filteredIblfs.length > 0) {
+            iblfs.push(...filteredIblfs);
+          }
+        }
+      }
+
+      results.push({
+        sn: snTrimmed,
+        hostname,
+        iblfs: [...new Set(iblfs)].sort()
+      });
+    }
+
+    // 3. 按 IBLF 组合分组
+    const groups = new Map();
+    for (const result of results) {
+      const key = result.iblfs.join('|');
+      if (!groups.has(key)) {
+        groups.set(key, {
+          iblfs: result.iblfs,
+          servers: []
+        });
+      }
+      groups.get(key).servers.push({
+        sn: result.sn,
+        hostname: result.hostname
+      });
+    }
+
+    // 转换为数组并排序
+    const groupedResults = Array.from(groups.values())
+      .sort((a, b) => b.servers.length - a.servers.length);
+
+    res.json({
+      ok: true,
+      summary: {
+        total: snList.length,
+        found: results.length,
+        notFound: notFound.length,
+        groups: groupedResults.length
+      },
+      groups: groupedResults,
+      notFound,
+      details: results
+    });
+  } catch (error) {
+    console.error('[SN-IBLF] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ========== Chat API (代理 SiliconFlow / Gemini) ==========
+
+// Gemini API 配置 (Google AI Studio)
+const GEMINI_CONFIG = {
+  baseUrl: 'https://gemini.chinablog.xyz/',
+  apiKey: 'Zhang1996',
+  model: 'gemini-3-flash-preview'
+};
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { messages, model, max_tokens, temperature, useGemini } = req.body;
+
+    // 如果指定使用 Gemini 或知识库无内容
+    if (useGemini) {
+      console.log('[Chat] Using Gemini API with Google Search');
+      try {
+        const response = await fetch(`${GEMINI_CONFIG.baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${GEMINI_CONFIG.apiKey}`
+          },
+          body: JSON.stringify({
+            model: GEMINI_CONFIG.model,
+            messages,
+            max_tokens: max_tokens || 8192,
+            temperature: temperature || 0.7,
+            // 启用 Google Search grounding（联网搜索）
+            tools: [{ type: 'google_search' }]
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('[Chat] Gemini API error:', response.status, errorData);
+          throw new Error(`Gemini API 请求失败: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return res.json({ ok: true, ...data, source: 'gemini' });
+      } catch (geminiError) {
+        console.error('[Chat] Gemini failed, falling back to SiliconFlow:', geminiError.message);
+        // Gemini 失败，回退到 SiliconFlow
+      }
+    }
+
+    // 默认使用 SiliconFlow
+    const apiKey = await storage.getApiKey('siliconflow');
+    if (!apiKey) {
+      return res.status(400).json({ ok: false, error: '未配置 SiliconFlow API Key' });
+    }
+
+    const response = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model || 'Qwen/Qwen3-32B',
+        messages,
+        max_tokens: max_tokens || 8192,
+        temperature: temperature || 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[Chat] API error:', response.status, errorData);
+      return res.status(response.status).json({
+        ok: false,
+        error: errorData.error?.message || `API 请求失败: ${response.status}`
+      });
+    }
+
+    const data = await response.json();
+    res.json({ ok: true, ...data, source: 'siliconflow' });
+  } catch (error) {
+    console.error('[Chat] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 

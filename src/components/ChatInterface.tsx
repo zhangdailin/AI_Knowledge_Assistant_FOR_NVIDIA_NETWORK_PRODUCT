@@ -101,6 +101,7 @@ const ChatInterface: React.FC = () => {
   // 停止生成
   const handleStop = () => {
     stopGeneration();
+    setIsSending(false); // 立即重置发送状态，允许用户发送新消息
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
