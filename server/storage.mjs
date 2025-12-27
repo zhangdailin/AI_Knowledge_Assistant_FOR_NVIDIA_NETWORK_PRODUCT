@@ -16,7 +16,6 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const DOCUMENTS_FILE = path.join(DATA_DIR, 'documents.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const CHUNKS_DIR = path.join(DATA_DIR, 'chunks');
-const OLD_CHUNKS_FILE = path.join(DATA_DIR, 'chunks.json');
 const QUERY_LOGS_FILE = path.join(DATA_DIR, 'query_logs.json');
 const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.json');
 
@@ -26,45 +25,12 @@ let isInitialized = false;
 async function initStorage() {
   if (isInitialized) return;
   await ensureDataDir();
-  await migrateChunks();
   isInitialized = true;
 }
 
 async function ensureDataDir() {
   try { await fs.access(DATA_DIR); } catch { await fs.mkdir(DATA_DIR, { recursive: true }); }
   try { await fs.access(CHUNKS_DIR); } catch { await fs.mkdir(CHUNKS_DIR, { recursive: true }); }
-}
-
-async function migrateChunks() {
-  try {
-    await fs.access(OLD_CHUNKS_FILE);
-    const files = await fs.readdir(CHUNKS_DIR);
-    if (files.length > 0) return; // 已迁移，跳过
-
-    console.log('[storage] 正在迁移旧的 chunks.json 到分文件存储...');
-    try {
-        const data = await fs.readFile(OLD_CHUNKS_FILE, 'utf-8');
-        const chunks = JSON.parse(data);
-        
-        const chunksByDoc = {};
-        for (const chunk of chunks) {
-            if (!chunksByDoc[chunk.documentId]) chunksByDoc[chunk.documentId] = [];
-            chunksByDoc[chunk.documentId].push(chunk);
-        }
-        
-        for (const [docId, docChunks] of Object.entries(chunksByDoc)) {
-            await writeJSON(path.join(CHUNKS_DIR, `${docId}.json`), docChunks);
-        }
-        
-        await fs.rename(OLD_CHUNKS_FILE, `${OLD_CHUNKS_FILE}.migrated`);
-        console.log('[storage] 迁移完成');
-    } catch (e) {
-        console.error('[storage] 迁移失败 (可能是文件过大或损坏):', e);
-        await fs.rename(OLD_CHUNKS_FILE, `${OLD_CHUNKS_FILE}.failed`);
-    }
-  } catch {
-    // 旧文件不存在，无需迁移
-  }
 }
 
 // 读取 JSON 文件
@@ -145,14 +111,18 @@ export async function deleteDocument(documentId) {
 // Chunks 管理
 
 export async function getAllChunks() {
-  // 警告：可能 OOM
+  // 警告：可能 OOM。建议在大型部署中使用向量数据库或流式处理。
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   const all = [];
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
-    const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
-    all.push(...chunks);
+    try {
+      const chunks = await readJSON(path.join(CHUNKS_DIR, file), []);
+      all.push(...chunks);
+    } catch (e) {
+      console.error(`[storage] 加载 chunks 失败: ${file}`, e);
+    }
   }
   return all;
 }
@@ -313,18 +283,10 @@ export async function updateChunkEmbeddings(updates, documentId) {
   }
 }
 
-export async function deleteChunksByDocument(documentId) {
-    try {
-        const filePath = path.join(CHUNKS_DIR, `${documentId}.json`);
-        await fs.unlink(filePath);
-        return 1;
-    } catch {
-        return 0;
-    }
-}
-
 // Technical term mappings for cross-lingual search
 const TERM_MAPPINGS = {
+  // ... (keeping the existing mappings for reference or refactoring them)
+
   // --- Actions ---
   '配置': ['config', 'configuration', 'settings', 'setup', 'provisioning', 'set'],
   'config': ['配置', '设置'],
@@ -416,198 +378,140 @@ async function getChunksFromFile(file) {
     }
 }
 
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export async function searchChunks(query, limit = 30) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   const queryLower = query.toLowerCase();
   
-  // Improved tokenization: match English words or Chinese characters sequences
-  // This handles "检查vxlan" -> "检查", "vxlan"
   const rawQueryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
     .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w))); 
 
-  // --- Intent Detection ---
-  const intent = {
-    isCommand: false,
-    isConcept: false,
-    isTroubleshooting: false
-  };
+  const intent = { isCommand: false, isConcept: false, isTroubleshooting: false };
 
-  // Check for command-related keywords
-  // Enhanced: detect NVUE command patterns like "nv set", "nv show", "nv config"
   if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k)) ||
       /nv\s+(set|show|config|unset|action)/.test(queryLower) ||
-      queryLower.includes('nvue') ||
-      queryLower.includes('如何使用')) {
+      queryLower.includes('nvue') || queryLower.includes('如何使用')) {
     intent.isCommand = true;
   }
 
-  // Check for concept-related keywords
   if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理', '解释'].some(k => queryLower.includes(k))) {
     intent.isConcept = true;
   }
   
-  // Check for troubleshooting keywords
   if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错', '怎么办', '起不来'].some(k => queryLower.includes(k))) {
     intent.isTroubleshooting = true;
   }
 
-  // Expand query words with synonyms/translations
-  const queryWords = new Set(rawQueryWords);
-  rawQueryWords.forEach(word => {
-    // Check if the word exists in mappings (as a key)
+  const queryWordsSet = new Set(rawQueryWords);
+  for (const word of rawQueryWords) {
     if (TERM_MAPPINGS[word]) {
-      TERM_MAPPINGS[word].forEach(synonym => queryWords.add(synonym));
+      for (const synonym of TERM_MAPPINGS[word]) queryWordsSet.add(synonym);
     }
-    // Also check partial matches for Chinese (e.g. "配置命令" -> contains "配置" and "命令")
     for (const [key, values] of Object.entries(TERM_MAPPINGS)) {
       if (word.includes(key) && word !== key) {
-        values.forEach(v => queryWords.add(v));
+        for (const v of values) queryWordsSet.add(v);
       }
     }
-  });
+  }
   
-  // Convert back to array for iteration
-  const expandedQueryWords = Array.from(queryWords);
-  
-  // Extract potential technical terms (English words) for higher weighting
+  const expandedQueryWords = Array.from(queryWordsSet);
   const technicalTerms = expandedQueryWords.filter(w => /^[a-z0-9]+$/.test(w));
+  const technicalTermsSet = new Set(technicalTerms);
   
-  // Load documents for filename matching
   const documents = await getAllDocuments();
   const docMap = new Map(documents.map(d => [d.id, d]));
 
   const results = [];
   
-  // 逐个文件处理，避免 OOM
+  // Pre-compile word patterns for faster matching if needed, but includes is often faster for simple strings
+  
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const docId = file.replace('.json', '');
     const doc = docMap.get(docId);
     let docScoreBonus = 0;
     
-    // Calculate document title match bonus once per document
     if (doc) {
       const filenameLower = doc.filename.toLowerCase();
-      expandedQueryWords.forEach(word => {
-        if (filenameLower.includes(word)) {
-          docScoreBonus += 2; // Bonus for matching filename
-        }
-      });
+      for (const word of expandedQueryWords) {
+        if (filenameLower.includes(word)) docScoreBonus += 2;
+      }
     }
 
-    // 使用缓存读取，替代原本的 readJSON
     const chunks = await getChunksFromFile(file);
     
     for (const chunk of chunks) {
       const contentLower = chunk.content.toLowerCase();
-      let score = docScoreBonus; // Start with document bonus
+      let score = docScoreBonus;
       let matchedCount = 0;
       
-      // Exact match bonus (original query)
       if (contentLower.includes(queryLower)) score += 10;
       
-      expandedQueryWords.forEach(word => {
-        if (!word) return;
-        // Simple occurrence counting (faster than regex)
-        const parts = contentLower.split(word);
-        const count = parts.length - 1;
+      for (const word of expandedQueryWords) {
+        if (!word) continue;
+        
+        // Use a more efficient way to count occurrences without creating arrays
+        let count = 0;
+        let pos = contentLower.indexOf(word);
+        while (pos !== -1) {
+          count++;
+          pos = contentLower.indexOf(word, pos + word.length);
+        }
         
         if (count > 0) {
-          // Term Frequency (TF) scoring: 1 + log(count)
-          // This prevents keyword stuffing from dominating, but rewards multiple mentions
           const tf = 1 + Math.log(count);
-          
-          let wordScore = 1;
-          // Technical term bonus (e.g. "vxlan", "config")
-          if (technicalTerms.includes(word)) {
-            wordScore = 3; 
-          }
-          
+          const wordScore = technicalTermsSet.has(word) ? 3 : 1;
           score += tf * wordScore;
           matchedCount++;
         }
-      });
-      
-      // Bonus for matching multiple UNIQUE words (phrase matching approximation)
-      // If we matched 5 different keywords, that's better than matching 1 keyword 5 times
-      if (matchedCount > 1) {
-        score += matchedCount * 1.5;
       }
+      
+      if (matchedCount > 1) score += matchedCount * 1.5;
 
-      // --- Adaptive Scoring based on Intent ---
-
-      if (score > 2) { // Only apply optimizations if we have basic relevance
-
-          // 1. Command Intent Optimization
+      if (score > 2) {
           if (intent.isCommand) {
-             // RELAXED: Just check if the content contains the command keywords directly
-             // This covers both HTML tables "<td>nv show" and plain text "nv show"
-             const hasCommandKeywords = /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower) ||
-                                      contentLower.includes('nv config') ||
+             const hasCommandKeywords = contentLower.includes('nv config') ||
                                       contentLower.includes('nv show') ||
-                                      contentLower.includes('nv set');
+                                      contentLower.includes('nv set') ||
+                                      /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower);
 
-             const isCommandStructure = hasCommandKeywords ||
-                                      /<tr><td>\s*(nv|show|netq|vtysh)/.test(contentLower) ||
-                                      /^\s*(nv|show|netq|vtysh)/.test(contentLower) ||
-                                      contentLower.includes('```') ||
-                                      /nv set\s+\w+/.test(contentLower);
-
-             if (isCommandStructure) {
-                 score += 10; // Boost potential command blocks
-
-                 // Double boost if it matches the specific action verb (checking both English and Chinese)
-                 const hasShowIntent = queryLower.includes('show') || queryLower.includes('显示') || queryLower.includes('列出') || queryLower.includes('查看');
-                 const hasConfigIntent = queryLower.includes('config') || queryLower.includes('配置') || queryLower.includes('设置') || queryLower.includes('nv set');
-                 const hasSetIntent = queryLower.includes('nv set') || queryLower.includes('set');
-
-                 if (hasShowIntent && contentLower.includes('show')) score += 5;
-                 if (hasConfigIntent && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
-                 if (hasSetIntent && contentLower.includes('nv set')) score += 8;
-
-                 // Extra boost for MLAG-specific nv set commands
-                 if ((queryLower.includes('mlag') || queryLower.includes('clag')) &&
-                     (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) {
-                     score += 15;
-                 }
+             if (hasCommandKeywords || contentLower.includes('```')) {
+                 score += 10;
+                 if ((queryLower.includes('show') || queryLower.includes('显示')) && contentLower.includes('show')) score += 5;
+                 if ((queryLower.includes('config') || queryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
+                 if (queryLower.includes('set') && contentLower.includes('nv set')) score += 8;
+                 if ((queryLower.includes('mlag') || queryLower.includes('clag')) && (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) score += 15;
              }
           }
 
-          // 2. Concept/Definition Intent Optimization
           if (intent.isConcept) {
-             // Look for definition patterns: "X is a...", "X describes..."
-             // 增加中文定义模式检测
-             const isDefinition = /\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower);
-             // Look for headers
-             const isHeader = /^#+\s/.test(contentLower);
-             
-             if (isDefinition) score += 15; // Increased from 5
-             if (isHeader) score += 10; // Increased from 5
+             if (/\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower)) score += 15;
+             if (contentLower.startsWith('#')) score += 10;
           }
           
-          // 3. Troubleshooting Intent Optimization
           if (intent.isTroubleshooting) {
-             // Check for specific troubleshooting keywords AND expanded synonyms
-             const troubleTerms = ['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'];
-             if (troubleTerms.some(t => contentLower.includes(t))) {
-                 score += 15; // Increased from 10
-             }
+             if (['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'].some(t => contentLower.includes(t))) score += 15;
           }
       }
       
       if (score > 0) {
-        // Return score for debugging
         results.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
       }
     }
 
-    // 内存优化：每处理完一个文件，检查是否需要剪枝
-    if (results.length > limit * 20) {
+    if (results.length > limit * 50) {
         results.sort((a, b) => b.score - a.score);
-        results.length = limit * 10; 
+        results.length = limit * 25; 
     }
   }
+  
+  return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
+}
+
   
   return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
 }
@@ -652,6 +556,39 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30) {
   // 第二步：排序并返回前limit个结果
   // 注意：不在循环中进行剪枝，而是在最后统一排序
   return topResults.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// 搜索特定模式的块 (不加载全部内容到内存)
+export async function findChunksByPattern(pattern, limit = 10) {
+  await initStorage();
+  const files = await fs.readdir(CHUNKS_DIR);
+  const results = [];
+  
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const chunks = await getChunksFromFile(file);
+    for (const chunk of chunks) {
+      if (pattern.test(chunk.content)) {
+        results.push(chunk);
+        if (results.length >= limit) return results;
+      }
+    }
+  }
+  return results;
+}
+
+// 通用的块扫描器
+export async function scanChunks(processor) {
+  await initStorage();
+  const files = await fs.readdir(CHUNKS_DIR);
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const chunks = await getChunksFromFile(file);
+    for (const chunk of chunks) {
+      const shouldContinue = await processor(chunk);
+      if (shouldContinue === false) return;
+    }
+  }
 }
 
 // 设置管理

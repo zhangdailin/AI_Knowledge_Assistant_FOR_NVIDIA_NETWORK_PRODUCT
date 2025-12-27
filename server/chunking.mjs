@@ -144,14 +144,12 @@ function protectCodeBlocks(text) {
 }
 
 /**
- * 还原代码块
+ * 还原代码块 - 优化为单次正则替换以提升性能
  */
 function restoreCodeBlocks(text, codeBlocks) {
-  let result = text;
-  for (const { placeholder, content } of codeBlocks) {
-    result = result.replace(placeholder, content);
-  }
-  return result;
+  if (codeBlocks.length === 0) return text;
+  const placeholderMap = new Map(codeBlocks.map(b => [b.placeholder, b.content]));
+  return text.replace(/__CODE_BLOCK_\d+__/g, (match) => placeholderMap.get(match) || match);
 }
 
 /**
@@ -385,13 +383,13 @@ function createChunk(content, breadcrumbs, index) {
 }
 
 /**
- * 估算 token 数
+ * 估算 token 数 - 采用更接近 OpenAI/Qwen 的权重算法
  */
 function estimateTokens(text) {
   if (!text) return 0;
+  // 预估：中文字符约为 0.6 token，英文字符/数字约为 0.3 token
   const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
-  const otherChars = text.length - chineseChars;
-  return Math.ceil(chineseChars / 2 + otherChars / 4);
+  return Math.ceil(chineseChars * 0.6 + (text.length - chineseChars) * 0.3);
 }
 
 /**

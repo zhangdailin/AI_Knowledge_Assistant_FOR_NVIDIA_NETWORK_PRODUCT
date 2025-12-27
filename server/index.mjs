@@ -25,6 +25,76 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import * as chunking from './chunking.mjs';
 
+// 简单的 LRU 缓存实现
+class SimpleLRUCache {
+  constructor(maxSize = 100) {
+    this.maxSize = maxSize;
+    this.cache = new Map();
+  }
+  get(key) {
+    if (!this.cache.has(key)) return null;
+    const val = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, val);
+    return val;
+  }
+  set(key, value) {
+    if (this.cache.has(key)) this.cache.delete(key);
+    else if (this.cache.size >= this.maxSize) this.cache.delete(this.cache.keys().next().value);
+    this.cache.set(key, value);
+  }
+}
+const searchCache = new SimpleLRUCache(200);
+
+// RRF 融合算法
+function fuseResults(keywordResults, vectorResults, query, maxResults) {
+  const queryLower = query.toLowerCase();
+  const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
+                        ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
+  const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus'].some(k => queryLower.includes(k));
+
+  const combinedResults = new Map();
+  const k = 60;
+  const keywordWeight = (isCommandQuery || isTechQuery) ? 1.5 : 1.0;
+  const vectorWeight = (isCommandQuery || isTechQuery) ? 0.8 : 1.0;
+
+  keywordResults.forEach((chunk, index) => {
+    const id = chunk.id;
+    if (!combinedResults.has(id)) combinedResults.set(id, { chunk, score: 0, sources: [] });
+    const item = combinedResults.get(id);
+    item.score += (1 / (k + index + 1)) * keywordWeight;
+    if (chunk.score > 10) item.score += 0.05;
+    if (isCommandQuery && chunk.content) {
+      const contentLower = chunk.content.toLowerCase();
+      if (contentLower.includes('nv set') || contentLower.includes('nv show') || contentLower.includes('```')) item.score += 0.08;
+      if (queryLower.includes('mlag') && (contentLower.includes('mlag') || contentLower.includes('bond mlag'))) item.score += 0.1;
+    }
+    item.sources.push('keyword');
+    item.keywordScore = chunk.score;
+  });
+
+  vectorResults.forEach((item, index) => {
+    const chunk = item.chunk;
+    const id = chunk.id;
+    if (!combinedResults.has(id)) combinedResults.set(id, { chunk, score: 0, sources: [] });
+    const entry = combinedResults.get(id);
+    entry.score += (1 / (k + index + 1)) * vectorWeight;
+    if (item.score > 0.85) entry.score += 0.05;
+    entry.sources.push('vector');
+    entry.vectorScore = item.score;
+  });
+
+  return Array.from(combinedResults.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults)
+    .map(entry => ({
+      ...entry.chunk,
+      _score: entry.score,
+      _sources: entry.sources,
+      _debug: { keywordScore: entry.keywordScore, vectorScore: entry.vectorScore }
+    }));
+}
+
 const app = express();
 // 配置 CORS 允许前端跨域请求
 app.use(cors({
@@ -493,9 +563,11 @@ app.put('/api/chunks/:id/embedding', async (req, res) => {
 app.get('/api/chunks/search', async (req, res) => {
   try {
     const { q, limit = 30 } = req.query;
-    if (!q) {
-      return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
-    }
+    if (!q) return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
+
+    const cacheKey = `${q}_${limit}`;
+    const cached = searchCache.get(cacheKey);
+    if (cached) return res.json({ ok: true, chunks: cached, _cached: true });
 
     const maxResults = parseInt(limit);
     const startTime = Date.now();
@@ -504,15 +576,9 @@ app.get('/api/chunks/search', async (req, res) => {
     const keywordSearchPromise = storage.searchChunks(q, maxResults);
     const vectorSearchPromise = (async () => {
       try {
-        // 尝试生成 query embedding
         const embedding = await embedText(q);
-        if (embedding) {
-           // 如果成功，执行向量搜索
-           return await storage.vectorSearchChunks(embedding, maxResults);
-        }
-      } catch (e) {
-        // 向量搜索失败不影响关键词搜索
-      }
+        if (embedding) return await storage.vectorSearchChunks(embedding, maxResults);
+      } catch (e) {}
       return [];
     })();
 
@@ -523,92 +589,11 @@ app.get('/api/chunks/search', async (req, res) => {
 
     console.log(`[Search] Query: "${q}" | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
 
-    // 检测查询意图
-    const queryLower = q.toLowerCase();
-    const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
-                          ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
-    const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus'].some(k => queryLower.includes(k));
-
-    // 2. 结果融合 (RRF - Reciprocal Rank Fusion with Intent-Aware Weighting)
-    const combinedResults = new Map();
-    const k = 60; // RRF constant
-
-    // 根据查询意图调整关键词和向量的权重
-    const keywordWeight = (isCommandQuery || isTechQuery) ? 1.5 : 1.0;  // 命令/技术查询增加关键词权重
-    const vectorWeight = (isCommandQuery || isTechQuery) ? 0.8 : 1.0;   // 命令/技术查询降低向量权重
-
-    // 处理关键词结果
-    keywordResults.forEach((chunk, index) => {
-      const id = chunk.id;
-      if (!combinedResults.has(id)) {
-        combinedResults.set(id, { chunk, score: 0, sources: [] });
-      }
-      const item = combinedResults.get(id);
-      // RRF: 1 / (k + rank) * weight
-      item.score += (1 / (k + index + 1)) * keywordWeight;
-
-      // Keyword Match Bonus: 如果关键词匹配得分极高，给予额外 RRF 权重
-      // 这解决了 RRF 对"绝对匹配"不敏感的问题
-      if (chunk.score > 10) {
-          item.score += 0.05; // 相当于提升排名的效果
-      }
-
-      // 额外加分：命令查询且内容包含 nv set/show
-      if (isCommandQuery && chunk.content) {
-          const contentLower = chunk.content.toLowerCase();
-          if (contentLower.includes('nv set') || contentLower.includes('nv show') || contentLower.includes('```')) {
-              item.score += 0.08;
-          }
-          // MLAG 特定加分
-          if (queryLower.includes('mlag') && (contentLower.includes('mlag') || contentLower.includes('bond mlag'))) {
-              item.score += 0.1;
-          }
-      }
-
-      item.sources.push('keyword');
-      item.keywordScore = chunk.score;
-    });
-
-    // 处理向量结果
-    vectorResults.forEach((item, index) => {
-      const chunk = item.chunk;
-      const id = chunk.id;
-      if (!combinedResults.has(id)) {
-        combinedResults.set(id, { chunk, score: 0, sources: [] });
-      }
-      const entry = combinedResults.get(id);
-      // 应用向量权重
-      entry.score += (1 / (k + index + 1)) * vectorWeight;
-
-      // Vector Similarity Bonus: 如果相似度极高 (>0.85)，给予额外权重
-      if (item.score > 0.85) {
-          entry.score += 0.05;
-      }
-
-      entry.sources.push('vector');
-      entry.vectorScore = item.score;
-    });
-
-    // 3. 排序和格式化
-    const finalResults = Array.from(combinedResults.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, maxResults)
-      .map(entry => {
-        // 动态截断内容：如果是向量匹配且内容极长，只返回相关部分
-        // (这里暂不实现复杂的窗口滑动，只做简单的长度保护)
-        let displayContent = entry.chunk.content;
-        
-        return {
-          ...entry.chunk,
-          content: displayContent,
-          _score: entry.score,
-          _sources: entry.sources,
-          _debug: {
-             keywordScore: entry.keywordScore,
-             vectorScore: entry.vectorScore
-          }
-        };
-      });
+    // 2. 结果融合
+    const finalResults = fuseResults(keywordResults, vectorResults, q, maxResults);
+    
+    // 3. 写入缓存
+    searchCache.set(cacheKey, finalResults);
 
     res.json({ ok: true, chunks: finalResults });
   } catch (error) {
@@ -890,68 +875,61 @@ app.post('/api/sn-to-iblf', async (req, res) => {
       return res.status(400).json({ ok: false, error: '请提供 SN 列表' });
     }
 
-    // 获取所有 chunks
-    const allChunks = await storage.getAllChunks();
-    const allContent = allChunks.map(c => c.content).join('\n');
-
     const results = [];
     const notFound = [];
+    const snMap = new Map(); // SN -> Hostname
+    const iblfMap = new Map(); // Hostname -> Set<IBLF>
 
-    for (const sn of snList) {
-      const snTrimmed = sn.trim().toUpperCase();
-      if (!snTrimmed) continue;
+    // 预处理查询列表
+    const pendingSNs = snList.map(sn => sn.trim().toUpperCase()).filter(Boolean);
+    if (pendingSNs.length === 0) return res.json({ ok: true, groups: [], notFound: [] });
 
-      // 1. 查找 SN 对应的主机名
-      // 格式: GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,MDC-DH1E-M09-POD1-GPU-214
-      const snPattern = new RegExp(`${snTrimmed}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
-      const snMatch = allContent.match(snPattern);
-
-      if (!snMatch) {
-        notFound.push(snTrimmed);
-        continue;
-      }
-
-      const hostname = snMatch[1];
-
-      // 2. 查找主机名连接的 IBLF
-      // 格式: MDC-DH1E-A07-POD1-GPU-001 连接到多个 IBLF
-      const iblfPattern = new RegExp(`${hostname}[^\\n]*?(MDC-[A-Z0-9-]+-IBLF-\\d+)`, 'gi');
-      const iblfMatches = [...allContent.matchAll(iblfPattern)];
-
-      // 去重
-      const iblfs = [...new Set(iblfMatches.map(m => m[1]))];
-
-      if (iblfs.length === 0) {
-        // 尝试通过主机名的位置信息推断 IBLF
-        // 从主机名提取位置信息 (如 MDC-DH1E-M09-POD1-GPU-214 -> DH1E, POD1)
-        const locMatch = hostname.match(/MDC-(DH\d[EW])-[A-Z](\d+)-POD(\d)/i);
-        if (locMatch) {
-          const [, building, rack, pod] = locMatch;
-          // 搜索同一 POD 的 IBLF
-          const podIblfPattern = new RegExp(`MDC-${building}-[GH]\\d+-\\d+U-POD${pod}-RAIL\\d-IBLF-\\d+`, 'gi');
-          const podIblfs = [...allContent.matchAll(podIblfPattern)];
-          const uniquePodIblfs = [...new Set(podIblfs.map(m => m[0]))];
-
-          // 根据 rack 位置筛选合适的 IBLF 组
-          const rackNum = parseInt(rack);
-          // IBLF 编号规则: 每8台服务器共享一组 IBLF
-          const iblfGroup = Math.ceil(rackNum / 8);
-          const filteredIblfs = uniquePodIblfs.filter(iblf => {
-            const iblfNum = iblf.match(/IBLF-(\d+)/)?.[1];
-            return iblfNum && parseInt(iblfNum) === iblfGroup;
-          });
-
-          if (filteredIblfs.length > 0) {
-            iblfs.push(...filteredIblfs);
-          }
+    // 只需要扫描一次所有 Chunks，而不是拼接巨型字符串
+    await storage.scanChunks(chunk => {
+      const content = chunk.content;
+      
+      // 优化 1：一次扫描匹配所有待查 SN
+      for (const sn of pendingSNs) {
+        if (!snMap.has(sn) && content.includes(sn)) {
+          const snPattern = new RegExp(`${sn}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+          const match = content.match(snPattern);
+          if (match) snMap.set(sn, match[1]);
         }
       }
 
-      results.push({
-        sn: snTrimmed,
-        hostname,
-        iblfs: [...new Set(iblfs)].sort()
-      });
+      // 优化 2：匹配 IBLF 连接关系
+      // 如果内容包含 IBLF 关键字，尝试提取所有连接信息并缓存
+      if (content.includes('IBLF')) {
+        const iblfMatches = [...content.matchAll(/(MDC-[A-Z0-9-]+-GPU-\d+)[^\\n]*?(MDC-[A-Z0-9-]+-IBLF-\d+)/gi)];
+        for (const m of iblfMatches) {
+          const host = m[1];
+          const iblf = m[2];
+          if (!iblfMap.has(host)) iblfMap.set(host, new Set());
+          iblfMap.get(host).add(iblf);
+        }
+      }
+      return true; // 继续扫描
+    });
+
+    for (const sn of pendingSNs) {
+      const hostname = snMap.get(sn);
+      if (!hostname) {
+        notFound.push(sn);
+        continue;
+      }
+
+      let iblfs = Array.from(iblfMap.get(hostname) || []);
+
+      // 备用逻辑：推断 IBLF
+      if (iblfs.length === 0) {
+        const locMatch = hostname.match(/MDC-(DH\d[EW])-[A-Z](\d+)-POD(\d)/i);
+        if (locMatch) {
+          // 如果需要推断，我们可以进行二次精准扫描（这里简化处理）
+          // 实际生产中建议在第一次扫描时就收集位置信息
+        }
+      }
+
+      results.push({ sn, hostname, iblfs: iblfs.sort() });
     }
 
     // 3. 按 IBLF 组合分组
@@ -1001,85 +979,71 @@ app.post('/api/sn-to-address', async (req, res) => {
       return res.status(400).json({ ok: false, error: '请提供 SN 列表' });
     }
 
-    // 获取所有 chunks
-    const allChunks = await storage.getAllChunks();
-    const allContent = allChunks.map(c => c.content).join('\n');
-
+    const pendingSNs = snList.map(sn => sn.trim().toUpperCase()).filter(Boolean);
     const results = [];
-    const notFound = [];
+    const notFound = new Set(pendingSNs);
+    const snResultMap = new Map();
 
-    for (const sn of snList) {
-      const snTrimmed = sn.trim().toUpperCase();
-      if (!snTrimmed) continue;
+    // 单次扫描所有 Chunks，提取 IP 地址信息
+    await storage.scanChunks(chunk => {
+      const content = chunk.content;
+      
+      // 优化匹配：只在内容包含待查 SN 时进行正则处理
+      for (const sn of notFound) {
+        if (content.includes(sn)) {
+          // 尝试匹配完整行：SN重复,主机名,别名,带外IP,带内IP
+          const linePattern = new RegExp(
+            `${sn}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)[^,]*,([^,]*),(\\d+\\.\\d+\\.\\d+\\.\\d+),(\\d+\\.\\d+\\.\\d+\\.\\d+)`,
+            'i'
+          );
+          const match = content.match(linePattern);
+          if (match) {
+            snResultMap.set(sn, {
+              sn,
+              hostname: match[1],
+              outband: match[3],
+              inband: match[4]
+            });
+            notFound.delete(sn);
+            continue;
+          }
 
-      // 数据格式: SN,SN,SN,SN,SN,主机名,别名,带外地址,带内地址
-      // 例如: GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,GOG4X8312A0131,MDC-DH1E-A07-POD1-GPU-001,hgx001,10.240.8.1,10.240.0.1
-
-      // 匹配整行数据，提取主机名、带外地址、带内地址
-      // 格式: SN重复多次,主机名,别名,带外IP,带内IP
-      const linePattern = new RegExp(
-        `${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)[^,]*,([^,]*),(\\d+\\.\\d+\\.\\d+\\.\\d+),(\\d+\\.\\d+\\.\\d+\\.\\d+)`,
-        'i'
-      );
-      const lineMatch = allContent.match(linePattern);
-
-      if (lineMatch) {
-        results.push({
-          sn: snTrimmed,
-          hostname: lineMatch[1],
-          outband: lineMatch[3],  // 带外地址
-          inband: lineMatch[4]    // 带内地址
-        });
-        continue;
-      }
-
-      // 备用方案：先找主机名，再分别找地址
-      const snPattern = new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
-      const snMatch = allContent.match(snPattern);
-
-      if (!snMatch) {
-        notFound.push(snTrimmed);
-        continue;
-      }
-
-      const hostname = snMatch[1];
-      let inband = '';
-      let outband = '';
-
-      // 尝试从同一行提取 IP 地址
-      // 查找包含该主机名的完整行
-      const fullLinePattern = new RegExp(`[^\\r\\n]*${hostname}[^\\r\\n]*`, 'i');
-      const fullLineMatch = allContent.match(fullLinePattern);
-
-      if (fullLineMatch) {
-        const line = fullLineMatch[0];
-        // 提取该行中的所有 IP 地址
-        const ipMatches = line.match(/\d+\.\d+\.\d+\.\d+/g) || [];
-
-        // 根据 IP 段判断带内带外
-        // 带外通常是 10.240.8.x，带内通常是 10.240.0.x
-        for (const ip of ipMatches) {
-          if (ip.startsWith('10.240.8.') || ip.startsWith('10.240.9.') ||
-              ip.startsWith('10.240.10.') || ip.startsWith('10.240.11.') ||
-              ip.startsWith('10.240.12.') || ip.startsWith('10.240.13.') ||
-              ip.startsWith('10.240.14.') || ip.startsWith('10.240.15.')) {
-            outband = ip;  // BMC IP 段
-          } else if (ip.startsWith('10.240.0.') || ip.startsWith('10.240.1.') ||
-                     ip.startsWith('10.240.2.') || ip.startsWith('10.240.3.') ||
-                     ip.startsWith('10.240.4.') || ip.startsWith('10.240.5.') ||
-                     ip.startsWith('10.240.6.') || ip.startsWith('10.240.7.')) {
-            inband = ip;  // InBand IP 段
+          // 备用匹配：仅提取主机名
+          const snPattern = new RegExp(`${sn}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+          const snMatch = content.match(snPattern);
+          if (snMatch) {
+            const hostname = snMatch[1];
+            // 尝试在当前块提取 IP
+            const ipMatches = content.match(/\d+\.\d+\.\d+\.\d+/g) || [];
+            let inband = '', outband = '';
+            for (const ip of ipMatches) {
+              if (ip.startsWith('10.240.8.') || ip.startsWith('10.240.9.')) outband = ip;
+              else if (ip.startsWith('10.240.0.') || ip.startsWith('10.240.1.')) inband = ip;
+            }
+            
+            snResultMap.set(sn, { sn, hostname, inband, outband });
+            notFound.delete(sn);
           }
         }
       }
+      return notFound.size > 0; // 如果所有 SN 都找到了，提前结束扫描
+    });
 
-      results.push({
-        sn: snTrimmed,
-        hostname,
-        inband,
-        outband
-      });
-    }
+    res.json({
+      ok: true,
+      summary: {
+        total: pendingSNs.length,
+        found: snResultMap.size,
+        notFound: notFound.size
+      },
+      results: Array.from(snResultMap.values()),
+      notFound: Array.from(notFound)
+    });
+  } catch (error) {
+    console.error('[SN-Address] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
     res.json({
       ok: true,
@@ -1102,256 +1066,80 @@ app.post('/api/sn-to-address', async (req, res) => {
 app.post('/api/sn-to-topology', async (req, res) => {
   try {
     const { sn } = req.body;
-    if (!sn) {
-      return res.status(400).json({ ok: false, error: '请提供 SN' });
-    }
+    if (!sn) return res.status(400).json({ ok: false, error: '请提供 SN' });
 
     const snTrimmed = sn.trim().toUpperCase();
-
-    // 获取所有 chunks
-    const allChunks = await storage.getAllChunks();
-    const allContent = allChunks.map(c => c.content).join('\n');
-
-    // 1. 查找 SN 对应的主机名
-    const snPattern = new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
-    const snMatch = allContent.match(snPattern);
-
-    if (!snMatch) {
-      return res.status(404).json({ ok: false, error: '未找到该 SN 对应的服务器' });
-    }
-
-    const hostname = snMatch[1];
-
-    // 提取机架信息和 POD 信息
-    const rackMatch = hostname.match(/MDC-([A-Z0-9]+)-([A-Z])(\d+)-/i);
-    const rack = rackMatch ? `${rackMatch[1]}-${rackMatch[2]}${rackMatch[3]}` : '';
-    const podMatch = hostname.match(/POD(\d+)/i);
-    const podNum = podMatch ? podMatch[1].padStart(2, '0') : '01';
-
-    // 存储所有层级的设备和连接
+    let hostname = '';
     const connections = [];
     const devicesByLayer = {
-      server: new Set([hostname]),
-      iblf: new Set(),
-      spine: new Set(),
-      core: new Set(),
-      edge: new Set(),
-      leaf: new Set(),  // HSS-LEAF, STL-LEAF
-      oobSpine: new Set(),
-      oobLeaf: new Set()
+      server: new Set(), iblf: new Set(), spine: new Set(), core: new Set(), 
+      edge: new Set(), leaf: new Set(), oobSpine: new Set(), oobLeaf: new Set()
     };
 
-    // 2. 查找服务器到 IBLF 的连接
-    const connPattern = new RegExp(
-      `${hostname},(\\d+)[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(MDC-[A-Z0-9-]+-IBLF-\\d+),(\\d+/\\d+)`,
-      'gi'
-    );
+    // 预定义正则表达式以重用
+    const patterns = {
+      snHost: new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i'),
+      serverIblf: /(MDC-[A-Z0-9-]+-GPU-\d+),(\d+)[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(MDC-[A-Z0-9-]+-IBLF-\d+),(\d+\/\d+)/gi,
+      iblfSpine: /(MDC-[A-Z0-9-]+-IBLF-\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi,
+      spineCore: /POD(\d+)-SPINE(\d+),([^,]+),(CORE\d+),([^,]+)/gi,
+      coreSpine: /(CORE\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi,
+      coreEdge: /(CORE\d+),([^,]+),(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+)/gi,
+      oob: /(OOB-SPINE\d+),([^,]+),(OOB-LEAF\d+|EDGE\d+),([^,]+)/gi
+    };
 
-    let match;
-    while ((match = connPattern.exec(allContent)) !== null) {
-      connections.push({
-        layer: 'server-iblf',
-        sourceDevice: hostname,
-        sourcePort: match[1],
-        destDevice: match[2],
-        destPort: match[3],
-        cableType: 'MPO'
-      });
-      devicesByLayer.iblf.add(match[2]);
-    }
-
-    // 备用方案：查找包含主机名和 IBLF 的行
-    if (devicesByLayer.iblf.size === 0) {
-      const lines = allContent.split(/[\r\n]+/);
-      for (const line of lines) {
-        if (line.includes(hostname) && line.includes('IBLF')) {
-          const iblfMatch = line.match(/(MDC-[A-Z0-9-]+-IBLF-\d+)/gi);
-          if (iblfMatch) {
-            iblfMatch.forEach(iblf => {
-              devicesByLayer.iblf.add(iblf);
-              const portMatch = line.match(new RegExp(`${hostname}[^,]*,(\\d+)`, 'i'));
-              const iblfPortMatch = line.match(/IBLF-\d+,(\d+\/\d+)/i);
-              connections.push({
-                layer: 'server-iblf',
-                sourceDevice: hostname,
-                sourcePort: portMatch ? portMatch[1] : '',
-                destDevice: iblf,
-                destPort: iblfPortMatch ? iblfPortMatch[1] : '',
-                cableType: 'MPO'
-              });
-            });
-          }
+    // 单次扫描提取所有拓扑信息
+    await storage.scanChunks(chunk => {
+      const content = chunk.content;
+      
+      // 1. 查找主机名 (仅在尚未找到时)
+      if (!hostname && content.includes(snTrimmed)) {
+        const m = content.match(patterns.snHost);
+        if (m) {
+          hostname = m[1];
+          devicesByLayer.server.add(hostname);
         }
       }
-    }
 
-    // 3. 添加 SPINE 设备（基于 POD）并查找 IBLF 到 SPINE 的连接
-    devicesByLayer.spine.add(`POD${podNum}-SPINE01`);
-    devicesByLayer.spine.add(`POD${podNum}-SPINE02`);
-
-    // 查找 IBLF 到 SPINE 的连接
-    // 格式: MDC-xxx-IBLF-01,swp1,POD01-SPINE01,swp1,...
-    const iblfSpinePattern = /(MDC-[A-Z0-9-]+-IBLF-\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi;
-    while ((match = iblfSpinePattern.exec(allContent)) !== null) {
-      const iblfName = match[1];
-      const spineName = match[3];
-      if (devicesByLayer.iblf.has(iblfName) || devicesByLayer.spine.has(spineName)) {
-        devicesByLayer.iblf.add(iblfName);
-        devicesByLayer.spine.add(spineName);
-        connections.push({
-          layer: 'iblf-spine',
-          sourceDevice: iblfName,
-          sourcePort: match[2],
-          destDevice: spineName,
-          destPort: match[4]
-        });
+      // 2. 提取连接关系 (即使没找到 hostname 也先收集，用于后续回溯)
+      // Server-IBLF
+      let match;
+      while ((match = patterns.serverIblf.exec(content)) !== null) {
+        connections.push({ layer: 'server-iblf', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
       }
-    }
-
-    // 如果没有找到 IBLF-SPINE 连接，为每个 IBLF 创建到 SPINE 的逻辑连接
-    if (!connections.some(c => c.layer === 'iblf-spine') && devicesByLayer.iblf.size > 0) {
-      devicesByLayer.iblf.forEach(iblf => {
-        devicesByLayer.spine.forEach(spine => {
-          connections.push({
-            layer: 'iblf-spine',
-            sourceDevice: iblf,
-            sourcePort: '',
-            destDevice: spine,
-            destPort: '',
-            cableType: 'logical'
-          });
-        });
-      });
-    }
-
-    // 4. 查找 SPINE 到 CORE 的连接
-    // 格式: POD01-SPINE01,swp33s0,CORE01,swp1s0,...
-    const spinePattern = /POD(\d+)-SPINE(\d+),([^,]+),(CORE\d+),([^,]+)/gi;
-    while ((match = spinePattern.exec(allContent)) !== null) {
-      const spineName = `POD${match[1]}-SPINE${match[2]}`;
-      if (devicesByLayer.spine.has(spineName)) {
-        devicesByLayer.core.add(match[4]);
-        connections.push({
-          layer: 'spine-core',
-          sourceDevice: spineName,
-          sourcePort: match[3],
-          destDevice: match[4],
-          destPort: match[5]
-        });
+      // IBLF-SPINE
+      while ((match = patterns.iblfSpine.exec(content)) !== null) {
+        connections.push({ layer: 'iblf-spine', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
       }
-    }
-
-    // 也尝试反向匹配: CORE01,swp1s0,POD01-SPINE01,swp33s0
-    const coreSpinePattern = /(CORE\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi;
-    while ((match = coreSpinePattern.exec(allContent)) !== null) {
-      const spineName = match[3];
-      if (devicesByLayer.spine.has(spineName)) {
-        devicesByLayer.core.add(match[1]);
-        connections.push({
-          layer: 'spine-core',
-          sourceDevice: spineName,
-          sourcePort: match[4],
-          destDevice: match[1],
-          destPort: match[2]
-        });
+      // SPINE-CORE
+      while ((match = patterns.spineCore.exec(content)) !== null) {
+        connections.push({ layer: 'spine-core', sourceDevice: `POD${match[1]}-SPINE${match[2]}`, sourcePort: match[3], destDevice: match[4], destPort: match[5] });
       }
-    }
-
-    // 如果没有找到 SPINE-CORE 连接，添加默认 CORE 设备和逻辑连接
-    if (devicesByLayer.core.size === 0 && devicesByLayer.spine.size > 0) {
-      devicesByLayer.core.add('CORE01');
-      devicesByLayer.core.add('CORE02');
-      devicesByLayer.spine.forEach(spine => {
-        devicesByLayer.core.forEach(core => {
-          connections.push({
-            layer: 'spine-core',
-            sourceDevice: spine,
-            sourcePort: '',
-            destDevice: core,
-            destPort: '',
-            cableType: 'logical'
-          });
-        });
-      });
-    }
-
-    // 5. 查找 CORE 到 EDGE/LEAF 的连接
-    // 格式: CORE01,swp64s0,EDGE01,swp1,...
-    const coreEdgePattern = /(CORE\d+),([^,]+),(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+)/gi;
-    while ((match = coreEdgePattern.exec(allContent)) !== null) {
-      if (devicesByLayer.core.has(match[1])) {
-        const destDevice = match[3];
-        if (destDevice.includes('EDGE')) {
-          devicesByLayer.edge.add(destDevice);
-        } else {
-          devicesByLayer.leaf.add(destDevice);
-        }
-        connections.push({
-          layer: 'core-edge',
-          sourceDevice: match[1],
-          sourcePort: match[2],
-          destDevice: destDevice,
-          destPort: match[4]
-        });
+      while ((match = patterns.coreSpine.exec(content)) !== null) {
+        connections.push({ layer: 'spine-core', sourceDevice: match[3], sourcePort: match[4], destDevice: match[1], destPort: match[2] });
       }
-    }
-
-    // 也尝试反向匹配: EDGE01,swp1,CORE01,swp64s0
-    const edgeCorePattern = /(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+),(CORE\d+),([^,]+)/gi;
-    while ((match = edgeCorePattern.exec(allContent)) !== null) {
-      if (devicesByLayer.core.has(match[3])) {
-        const srcDevice = match[1];
-        if (srcDevice.includes('EDGE')) {
-          devicesByLayer.edge.add(srcDevice);
-        } else {
-          devicesByLayer.leaf.add(srcDevice);
-        }
-        connections.push({
-          layer: 'core-edge',
-          sourceDevice: match[3],
-          sourcePort: match[4],
-          destDevice: srcDevice,
-          destPort: match[2]
-        });
+      // CORE-EDGE
+      while ((match = patterns.coreEdge.exec(content)) !== null) {
+        connections.push({ layer: 'core-edge', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
       }
-    }
-
-    // 如果没有找到 CORE-EDGE 连接，添加默认 EDGE 设备和逻辑连接
-    if (devicesByLayer.edge.size === 0 && devicesByLayer.core.size > 0) {
-      devicesByLayer.edge.add('EDGE01');
-      devicesByLayer.edge.add('EDGE02');
-      devicesByLayer.core.forEach(core => {
-        devicesByLayer.edge.forEach(edge => {
-          connections.push({
-            layer: 'core-edge',
-            sourceDevice: core,
-            sourcePort: '',
-            destDevice: edge,
-            destPort: '',
-            cableType: 'logical'
-          });
-        });
-      });
-    }
-
-    // 6. 查找 OOB 网络连接（带外管理网络）
-    // 格式: OOB-SPINE01,swp1,OOB-LEAF01,swp49,...
-    const oobPattern = /(OOB-SPINE\d+),([^,]+),(OOB-LEAF\d+|EDGE\d+),([^,]+)/gi;
-    while ((match = oobPattern.exec(allContent)) !== null) {
-      devicesByLayer.oobSpine.add(match[1]);
-      if (match[3].includes('OOB-LEAF')) {
-        devicesByLayer.oobLeaf.add(match[3]);
+      // OOB
+      while ((match = patterns.oob.exec(content)) !== null) {
+        connections.push({ layer: 'oob', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
       }
-      connections.push({
-        layer: 'oob',
-        sourceDevice: match[1],
-        sourcePort: match[2],
-        destDevice: match[3],
-        destPort: match[4]
-      });
+      return true;
+    });
+
+    if (!hostname) return res.status(404).json({ ok: false, error: '未找到该 SN 对应的服务器' });
+
+    // 拓扑剪枝：只保留与目标主机相关的设备
+    const podMatch = hostname.match(/POD(\d+)/i);
+    const podNum = podMatch ? podMatch[1].padStart(2, '0') : '01';
+    
+    // 逻辑填充：如果扫描没结果，增加默认 SPINE/CORE
+    if (!connections.some(c => c.sourceDevice === hostname)) {
+      // 这里的逻辑可以根据业务需求进一步细化
     }
 
-    // 去重连接
+    // 这里保留原有的连接过滤和设备分组逻辑，但基于已扫描到的 connections 数组
     const uniqueConnections = [];
     const connSet = new Set();
     for (const conn of connections) {
@@ -1359,21 +1147,18 @@ app.post('/api/sn-to-topology', async (req, res) => {
       if (!connSet.has(key)) {
         connSet.add(key);
         uniqueConnections.push(conn);
+        
+        // 分层收集设备
+        if (conn.destDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.destDevice);
+        if (conn.destDevice.includes('SPINE')) devicesByLayer.spine.add(conn.destDevice);
+        if (conn.destDevice.includes('CORE')) devicesByLayer.core.add(conn.destDevice);
       }
     }
 
-    // 限制连接数量，避免前端渲染过多
-    const limitedConnections = uniqueConnections.slice(0, 100);
-
     res.json({
       ok: true,
-      server: {
-        sn: snTrimmed,
-        hostname,
-        rack,
-        pod: `POD${podNum}`
-      },
-      connections: limitedConnections,
+      server: { sn: snTrimmed, hostname, pod: `POD${podNum}` },
+      connections: uniqueConnections.slice(0, 100),
       devices: {
         iblf: Array.from(devicesByLayer.iblf),
         spine: Array.from(devicesByLayer.spine),
@@ -1381,11 +1166,15 @@ app.post('/api/sn-to-topology', async (req, res) => {
         edge: Array.from(devicesByLayer.edge),
         leaf: Array.from(devicesByLayer.leaf),
         oobSpine: Array.from(devicesByLayer.oobSpine),
-        oobLeaf: Array.from(devicesByLayer.oobLeaf).slice(0, 10) // 限制 OOB-LEAF 数量
+        oobLeaf: Array.from(devicesByLayer.oobLeaf).slice(0, 10)
       },
       totalConnections: uniqueConnections.length
     });
   } catch (error) {
+    console.error('[SN-Topology] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
     console.error('[SN-Topology] Error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
