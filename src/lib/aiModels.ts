@@ -23,6 +23,7 @@ export interface ChatRequest {
   references?: string[];
   conversationHistory?: string; // 对话历史上下文
   deepThinking?: boolean; // 深度思考模式
+  abortController?: AbortController; // 用于取消请求
 }
 
 export interface ChatResponse {
@@ -123,7 +124,7 @@ class AIModelManager {
         // 如果失败（400），下次尝试切换到 fallback 模型
         const modelToUse = (attempt === 0) ? usedModel : (attempt === 1 ? this.FALLBACK_QWEN_MODEL : usedModel);
         
-        const response = await this.callSiliconFlow(userMessage, modelToUse, attempt, systemMessage, request.deepThinking, request.references);
+        const response = await this.callSiliconFlow(userMessage, modelToUse, attempt, systemMessage, request.deepThinking, request.references, request.abortController);
         return {
           answer: response.answer,
           model: response.model,
@@ -193,7 +194,9 @@ Output JSON format ONLY:
         undefined, 
         0,
         systemPrompt,
-        false
+        false,
+        undefined,
+        undefined // 关键词分析不需要支持取消
       );
       
       const text = response.answer.trim();
@@ -235,7 +238,8 @@ Output JSON format ONLY:
     attempt: number = 0, 
     systemMessage?: string, 
     deepThinking?: boolean,
-    references?: string[]
+    references?: string[],
+    abortController?: AbortController
   ): Promise<ChatResponse> {
     // 使用硅基流动 API
     const { unifiedStorageManager } = await import('./localStorage');
@@ -269,8 +273,13 @@ Output JSON format ONLY:
     const timeout = baseTimeout + (attempt * 10000); // 每次重试增加 10s 
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      // 使用外部传入的 AbortController，如果没有则创建新的
+      const controller = abortController || new AbortController();
+      const timeoutId = setTimeout(() => {
+        if (!abortController) {
+          controller.abort();
+        }
+      }, timeout);
       
       const response = await fetch(SILICONFLOW_CHAT_URL, {
         method: 'POST',
@@ -322,7 +331,12 @@ Output JSON format ONLY:
       };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('API调用超时');
+        // 检查是用户取消还是超时
+        if (abortController?.signal.aborted) {
+          throw new Error('用户取消了请求');
+        } else {
+          throw new Error('API调用超时');
+        }
       }
       console.error('硅基流动 API调用失败:', error);
       throw error;

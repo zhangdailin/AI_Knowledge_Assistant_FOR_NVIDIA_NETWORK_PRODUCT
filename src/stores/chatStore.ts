@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import { localStorageManager, unifiedStorageManager, Conversation, Message } from '../lib/localStorage';
+import { localStorageManager, Conversation, Message } from '../lib/localStorage';
 import { aiModelManager, ChatRequest } from '../lib/aiModels';
 import { retrieval } from '../lib/retrieval';
+import { CONVERSATION_CONFIG, RETRIEVAL_CONFIG, AI_MODEL_CONFIG } from '../lib/constants';
 
 interface ChatState {
   conversations: Conversation[];
@@ -10,6 +11,7 @@ interface ChatState {
   isLoading: boolean;
   currentModel: string;
   deepThinking: boolean; // 深度思考模式
+  abortController: AbortController | null; // 用于取消请求
   
   // 方法
   loadConversations: (userId: string) => void;
@@ -17,6 +19,7 @@ interface ChatState {
   selectConversation: (conversation: Conversation) => void;
   deleteConversation: (conversationId: string) => void;
   sendMessage: (content: string) => Promise<void>;
+  stopGeneration: () => void; // 停止生成
   setCurrentModel: (model: string) => void;
   setDeepThinking: (enabled: boolean) => void;
   clearHistory: () => void;
@@ -27,8 +30,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentConversation: null,
   messages: [],
   isLoading: false,
-  currentModel: 'qwen3-32b', // 使用修正后的内部 ID，aiModelManager 会自动映射
+  currentModel: AI_MODEL_CONFIG.DEFAULT_MODEL, // 使用修正后的内部 ID，aiModelManager 会自动映射
   deepThinking: true, // 默认开启深度思考
+  abortController: null, // 用于取消请求
 
   loadConversations: (userId: string) => {
     const conversations = localStorageManager.getConversations(userId);
@@ -93,7 +97,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    set({ isLoading: true });
+    // 创建新的 AbortController
+    const abortController = new AbortController();
+    set({ isLoading: true, abortController });
 
     try {
       // 添加用户消息
@@ -117,7 +123,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 多路召回检索 + Rerank 重排（top k = 20）
       
       // 获取对话历史用于查询增强和AI模型上下文
-      const recentMessages = get().messages.slice(-10);
+      const recentMessages = get().messages.slice(-CONVERSATION_CONFIG.MAX_HISTORY_MESSAGES);
       /*
       const conversationHistoryForSearch = recentMessages
         .filter(msg => msg.role === 'user' || msg.role === 'assistant')
@@ -126,12 +132,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 用户反馈：取消上下文传递
       const conversationHistoryForSearch: string[] = [];
       
-      const searchResults = await retrieval.semanticSearch(content, 20, conversationHistoryForSearch);
+      // 检查是否已取消
+      if (get().abortController?.signal.aborted) {
+        console.log('用户取消了请求（检索阶段）');
+        set({ isLoading: false, abortController: null });
+        return;
+      }
+      
+      const searchResults = await retrieval.semanticSearch(
+        content, 
+        RETRIEVAL_CONFIG.DEFAULT_LIMIT, 
+        conversationHistoryForSearch
+      );
+      
+      // 再次检查是否已取消
+      if (get().abortController?.signal.aborted) {
+        console.log('用户取消了请求（检索后）');
+        set({ isLoading: false, abortController: null });
+        return;
+      }
 
       console.log(`[ChatStore] 检索返回: ${searchResults.length} chunks`);
 
-      // 用户请求：只给 AI 发送 Rerank 后的 Top 10 数据
-      const topResults = searchResults.slice(0, 10);
+      // 用户请求：只给 AI 发送 Rerank 后的 Top N 数据
+      const TOP_RESULTS_COUNT = 10;
+      const topResults = searchResults.slice(0, TOP_RESULTS_COUNT);
 
       // 直接使用检索结果的内容，不再进行复杂的重排
       // retrieval.semanticSearch 已经处理了排序、多样性和去重
@@ -148,8 +173,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.log(`[ChatStore] 最高分数: ${maxScore.toFixed(6)}, 前10个chunks: ${topResults.length}`);
 
       // 调整阈值以匹配 reranker 的分数范围
-      // 如果最高分 > 0.01，认为有相关结果
-      const relevanceThreshold = 0.01;
+      // 如果最高分 > 阈值，认为有相关结果
+      const relevanceThreshold = RETRIEVAL_CONFIG.RELEVANCE_THRESHOLD;
       const isLowRelevance = topResults.length > 0 && maxScore < relevanceThreshold;
 
       console.log(`[ChatStore] 相关性阈值: ${relevanceThreshold}, 是否低相关性: ${isLowRelevance}`);
@@ -163,10 +188,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // 注意：这里使用 qwen3-32b 作为模型ID，aiModelManager 会自动映射到正确的 Qwen3 或降级到 Qwen2.5
           const qwenResponse = await aiModelManager.generateAnswer({
             question: content,
-            model: currentModel || 'qwen3-32b',
+            model: currentModel || AI_MODEL_CONFIG.DEFAULT_MODEL,
             references: [],
             conversationHistory: undefined,
-            deepThinking: deepThinking
+            deepThinking: deepThinking,
+            abortController: get().abortController || undefined
           });
           
           // 添加 Qwen 8B 回复消息
@@ -182,7 +208,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           
           const msgs = [...get().messages, assistantMessage];
-          set({ messages: msgs, isLoading: false });
+          set({ messages: msgs, isLoading: false, abortController: null });
           return;
         } catch (qwenError) {
           console.error('Qwen 8B调用失败:', qwenError);
@@ -197,7 +223,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               metadata: { hint: true, error: true, errorMessage: errorMessage.substring(0, 200) }
             });
             const msgs = [...get().messages, tipMessage];
-            set({ messages: msgs, isLoading: false });
+            set({ messages: msgs, isLoading: false, abortController: null });
             return;
           } catch (storageError) {
             console.error('存储提示消息失败:', storageError);
@@ -211,7 +237,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               createdAt: new Date().toISOString()
             };
             const msgs = [...get().messages, tipMessage];
-            set({ messages: msgs, isLoading: false });
+            set({ messages: msgs, isLoading: false, abortController: null });
             return;
           }
         }
@@ -232,7 +258,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model: currentModel,
         references,
         conversationHistory: undefined, // 取消传递对话历史
-        deepThinking: deepThinking // 传递深度思考模式
+        deepThinking: deepThinking, // 传递深度思考模式
+        abortController: get().abortController || undefined // 传递 AbortController
       };
 
       const response = await aiModelManager.generateAnswer(chatRequest);
@@ -251,10 +278,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // 更新当前消息列表
       const messages = [...get().messages, assistantMessage];
-      set({ messages, isLoading: false });
+      set({ messages, isLoading: false, abortController: null });
 
     } catch (error) {
       console.error('发送消息失败:', error);
+      
+      // 检查是否是用户取消
+      if (error instanceof Error && error.message === '用户取消了请求') {
+        console.log('用户取消了请求');
+        set({ isLoading: false, abortController: null });
+        return;
+      }
       
       // 尝试添加错误消息，但如果存储失败，至少显示在界面上
       let errorMessage: Message;
@@ -279,7 +313,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const messages = [...get().messages, errorMessage];
-      set({ messages, isLoading: false });
+      set({ messages, isLoading: false, abortController: null });
+    }
+  },
+
+  stopGeneration: () => {
+    const { abortController } = get();
+    if (abortController) {
+      abortController.abort();
+      set({ isLoading: false, abortController: null });
+      console.log('已停止生成');
     }
   },
 

@@ -10,16 +10,9 @@ import {
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
 import { aiModelManager } from './aiModels';
 import { queryCacheManager } from './queryCacheManager';
+import { API_CONFIG, RETRIEVAL_CONFIG, TEXT_CONFIG, NETWORK_KEYWORDS } from './constants';
 
-const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
-const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
-// 确保查询Embedding模型与文档Embedding模型一致 (BAAI/bge-m3)
-const EMBEDDING_MODEL = 'BAAI/bge-m3'; 
-// Rerank模型配置：主模型与备用模型
-const RERANK_MODEL_PRIMARY = 'BAAI/bge-reranker-v2-m3'; // 最新最强
-const RERANK_MODEL_FALLBACK = 'BAAI/bge-reranker-large'; // 备用稳定版
-
-function optimizeTextForEmbedding(text: string, maxLength: number = 2000): string {
+function optimizeTextForEmbedding(text: string, maxLength: number = TEXT_CONFIG.MAX_EMBEDDING_LENGTH): string {
   let optimized = text.trim();
   if (optimized.length > maxLength) {
     optimized = optimized.substring(0, maxLength);
@@ -33,14 +26,14 @@ async function embedText(text: string): Promise<number[] | null> {
     return null;
   }
   try {
-    const res = await fetch(SILICONFLOW_EMBED_URL, {
+    const res = await fetch(API_CONFIG.SILICONFLOW_EMBED_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: EMBEDDING_MODEL,
+        model: API_CONFIG.EMBEDDING_MODEL,
         input: text
       })
     });
@@ -171,7 +164,9 @@ export async function semanticSearch(
   const lowerQuery = coreQuery.toLowerCase();
   
   // 保留部分核心硬编码作为兜底（因为 LLM 偶尔可能失败或超时）
-  if (lowerQuery.includes('bgp')) expandedTerms.push('边界网关协议', 'peer', 'neighbor');
+  if (lowerQuery.includes('bgp')) {
+    expandedTerms.push(...NETWORK_KEYWORDS.BGP);
+  }
   // ... 其他硬编码可以逐步移除，或者作为快速路径保留
   
   // 将扩展词加入到关键词检索中
@@ -222,7 +217,7 @@ export async function semanticSearch(
   
   // ========== RRF (Reciprocal Rank Fusion) 融合 ==========
   // RRF score = sum(1 / (k + rank))
-  const RRF_K = 60;
+  const RRF_K = RETRIEVAL_CONFIG.RRF_K;
   const rrfMap = new Map<string, { chunk: Chunk; rrfScore: number; sources: string[] }>();
   
   // 处理向量召回
@@ -287,14 +282,13 @@ export async function semanticSearch(
     candidatesByDoc.get(item.chunk.documentId)!.push(item);
   });
 
-  const RERANK_CONTENT_MAX_LENGTH = 500;
   let allRerankedResults: Array<{ chunk: Chunk; score: number; sources?: string[] }> = [];
 
-  // 2. 优化：只对前3个文档进行Rerank，减少API调用
-  const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, 3);
+  // 2. 优化：只对前N个文档进行Rerank，减少API调用
+  const topDocIds = Array.from(candidatesByDoc.keys()).slice(0, RETRIEVAL_CONFIG.MAX_TOP_DOCS_FOR_RERANK);
   const docsToRerank = topDocIds.map(docId => ({
     docId,
-    candidates: candidatesByDoc.get(docId)!.slice(0, 20)
+    candidates: candidatesByDoc.get(docId)!.slice(0, RETRIEVAL_CONFIG.MAX_CHUNKS_PER_DOC_FOR_RERANK)
   }));
 
   // 3. 批量Rerank：收集所有候选，一次API调用
@@ -303,8 +297,8 @@ export async function semanticSearch(
   docsToRerank.forEach(({ docId, candidates }) => {
     candidates.forEach((item, index) => {
       let content = item.chunk.content;
-      if (content.length > RERANK_CONTENT_MAX_LENGTH) {
-        content = content.substring(0, RERANK_CONTENT_MAX_LENGTH);
+      if (content.length > RETRIEVAL_CONFIG.RERANK_CONTENT_MAX_LENGTH) {
+        content = content.substring(0, RETRIEVAL_CONFIG.RERANK_CONTENT_MAX_LENGTH);
       }
       allCandidatesForRerank.push({ docId, index, chunk: item.chunk, content });
     });
@@ -406,15 +400,15 @@ export async function semanticSearch(
             // 但为了精确性，我们还是聚焦在子块，但标记来源
             // 同样需要截断父块，防止过大
             let parentContext = parent.content;
-            if (parentContext.length > 1500) { // 稍微放宽一点
+            if (parentContext.length > TEXT_CONFIG.PARENT_CONTEXT_FALLBACK_LENGTH) {
                  // 尝试找到子块在父块中的位置，截取周围内容
                  const idx = parentContext.indexOf(item.chunk.content);
                  if (idx !== -1) {
-                     const start = Math.max(0, idx - 500);
-                     const end = Math.min(parentContext.length, idx + item.chunk.content.length + 500);
+                     const start = Math.max(0, idx - TEXT_CONFIG.SLIDING_WINDOW_CONTEXT);
+                     const end = Math.min(parentContext.length, idx + item.chunk.content.length + TEXT_CONFIG.SLIDING_WINDOW_CONTEXT);
                      parentContext = (start > 0 ? '...' : '') + parentContext.substring(start, end) + (end < parentContext.length ? '...' : '');
                  } else {
-                     parentContext = parentContext.substring(0, 1500) + '...';
+                     parentContext = parentContext.substring(0, TEXT_CONFIG.PARENT_CONTEXT_FALLBACK_LENGTH) + '...';
                  }
             }
             
@@ -482,7 +476,7 @@ export async function semanticSearch(
   enhancedResults.sort((a, b) => b.score - a.score);
   
   // 6. Chunk去重和合并（在文档过滤之前）
-  const deduplicatedResults = deduplicateAndMergeChunks(enhancedResults, 0.85);
+  const deduplicatedResults = deduplicateAndMergeChunks(enhancedResults, RETRIEVAL_CONFIG.DEFAULT_SIMILARITY_THRESHOLD);
   deduplicatedResults.sort((a, b) => b.score - a.score);
   
   // 7. 自适应阈值计算
@@ -845,7 +839,7 @@ async function rerank(query: string, candidates: string[]): Promise<Array<{ text
 
   // 辅助函数：调用API
   const callRerankApi = async (model: string) => {
-    const res = await fetch(SILICONFLOW_RERANK_URL, {
+      const res = await fetch(API_CONFIG.SILICONFLOW_RERANK_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -873,17 +867,17 @@ async function rerank(query: string, candidates: string[]): Promise<Array<{ text
 
   try {
     // 尝试主模型
-    return await callRerankApi(RERANK_MODEL_PRIMARY);
+    return await callRerankApi(API_CONFIG.RERANK_MODEL_PRIMARY);
   } catch (e: any) {
-    console.warn(`Rerank primary model (${RERANK_MODEL_PRIMARY}) failed:`, e.message);
+    console.warn(`Rerank primary model (${API_CONFIG.RERANK_MODEL_PRIMARY}) failed:`, e.message);
     
     // 如果是 400 错误 (Model does not exist/Bad Request)，尝试备用模型
     if (e.message && (e.message.includes('400') || e.message.includes('Model does not exist'))) {
       try {
-        console.warn(`Switching to fallback rerank model: ${RERANK_MODEL_FALLBACK}`);
-        return await callRerankApi(RERANK_MODEL_FALLBACK);
+        console.warn(`Switching to fallback rerank model: ${API_CONFIG.RERANK_MODEL_FALLBACK}`);
+        return await callRerankApi(API_CONFIG.RERANK_MODEL_FALLBACK);
       } catch (fallbackError) {
-        console.warn(`Rerank fallback model (${RERANK_MODEL_FALLBACK}) also failed:`, fallbackError);
+        console.warn(`Rerank fallback model (${API_CONFIG.RERANK_MODEL_FALLBACK}) also failed:`, fallbackError);
       }
     }
     

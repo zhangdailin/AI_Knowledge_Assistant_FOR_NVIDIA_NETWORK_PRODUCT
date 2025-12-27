@@ -62,6 +62,10 @@ class UnifiedStorageManager {
     return await serverStorageManager.getAllChunks();
   }
 
+  async getAllChunksForSearch(): Promise<Chunk[]> {
+    return await serverStorageManager.getAllChunks();
+  }
+
   async createChunks(docId: string, chunks: any[]): Promise<any[]> {
     // 确保每个 chunk 都有 documentId
     // serverStorageManager.createChunks 需要两个参数: documentId 和 chunks

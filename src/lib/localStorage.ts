@@ -4,7 +4,7 @@
  * 知识库文档和Chunks已迁移至服务器存储（unifiedStorage）
  */
 
-import { User, Conversation, Message } from './types';
+import { User, Conversation, Message, MessageMetadata, Settings } from './types';
 
 // 重新导出类型，保持向后兼容
 export type { User, Conversation, Message };
@@ -201,7 +201,7 @@ class LocalStorageManager {
     return allSettings[userId] || null;
   }
 
-  saveUserSettings(userId: string, settings: any) {
+  saveUserSettings(userId: string, settings: Partial<Settings>) {
     const existingSettings = localStorage.getItem(this.USER_SETTINGS_KEY);
     const allSettings = existingSettings ? JSON.parse(existingSettings) : {};
     allSettings[userId] = settings;

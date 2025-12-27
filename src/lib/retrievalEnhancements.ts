@@ -1,6 +1,7 @@
 import { advancedKeywordExtractor } from './advancedKeywordExtractor';
 import { enhancedNetworkKeywordExtractor } from './enhancedNetworkKeywordExtractor';
 import { advancedIntentDetector, type QueryIntent as AdvancedQueryIntent, type IntentResult } from './advancedIntentDetector';
+import { Chunk } from './types';
 
 // 向后兼容：保留旧的意图类型
 export type QueryIntent = 'command' | 'question' | 'network_config' | 'general' | AdvancedQueryIntent;
@@ -71,11 +72,11 @@ export function extractCoreQueryEnhanced(query: string, intent: QueryIntent): st
  * 去重和合并chunks
  */
 export function deduplicateAndMergeChunks(
-  results: Array<{ chunk: any; score: number }>,
+  results: Array<{ chunk: Chunk; score: number }>,
   similarityThreshold: number = 0.85
-): Array<{ chunk: any; score: number }> {
+): Array<{ chunk: Chunk; score: number }> {
   const seen = new Set<string>();
-  const deduplicated: Array<{ chunk: any; score: number }> = [];
+  const deduplicated: Array<{ chunk: Chunk; score: number }> = [];
   
   for (const result of results) {
     const chunkId = result.chunk.id;
@@ -92,7 +93,7 @@ export function deduplicateAndMergeChunks(
  * 计算自适应阈值
  */
 export function calculateAdaptiveThreshold(
-  results: Array<{ chunk: any; score: number }>,
+  results: Array<{ chunk: Chunk; score: number }>,
   baseThreshold: number
 ): number {
   if (results.length === 0) {
