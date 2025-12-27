@@ -17,6 +17,8 @@ const DOCUMENTS_FILE = path.join(DATA_DIR, 'documents.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const CHUNKS_DIR = path.join(DATA_DIR, 'chunks');
 const OLD_CHUNKS_FILE = path.join(DATA_DIR, 'chunks.json');
+const QUERY_LOGS_FILE = path.join(DATA_DIR, 'query_logs.json');
+const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.json');
 
 // 初始化标记
 let isInitialized = false;
@@ -670,4 +672,175 @@ export async function getApiKey(provider) {
   const settings = await getSettings();
   const envKeyName = `${provider.toUpperCase()}_API_KEY`;
   return settings.apiKeys?.[provider] || process.env[envKeyName] || process.env[`VITE_${envKeyName}`] || null;
+}
+
+// ========== 查询日志管理 ==========
+
+export async function addQueryLog(query, responseTime = 0) {
+  await initStorage();
+  const logs = await readJSON(QUERY_LOGS_FILE, []);
+  logs.push({
+    id: `log-${Date.now()}`,
+    query,
+    responseTime,
+    timestamp: new Date().toISOString()
+  });
+  // 只保留最近 1000 条日志
+  if (logs.length > 1000) {
+    logs.splice(0, logs.length - 1000);
+  }
+  await writeJSON(QUERY_LOGS_FILE, logs);
+}
+
+export async function getQueryStats() {
+  await initStorage();
+  const logs = await readJSON(QUERY_LOGS_FILE, []);
+
+  // 计算最近7天的查询统计
+  const now = new Date();
+  const recentQueries = [];
+  for (let i = 6; i >= 0; i--) {
+    const date = new Date(now);
+    date.setDate(date.getDate() - i);
+    const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+    const dayStart = new Date(date.setHours(0, 0, 0, 0));
+    const dayEnd = new Date(date.setHours(23, 59, 59, 999));
+
+    const count = logs.filter(log => {
+      const logDate = new Date(log.timestamp);
+      return logDate >= dayStart && logDate <= dayEnd;
+    }).length;
+
+    recentQueries.push({ date: dateStr, count });
+  }
+
+  // 统计热门问题（按问题内容分组）
+  const questionCounts = {};
+  logs.forEach(log => {
+    const q = log.query.trim().substring(0, 50);
+    questionCounts[q] = (questionCounts[q] || 0) + 1;
+  });
+
+  const topQuestions = Object.entries(questionCounts)
+    .map(([question, count]) => ({ question, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  // 计算平均响应时间
+  const logsWithTime = logs.filter(l => l.responseTime > 0);
+  const avgResponseTime = logsWithTime.length > 0
+    ? (logsWithTime.reduce((sum, l) => sum + l.responseTime, 0) / logsWithTime.length / 1000).toFixed(1)
+    : 0;
+
+  return {
+    totalQueries: logs.length,
+    avgResponseTime: parseFloat(avgResponseTime),
+    recentQueries,
+    topQuestions
+  };
+}
+
+// ========== 分类管理 ==========
+
+const DEFAULT_CATEGORIES = {
+  tree: [
+    {
+      id: 'default',
+      name: '默认分类',
+      icon: 'folder',
+      children: []
+    }
+  ]
+};
+
+export async function getCategories() {
+  await initStorage();
+  return await readJSON(CATEGORIES_FILE, DEFAULT_CATEGORIES);
+}
+
+export async function saveCategories(categories) {
+  await initStorage();
+  await writeJSON(CATEGORIES_FILE, categories);
+  return categories;
+}
+
+export async function addCategory(parentId, category) {
+  const categories = await getCategories();
+  const newCat = {
+    id: `cat-${Date.now()}`,
+    name: category.name,
+    icon: category.icon || 'folder',
+    children: []
+  };
+
+  if (!parentId) {
+    categories.tree.push(newCat);
+  } else {
+    const addToParent = (nodes) => {
+      for (const node of nodes) {
+        if (node.id === parentId) {
+          node.children = node.children || [];
+          node.children.push(newCat);
+          return true;
+        }
+        if (node.children && addToParent(node.children)) return true;
+      }
+      return false;
+    };
+    addToParent(categories.tree);
+  }
+
+  await saveCategories(categories);
+  return newCat;
+}
+
+export async function updateCategory(categoryId, updates) {
+  const categories = await getCategories();
+
+  const update = (nodes) => {
+    for (const node of nodes) {
+      if (node.id === categoryId) {
+        Object.assign(node, updates);
+        return true;
+      }
+      if (node.children && update(node.children)) return true;
+    }
+    return false;
+  };
+  update(categories.tree);
+
+  await saveCategories(categories);
+  return categories;
+}
+
+export async function deleteCategory(categoryId) {
+  if (categoryId === 'default') return false;
+
+  const categories = await getCategories();
+
+  const remove = (nodes, parent) => {
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === categoryId) {
+        nodes.splice(i, 1);
+        return true;
+      }
+      if (nodes[i].children && remove(nodes[i].children, nodes[i])) return true;
+    }
+    return false;
+  };
+  remove(categories.tree, null);
+
+  await saveCategories(categories);
+
+  // 将该分类下的文档移到默认分类
+  const documents = await getAllDocuments();
+  const updated = documents.map(doc => {
+    if (doc.categoryId === categoryId) {
+      return { ...doc, categoryId: 'default', categoryPath: ['default'] };
+    }
+    return doc;
+  });
+  await writeJSON(DOCUMENTS_FILE, updated);
+
+  return true;
 }

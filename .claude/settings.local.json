@@ -16,7 +16,19 @@
       "Bash(curl -s -X POST http://localhost:8787/api/sn-to-iblf -H \"Content-Type: application/json\" -d '{\"\"snList\"\":[\"\"GOG4X8312A0040\"\"]}')",
       "WebSearch",
       "Bash(curl -s \"wttr.in/Shanghai?lang=zh&format=4\")",
-      "Bash(curl -s \"wttr.in/Shanghai?lang=zh\")"
+      "Bash(curl -s \"wttr.in/Shanghai?lang=zh\")",
+      "Bash(npm install recharts @radix-ui/react-slot @radix-ui/react-dropdown-menu @radix-ui/react-avatar @radix-ui/react-progress class-variance-authority)",
+      "Bash(npm run check)",
+      "Bash(npx tsc --noEmit src/components/Dashboard.tsx src/components/AdminLayout.tsx src/components/ChatInterface.tsx src/App.tsx)",
+      "Bash(npm run build)",
+      "Bash(curl -s http://localhost:8787/api/stats)",
+      "Bash(curl -s http://localhost:8787/api/documents)",
+      "Bash(timeout 3)",
+      "Bash(ping -n 3 127.0.0.)",
+      "Bash(tasklist)",
+      "Bash(findstr node)",
+      "Bash(curl -s http://localhost:8787/api/categories)",
+      "Bash(del \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\components\\\\SnToIblfTool.tsx\")"
     ]
   }
 }

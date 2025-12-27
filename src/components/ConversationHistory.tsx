@@ -205,9 +205,8 @@ const ConversationHistory: React.FC = () => {
   return (
     <div className="h-full bg-gradient-to-br from-blue-50 to-cyan-50 p-6">
       <div className="max-w-4xl mx-auto">
-        {/* 标题和搜索 */}
+        {/* 描述 */}
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-800 mb-2">历史记录</h1>
           <p className="text-gray-600">查看和管理您的对话历史</p>
         </div>
 

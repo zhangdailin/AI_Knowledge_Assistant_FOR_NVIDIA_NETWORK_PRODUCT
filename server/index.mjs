@@ -659,6 +659,65 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
+// 获取统计数据 - 仪表盘使用
+app.get('/api/stats', async (req, res) => {
+  try {
+    const documents = await storage.getAllDocuments();
+    let totalChunks = 0;
+
+    // 统计所有文档的chunks数量
+    for (const doc of documents) {
+      try {
+        const chunks = await storage.getChunks(doc.id);
+        totalChunks += chunks.length;
+      } catch (e) {
+        // 忽略单个文档的错误
+      }
+    }
+
+    // 获取分类树，用于显示分类名称
+    const categoriesData = await storage.getCategories();
+    const categoryTree = categoriesData.tree || [];
+
+    // 构建分类 ID 到名称的映射
+    const categoryNameMap = { 'default': '默认分类' };
+    const buildNameMap = (nodes) => {
+      for (const node of nodes) {
+        categoryNameMap[node.id] = node.name;
+        if (node.children) buildNameMap(node.children);
+      }
+    };
+    buildNameMap(categoryTree);
+
+    // 按分类统计文档 - 使用 categoryId 字段
+    const categoryMap = {};
+    documents.forEach(doc => {
+      const catId = doc.categoryId || doc.category || 'default';
+      categoryMap[catId] = (categoryMap[catId] || 0) + 1;
+    });
+    const documentsByCategory = Object.entries(categoryMap).map(([catId, count]) => ({
+      category: categoryNameMap[catId] || catId,
+      count
+    }));
+
+    // 从查询日志获取真实统计数据
+    const queryStats = await storage.getQueryStats();
+
+    res.json({
+      totalDocuments: documents.length,
+      totalChunks,
+      totalQueries: queryStats.totalQueries,
+      avgResponseTime: queryStats.avgResponseTime,
+      recentQueries: queryStats.recentQueries,
+      topQuestions: queryStats.topQuestions,
+      documentsByCategory
+    });
+  } catch (error) {
+    console.error('获取统计数据失败:', error);
+    res.status(500).json({ ok: false, error: '获取统计数据失败' });
+  }
+});
+
 // 更新设置
 app.put('/api/settings', async (req, res) => {
   try {
@@ -667,6 +726,72 @@ app.put('/api/settings', async (req, res) => {
   } catch (error) {
     console.error('更新设置失败:', error);
     res.status(500).json({ ok: false, error: '更新设置失败' });
+  }
+});
+
+// 记录查询日志
+app.post('/api/query-log', async (req, res) => {
+  try {
+    const { query, responseTime } = req.body;
+    if (!query) {
+      return res.status(400).json({ ok: false, error: '缺少查询内容' });
+    }
+    await storage.addQueryLog(query, responseTime || 0);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('记录查询日志失败:', error);
+    res.status(500).json({ ok: false, error: '记录查询日志失败' });
+  }
+});
+
+// ========== 分类 API ==========
+
+// 获取分类树
+app.get('/api/categories', async (req, res) => {
+  try {
+    const categories = await storage.getCategories();
+    res.json({ ok: true, categories });
+  } catch (error) {
+    console.error('获取分类失败:', error);
+    res.status(500).json({ ok: false, error: '获取分类失败' });
+  }
+});
+
+// 添加分类
+app.post('/api/categories', async (req, res) => {
+  try {
+    const { parentId, name, icon } = req.body;
+    if (!name) {
+      return res.status(400).json({ ok: false, error: '分类名称不能为空' });
+    }
+    const category = await storage.addCategory(parentId, { name, icon });
+    res.json({ ok: true, category });
+  } catch (error) {
+    console.error('添加分类失败:', error);
+    res.status(500).json({ ok: false, error: '添加分类失败' });
+  }
+});
+
+// 更新分类
+app.put('/api/categories/:id', async (req, res) => {
+  try {
+    const { name, icon } = req.body;
+    const categories = await storage.updateCategory(req.params.id, { name, icon });
+    res.json({ ok: true, categories });
+  } catch (error) {
+    console.error('更新分类失败:', error);
+    res.status(500).json({ ok: false, error: '更新分类失败' });
+  }
+});
+
+// 删除分类
+app.delete('/api/categories/:id', async (req, res) => {
+  try {
+    const deleted = await storage.deleteCategory(req.params.id);
+    res.json({ ok: true, deleted });
+  } catch (error) {
+    console.error('删除分类失败:', error);
+    res.status(500).json({ ok: false, error: '删除分类失败' });
   }
 });
 
@@ -869,14 +994,118 @@ app.post('/api/sn-to-iblf', async (req, res) => {
   }
 });
 
+// ========== SN to Address 查询 API ==========
+
+app.post('/api/sn-to-address', async (req, res) => {
+  try {
+    const { snList } = req.body;
+    if (!snList || !Array.isArray(snList) || snList.length === 0) {
+      return res.status(400).json({ ok: false, error: '请提供 SN 列表' });
+    }
+
+    // 获取所有 chunks
+    const allChunks = await storage.getAllChunks();
+    const allContent = allChunks.map(c => c.content).join('\n');
+
+    const results = [];
+    const notFound = [];
+
+    for (const sn of snList) {
+      const snTrimmed = sn.trim().toUpperCase();
+      if (!snTrimmed) continue;
+
+      // 1. 查找 SN 对应的主机名
+      // 格式: GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,GOG4X8312A0040,MDC-DH1E-M09-POD1-GPU-214
+      const snPattern = new RegExp(`${snTrimmed}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+      const snMatch = allContent.match(snPattern);
+
+      if (!snMatch) {
+        notFound.push(snTrimmed);
+        continue;
+      }
+
+      const hostname = snMatch[1];
+
+      // 2. 查找主机名对应的带内地址 (inband)
+      // 常见格式: hostname,IP 或 hostname IP 或 hostname: IP
+      // 带内地址通常是 10.x.x.x 或 192.168.x.x
+      let inband = '';
+      const inbandPatterns = [
+        new RegExp(`${hostname}[,\\s:]+?(10\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
+        new RegExp(`${hostname}[,\\s:]+?(192\\.168\\.\\d+\\.\\d+)`, 'i'),
+        new RegExp(`${hostname}[^\\n]*?inband[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
+        new RegExp(`inband[^\\n]*?${hostname}[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i')
+      ];
+
+      for (const pattern of inbandPatterns) {
+        const match = allContent.match(pattern);
+        if (match) {
+          inband = match[1];
+          break;
+        }
+      }
+
+      // 3. 查找主机名对应的带外地址 (outband/BMC/IPMI)
+      // 带外地址通常是 BMC 或 IPMI 地址
+      let outband = '';
+      const outbandPatterns = [
+        new RegExp(`${hostname}[^\\n]*?(?:bmc|ipmi|outband|oob)[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
+        new RegExp(`(?:bmc|ipmi|outband|oob)[^\\n]*?${hostname}[^\\n]*?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i'),
+        // 尝试从主机名推断 BMC 地址 (hostname-bmc 格式)
+        new RegExp(`${hostname}-(?:bmc|ipmi)[,\\s:]+?(\\d+\\.\\d+\\.\\d+\\.\\d+)`, 'i')
+      ];
+
+      for (const pattern of outbandPatterns) {
+        const match = allContent.match(pattern);
+        if (match) {
+          outband = match[1];
+          break;
+        }
+      }
+
+      results.push({
+        sn: snTrimmed,
+        hostname,
+        inband,
+        outband
+      });
+    }
+
+    res.json({
+      ok: true,
+      summary: {
+        total: snList.length,
+        found: results.length,
+        notFound: notFound.length
+      },
+      results,
+      notFound
+    });
+  } catch (error) {
+    console.error('[SN-Address] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ========== Chat API (代理 SiliconFlow / Gemini) ==========
 
-// Gemini API 配置 (Google AI Studio)
-const GEMINI_CONFIG = {
-  baseUrl: 'https://gemini.chinablog.xyz/',
-  apiKey: 'Zhang1996',
-  model: 'gemini-3-flash-preview'
-};
+// 获取提供商配置
+async function getProviderConfig(provider) {
+  const settings = await storage.getSettings();
+  const providers = settings?.providers || {};
+  const config = providers[provider];
+
+  // 默认配置
+  const defaults = {
+    siliconflow: { baseUrl: 'https://api.siliconflow.cn', apiKey: '' },
+    gemini: { baseUrl: 'https://gemini.chinablog.xyz', apiKey: 'Zhang1996' }
+  };
+
+  return {
+    baseUrl: config?.baseUrl || defaults[provider]?.baseUrl || '',
+    apiKey: config?.apiKey || defaults[provider]?.apiKey || ''
+  };
+}
 
 app.post('/api/chat', async (req, res) => {
   try {
@@ -886,14 +1115,19 @@ app.post('/api/chat', async (req, res) => {
     if (useGemini) {
       console.log('[Chat] Using Gemini API with Google Search');
       try {
-        const response = await fetch(`${GEMINI_CONFIG.baseUrl}/v1/chat/completions`, {
+        const geminiConfig = await getProviderConfig('gemini');
+        if (!geminiConfig.apiKey) {
+          throw new Error('未配置 Gemini API Key');
+        }
+
+        const response = await fetch(`${geminiConfig.baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${GEMINI_CONFIG.apiKey}`
+            'Authorization': `Bearer ${geminiConfig.apiKey}`
           },
           body: JSON.stringify({
-            model: GEMINI_CONFIG.model,
+            model: model || 'gemini-3-flash-preview',
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
@@ -917,12 +1151,14 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 默认使用 SiliconFlow
-    const apiKey = await storage.getApiKey('siliconflow');
+    const siliconflowConfig = await getProviderConfig('siliconflow');
+    // 兼容旧的 API Key 存储方式
+    const apiKey = siliconflowConfig.apiKey || await storage.getApiKey('siliconflow');
     if (!apiKey) {
       return res.status(400).json({ ok: false, error: '未配置 SiliconFlow API Key' });
     }
 
-    const response = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+    const response = await fetch(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -949,6 +1185,66 @@ app.post('/api/chat', async (req, res) => {
     res.json({ ok: true, ...data, source: 'siliconflow' });
   } catch (error) {
     console.error('[Chat] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ========== 模型列表 API ==========
+
+// 获取硅基流动模型列表
+app.get('/api/models/siliconflow', async (req, res) => {
+  try {
+    const config = await getProviderConfig('siliconflow');
+    // 兼容旧的 API Key 存储方式
+    const apiKey = config.apiKey || await storage.getApiKey('siliconflow');
+    if (!apiKey) {
+      return res.status(400).json({ ok: false, error: '未配置 SiliconFlow API Key' });
+    }
+
+    const response = await fetch(`${config.baseUrl}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return res.status(response.status).json({
+        ok: false,
+        error: errorData.error?.message || `API 请求失败: ${response.status}`
+      });
+    }
+
+    const data = await response.json();
+    res.json({ ok: true, models: data.data || [] });
+  } catch (error) {
+    console.error('[Models] SiliconFlow error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 获取 Gemini 模型列表
+app.get('/api/models/gemini', async (req, res) => {
+  try {
+    const config = await getProviderConfig('gemini');
+    if (!config.apiKey) {
+      return res.status(400).json({ ok: false, error: '未配置 Gemini API Key' });
+    }
+
+    const response = await fetch(`${config.baseUrl}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${config.apiKey}` }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return res.status(response.status).json({
+        ok: false,
+        error: errorData.error?.message || `API 请求失败: ${response.status}`
+      });
+    }
+
+    const data = await response.json();
+    res.json({ ok: true, models: data.data || [] });
+  } catch (error) {
+    console.error('[Models] Gemini error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 });

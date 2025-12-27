@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { localStorageManager, Conversation, Message } from '../lib/localStorage';
 import { AI_MODEL_CONFIG, CONVERSATION_CONFIG } from '../lib/constants';
+import { extractSNs } from './toolStore';
 
 interface ChatState {
   conversations: Conversation[];
@@ -17,6 +18,7 @@ interface ChatState {
   sendMessage: (content: string) => Promise<void>;
   setDeepThinking: (value: boolean) => void;
   stopGeneration: () => void;
+  clearHistory: () => void;
 }
 
 function getApiServerUrl(): string {
@@ -48,6 +50,34 @@ async function searchKnowledgeBase(query: string): Promise<Array<{ content: stri
     }));
   } catch {
     return [];
+  }
+}
+
+// SN-IBLF 工具调用
+async function callSnIblfTool(snList: string[]): Promise<any> {
+  try {
+    const res = await fetch(`${getApiServerUrl()}/api/sn-to-iblf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList })
+    });
+    const data = await res.json();
+    return data.ok ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+// 检查工具是否启用
+function isToolEnabled(toolId: string): boolean {
+  const saved = localStorage.getItem('ai_tools_config');
+  if (!saved) return true; // 默认启用
+  try {
+    const tools = JSON.parse(saved);
+    const tool = tools.find((t: any) => t.id === toolId);
+    return tool?.enabled ?? true;
+  } catch {
+    return true;
   }
 }
 
@@ -134,7 +164,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const abortController = new AbortController();
     set({ abortController });
 
+    const startTime = Date.now(); // 记录开始时间
+
     try {
+      // 检测是否需要调用 SN-IBLF 工具
+      let snIblfResult = null;
+      let queriedSNs: string[] = [];
+      if (isToolEnabled('sn-iblf')) {
+        queriedSNs = extractSNs(content);
+        if (queriedSNs.length > 0) {
+          console.log('[Chat] 检测到SN号码:', queriedSNs);
+          snIblfResult = await callSnIblfTool(queriedSNs);
+        }
+      }
+
       // Search knowledge base
       const knowledgeResults = await searchKnowledgeBase(content);
 
@@ -217,7 +260,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
             title: '知识库',
             content: r.content.substring(0, 200),
             score: r.score
-          })) : []
+          })) : [],
+          // 添加工具调用结果
+          toolResults: snIblfResult ? {
+            snIblf: {
+              queriedSNs,
+              result: snIblfResult
+            }
+          } : undefined
         }
       });
 
@@ -226,6 +276,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isLoading: false,
         abortController: null
       }));
+
+      // 记录查询日志
+      const responseTime = Date.now() - startTime;
+      fetch(`${getApiServerUrl()}/api/query-log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: content, responseTime })
+      }).catch(() => {}); // 静默失败
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -244,5 +302,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       set({ isLoading: false, abortController: null });
     }
+  },
+
+  clearHistory: () => {
+    const { conversations } = get();
+    // 删除所有对话
+    conversations.forEach(conv => {
+      localStorageManager.deleteConversation(conv.id);
+    });
+    set({
+      conversations: [],
+      currentConversation: null,
+      messages: []
+    });
   }
 }));

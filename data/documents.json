@@ -8,7 +8,8 @@
     "contentPreview": "# Cumulus Linux 5.9 User Guide\n\nNVIDIA® Cumulus Linux is the first full-featured Debian bookworm-based, Linux operating system for the networking industry.\n\nThis user guide provides in-depth documentation on the Cumulus Linux installation process, system configuration and management, network solutions, and monitoring and troubleshooting recommendations. In addition, the quick start guide provides an end-to-end setup process to get you started.\n\nCumulus Linux 5.9 includes the NVIDIA NetQ agent an",
     "uploadedAt": "2025-12-23T15:24:35.663Z",
     "status": "ready",
-    "id": "doc-1766503475664"
+    "id": "doc-1766503475664",
+    "categoryId": "cat-1766845817168"
   },
   {
     "userId": "public",
@@ -19,7 +20,8 @@
     "contentPreview": "The switch with the lower priority value is in the primary role; the default value is 32768 and the range is between 0 and 65535.\n\nWhen the MLAG service exits during switch reboot or if you stop the service on the primary switch, the peer switch that is in the secondary role becomes the primary.\n\nHowever, if the primary switch goes down without stopping the MLAG service or if the peer link goes down, the secondary switch does not change its role. If the peer switch is not alive, the switch in th",
     "uploadedAt": "2025-12-24T00:46:25.524Z",
     "status": "ready",
-    "id": "doc-1766537185525"
+    "id": "doc-1766537185525",
+    "categoryId": "cat-1766845817168"
   },
   {
     "userId": "public",
@@ -30,7 +32,8 @@
     "contentPreview": "```txt\ncumulus@spine01:~$ sudo vtysh...\nspine01# configure terminal\nspine01(config)# hostname spine01-1\nspine01-1(config)# do sh run\nBuilding configuration...\nCurrent configuration:\n!\nfrr version 7.0+cl4u3\nfrr defaults datacenter\nhostname spine01\nhostname spine01-1\n...\n```\n\nNOTE\n\nIf you configure the same numbered BGP neighbor with both the neighbor x.x.x.x and neighbor swp# interface commands, two neighbor entries are present for the same IP address in the configuration. To correct this issue, ",
     "uploadedAt": "2025-12-24T00:48:29.161Z",
     "status": "ready",
-    "id": "doc-1766537309162"
+    "id": "doc-1766537309162",
+    "categoryId": "cat-1766845817168"
   },
   {
     "userId": "public",
@@ -41,7 +44,8 @@
     "contentPreview": "【Changes】\n,Change log:,,,,,,,,,,,,,,,,,,,,,,,\n,V1,Initial draft ,Wei song,,,,,,,,,,,,,,,,,,,,,\n,V3.1,\"update FW info in sheet\"\"Edge-FW\"\",\"\"IP Allocation\"\",\"\"HSS+CTL\"\",\"\"OOB\"\"\",,,,,,,,,,,,,,,,,,,,,,\n,v3.3,\"update EDGE04, IFW BGP AS, IPOIB \",,,,,,,,,,,,,,,,,,,,,,\n,,,,,,,,今天会议MOM：,,,,,,,,,,,,,,,,\n,,,,,,,,\"1. 以太网采用EVPN-VXLAN架构，按设备类型分多个网段(vlan),但同属于一个vrf，允许客户控制所有资源。\",,,,,,,,,,,,,,,,\n,,,,,,,,2. 部署完移交后交换机配置不变，服务器OS最终用户可能按需重新安装。,,,,,,,,,,,,,,,,\n,,,,,,,,3. NVIDIA BCM只有90天试用License，magaspeed维护团队会部署其他pxe服务",
     "uploadedAt": "2025-12-27T10:00:12.231Z",
     "status": "ready",
-    "id": "doc-1766829612233"
+    "id": "doc-1766829612233",
+    "categoryId": "default"
   },
   {
     "userId": "public",

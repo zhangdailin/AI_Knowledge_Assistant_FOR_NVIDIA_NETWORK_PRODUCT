@@ -1,0 +1,16 @@
+{
+  "tree": [
+    {
+      "id": "default",
+      "name": "默认分类",
+      "icon": "folder",
+      "children": []
+    },
+    {
+      "id": "cat-1766845817168",
+      "name": "英伟达",
+      "icon": "folder",
+      "children": []
+    }
+  ]
+}

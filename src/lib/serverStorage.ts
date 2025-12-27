@@ -376,6 +376,65 @@ class ServerStorageManager {
       return [];
     }
   }
+
+  // 分类管理
+  async getCategories(): Promise<any> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/categories`);
+      if (!res.ok) throw new Error(`获取分类失败: ${res.statusText}`);
+      const data = await res.json();
+      return data.categories || { tree: [] };
+    } catch (error) {
+      console.error('获取分类失败:', error);
+      return { tree: [] };
+    }
+  }
+
+  async addCategory(parentId: string | null, name: string): Promise<any> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/categories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parentId, name })
+      });
+      if (!res.ok) throw new Error(`添加分类失败: ${res.statusText}`);
+      const data = await res.json();
+      return data.category;
+    } catch (error) {
+      console.error('添加分类失败:', error);
+      throw error;
+    }
+  }
+
+  async updateCategory(categoryId: string, name: string): Promise<any> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/categories/${categoryId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (!res.ok) throw new Error(`更新分类失败: ${res.statusText}`);
+      const data = await res.json();
+      return data.categories;
+    } catch (error) {
+      console.error('更新分类失败:', error);
+      throw error;
+    }
+  }
+
+  async deleteCategory(categoryId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/categories/${categoryId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error(`删除分类失败: ${res.statusText}`);
+      const data = await res.json();
+      return data.deleted === true;
+    } catch (error) {
+      console.error('删除分类失败:', error);
+      return false;
+    }
+  }
 }
 
 export const serverStorageManager = new ServerStorageManager();

@@ -8,7 +8,9 @@ import ConversationHistory from './components/ConversationHistory';
 import UserSettings from './components/UserSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import AdminLayout from './components/AdminLayout';
-import SnToIblfTool from './components/SnToIblfTool';
+import AITools from './components/AITools';
+import Dashboard from './components/Dashboard';
+import ModelSettings from './components/ModelSettings';
 
 function App() {
   const { isAuthenticated, checkAuth, user } = useAuthStore();
@@ -55,14 +57,22 @@ function App() {
           
           {/* 管理后台 - 包含导航栏 */}
           <Route path="/admin" element={<AdminLayout />}>
-            <Route index element={<Navigate to="/admin/knowledge" replace />} />
-            <Route 
-              path="knowledge" 
+            <Route index element={<Navigate to="/admin/dashboard" replace />} />
+            <Route
+              path="dashboard"
+              element={
+                <div className="h-full">
+                  <Dashboard />
+                </div>
+              }
+            />
+            <Route
+              path="knowledge"
               element={
                 <div className="h-full">
                   <KnowledgeBase />
                 </div>
-              } 
+              }
             />
             <Route 
               path="history" 
@@ -81,10 +91,18 @@ function App() {
               }
             />
             <Route
-              path="sn-iblf"
+              path="tools"
               element={
                 <div className="h-full overflow-auto">
-                  <SnToIblfTool />
+                  <AITools />
+                </div>
+              }
+            />
+            <Route
+              path="models"
+              element={
+                <div className="h-full overflow-auto">
+                  <ModelSettings />
                 </div>
               }
             />

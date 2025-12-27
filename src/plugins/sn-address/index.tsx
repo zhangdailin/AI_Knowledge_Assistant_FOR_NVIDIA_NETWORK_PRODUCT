@@ -1,14 +1,11 @@
 import React, { useState } from 'react';
-import { Search, Copy, Check } from 'lucide-react';
+import { Search, Copy, Check, Network } from 'lucide-react';
 
-interface Server {
+interface AddressInfo {
   sn: string;
   hostname: string;
-}
-
-interface Group {
-  iblfs: string[];
-  servers: Server[];
+  inband: string;
+  outband: string;
 }
 
 interface QueryResult {
@@ -17,11 +14,9 @@ interface QueryResult {
     total: number;
     found: number;
     notFound: number;
-    groups: number;
   };
-  groups: Group[];
+  results: AddressInfo[];
   notFound: string[];
-  details: Array<{ sn: string; hostname: string; iblfs: string[] }>;
 }
 
 function getApiServerUrl(): string {
@@ -32,7 +27,7 @@ function getApiServerUrl(): string {
   return `${protocol}//${hostname}:8787`;
 }
 
-const SnToIblfTool: React.FC = () => {
+const SnAddressTool: React.FC = () => {
   const [input, setInput] = useState('');
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,7 +46,7 @@ const SnToIblfTool: React.FC = () => {
     setResult(null);
 
     try {
-      const res = await fetch(`${getApiServerUrl()}/api/sn-to-iblf`, {
+      const res = await fetch(`${getApiServerUrl()}/api/sn-to-address`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ snList })
@@ -72,21 +67,12 @@ const SnToIblfTool: React.FC = () => {
   const copyResult = () => {
     if (!result) return;
 
-    let text = `SN到IBLF查询结果\n`;
+    let text = `SN地址查询结果\n`;
     text += `共查询 ${result.summary.total} 个SN，找到 ${result.summary.found} 个匹配。\n\n`;
+    text += `SN\t主机名\t带内地址\t带外地址\n`;
 
-    if (result.summary.groups > 1) {
-      text += `⚠️ 这些SN连接到不同的IBLF交换机组\n\n`;
-    }
-
-    result.groups.forEach((group, idx) => {
-      text += `组${idx + 1}: ${group.servers.length}台服务器\n`;
-      text += `服务器: ${group.servers.map(s => `${s.sn} (${s.hostname})`).join(', ')}\n\n`;
-      text += `连接的IBLF:\n`;
-      group.iblfs.forEach(iblf => {
-        text += `${iblf}\n`;
-      });
-      text += '\n';
+    result.results.forEach(item => {
+      text += `${item.sn}\t${item.hostname}\t${item.inband || '-'}\t${item.outband || '-'}\n`;
     });
 
     if (result.notFound.length > 0) {
@@ -100,8 +86,6 @@ const SnToIblfTool: React.FC = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h2 className="text-xl font-bold mb-4">SN 到 IBLF 查询工具</h2>
-
       <div className="mb-4">
         <label className="block text-sm font-medium text-gray-700 mb-2">
           输入 SN 列表（每行一个或用逗号分隔）
@@ -146,42 +130,59 @@ const SnToIblfTool: React.FC = () => {
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <h3 className="font-bold text-blue-800 mb-2">查询结果</h3>
             <p>共查询 {result.summary.total} 个SN，找到 {result.summary.found} 个匹配。</p>
-            {result.summary.groups > 1 && (
-              <p className="text-orange-600 mt-2">
-                ⚠️ 这些SN连接到不同的IBLF交换机组（共 {result.summary.groups} 组）
-              </p>
-            )}
           </div>
 
-          {result.groups.map((group, idx) => (
-            <div key={idx} className="p-4 bg-white border border-gray-200 rounded-lg shadow-sm">
-              <h4 className="font-bold text-gray-800 mb-3">
-                组{idx + 1}: {group.servers.length}台服务器
-              </h4>
-
-              <div className="mb-4">
-                <p className="text-sm text-gray-600 mb-2">服务器:</p>
-                <div className="flex flex-wrap gap-2">
-                  {group.servers.map((server, i) => (
-                    <span key={i} className="px-2 py-1 bg-gray-100 rounded text-sm">
-                      {server.sn} ({server.hostname})
-                    </span>
+          {/* 结果表格 */}
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">SN</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">主机名</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">
+                      <span className="flex items-center gap-1">
+                        <Network className="w-4 h-4" />
+                        带内地址
+                      </span>
+                    </th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">
+                      <span className="flex items-center gap-1">
+                        <Network className="w-4 h-4" />
+                        带外地址
+                      </span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {result.results.map((item, idx) => (
+                    <tr key={idx} className="hover:bg-gray-50">
+                      <td className="py-3 px-4 font-mono text-xs">{item.sn}</td>
+                      <td className="py-3 px-4">{item.hostname}</td>
+                      <td className="py-3 px-4">
+                        {item.inband ? (
+                          <span className="px-2 py-1 bg-green-50 text-green-700 rounded font-mono text-xs">
+                            {item.inband}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {item.outband ? (
+                          <span className="px-2 py-1 bg-purple-50 text-purple-700 rounded font-mono text-xs">
+                            {item.outband}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </div>
-
-              <div>
-                <p className="text-sm text-gray-600 mb-2">连接的IBLF:</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-                  {group.iblfs.map((iblf, i) => (
-                    <span key={i} className="px-2 py-1 bg-green-50 text-green-800 rounded text-sm font-mono">
-                      {iblf}
-                    </span>
-                  ))}
-                </div>
-              </div>
+                </tbody>
+              </table>
             </div>
-          ))}
+          </div>
 
           {result.notFound.length > 0 && (
             <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -189,34 +190,19 @@ const SnToIblfTool: React.FC = () => {
               <p className="text-sm text-yellow-700">{result.notFound.join(', ')}</p>
             </div>
           )}
-
-          <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-            <h4 className="font-bold text-gray-800 mb-3">详细映射</h4>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-2 px-2">SN</th>
-                    <th className="text-left py-2 px-2">主机名</th>
-                    <th className="text-left py-2 px-2">连接的IBLF</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.details.map((item, idx) => (
-                    <tr key={idx} className="border-b hover:bg-gray-100">
-                      <td className="py-2 px-2 font-mono">{item.sn}</td>
-                      <td className="py-2 px-2">{item.hostname}</td>
-                      <td className="py-2 px-2 text-xs">{item.iblfs.join(', ')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
       )}
     </div>
   );
 };
 
-export default SnToIblfTool;
+// 插件元数据
+export const pluginMeta = {
+  id: 'sn-address',
+  name: 'SN 地址查询',
+  description: '根据服务器 SN 查询带内/带外 IP 地址',
+  icon: 'Network',
+  version: '1.0.0'
+};
+
+export default SnAddressTool;

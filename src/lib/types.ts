@@ -38,6 +38,13 @@ export interface MessageMetadata {
   hint?: boolean;
   error?: boolean;
   errorMessage?: string;
+  // 工具调用结果
+  toolResults?: {
+    snIblf?: {
+      queriedSNs: string[];
+      result: any;
+    };
+  };
   [key: string]: unknown; // 允许其他元数据字段
 }
 
@@ -48,11 +55,26 @@ export interface Document {
   fileType: string;
   fileSize: number;
   category?: string;
+  categoryId?: string;           // 分类ID
+  categoryPath?: string[];       // 分类路径
   contentPreview: string;
   uploadedAt: string;
   maxChunks?: number; // 每个文档的最大chunks数量（rack配额），默认1000
   status?: 'processing' | 'ready' | 'error'; // 文档处理状态
   errorMessage?: string; // 处理失败时的错误信息
+}
+
+// 分类树节点
+export interface Category {
+  id: string;
+  name: string;
+  icon?: string;
+  children?: Category[];
+}
+
+// 分类树结构
+export interface CategoryTree {
+  tree: Category[];
 }
 
 export interface Chunk {
