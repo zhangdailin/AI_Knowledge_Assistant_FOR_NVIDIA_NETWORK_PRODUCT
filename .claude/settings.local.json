@@ -15,7 +15,8 @@
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8787/api/documents)",
       "Bash(curl -s -X POST http://localhost:8787/api/sn-to-iblf -H \"Content-Type: application/json\" -d '{\"\"snList\"\":[\"\"GOG4X8312A0040\"\"]}')",
       "WebSearch",
-      "Bash(curl -s \"wttr.in/Shanghai?lang=zh&format=4\")"
+      "Bash(curl -s \"wttr.in/Shanghai?lang=zh&format=4\")",
+      "Bash(curl -s \"wttr.in/Shanghai?lang=zh\")"
     ]
   }
 }
