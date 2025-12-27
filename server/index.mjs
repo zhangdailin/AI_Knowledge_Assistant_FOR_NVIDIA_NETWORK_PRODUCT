@@ -20,8 +20,6 @@ try {
   pdfParseModule = null;
 }
 
-// 直接保留模块引用，调用时选择合适的导出
-const pdfParse = pdfParseModule;
 import mammoth from 'mammoth';
 import { setTimeout as sleep } from 'node:timers/promises';
 
