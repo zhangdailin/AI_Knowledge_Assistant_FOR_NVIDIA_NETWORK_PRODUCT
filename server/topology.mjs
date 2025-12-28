@@ -447,6 +447,9 @@ export function buildTopologyStructure(portMap, config = {}) {
     }
   }
 
+  // 步骤4c: 预计算布局坐标
+  calculateLayoutPositions(nodesByLayer);
+
   return {
     success: true,
     nodesByLayer: nodesByLayer,    // 按网络层分组的节点，前端用于渲染
@@ -469,4 +472,54 @@ export function buildTopologyStructure(portMap, config = {}) {
     nodeCount: allNodesList.length,
     edgeCount: Object.values(edgesByPod).flat().length
   };
+}
+
+/**
+ * 预计算节点布局坐标
+ * 减少前端计算压力，确保布局一致性
+ */
+function calculateLayoutPositions(nodesByLayer) {
+  const layerYPositions = {
+    core: 0,
+    spine: 300,
+    leaf: 600
+  };
+
+  const layerXGaps = {
+    core: 200,
+    spine: 150,
+    leaf: 120
+  };
+
+  // 计算每层的宽度，用于居中对齐
+  const layerWidths = {};
+  let maxLayerWidth = 0;
+
+  for (const [layer, nodes] of Object.entries(nodesByLayer)) {
+    const xGap = layerXGaps[layer] || 150;
+    const width = Math.max(0, (nodes.length - 1) * xGap);
+    layerWidths[layer] = width;
+    maxLayerWidth = Math.max(maxLayerWidth, width);
+  }
+
+  const centerX = maxLayerWidth / 2;
+
+  // 为每个节点分配坐标
+  for (const [layer, nodes] of Object.entries(nodesByLayer)) {
+    const yPos = layerYPositions[layer] || 0;
+    const xGap = layerXGaps[layer] || 150;
+
+    // 计算该层的起始 X 坐标（使其居中）
+    const startX = centerX - (layerWidths[layer] / 2);
+
+    nodes.forEach((node, index) => {
+      node.position = {
+        x: Math.round(startX + index * xGap),
+        y: yPos
+      };
+      // 同时也保留 x, y 字段兼容旧逻辑（如果有的话）
+      node.x = node.position.x;
+      node.y = node.position.y;
+    });
+  }
 }

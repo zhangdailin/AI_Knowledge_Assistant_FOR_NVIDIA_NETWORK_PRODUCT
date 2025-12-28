@@ -12,6 +12,8 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
 import { bundleEdges, collapseBundle, expandBundle } from '../../utils/edge-bundling';
+import CytoscapeTopology from '../../components/CytoscapeTopology';
+import useVirtualViewport from '../../hooks/useVirtualViewport';
 
 type NetworkType = 'ib' | 'roce';
 
@@ -68,6 +70,10 @@ const TopologyRestoreTool: React.FC = () => {
   const [selectedPod, setSelectedPod] = useState('ALL');
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [renderMode, setRenderMode] = useState<'reactflow' | 'cytoscape' | 'virtual-reactflow'>('reactflow');
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [lazyMode, setLazyMode] = useState(false);
+  const [loadedPods, setLoadedPods] = useState<Set<string>>(new Set());
 
   // 边聚合配置
   const [enableEdgeBundling, setEnableEdgeBundling] = useState(true);
@@ -136,83 +142,121 @@ const TopologyRestoreTool: React.FC = () => {
     }
 
     setLoading(true);
+    setLoadingProgress(0);
     setError('');
     setMessage('');
+    setLoadedPods(new Set());
+    setLazyMode(false);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('networkType', networkType);
       formData.append('config', JSON.stringify(config));
+      // 启用 Lazy Mode if > 500 nodes? Or always request?
+      // For V2, let's request lazy mode by default to optimize performance
+      formData.append('mode', 'lazy');
 
-      console.log('[TopologyRestore] Config:', config);
+      console.log('[TopologyRestore] Requesting V2 API for streaming (Lazy Mode)...');
 
-      const res = await fetch(`${getApiServerUrl()}/api/topology-restore`, {
+      const res = await fetch(`${getApiServerUrl()}/api/topology-restore-v2`, {
         method: 'POST',
         body: formData
       });
 
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || '拓扑还原失败');
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP Error ${res.status}`);
+      }
 
-      console.log('[TopologyRestore] Result:', data);
-      console.log('[TopologyRestore] nodesByLayer 内容:', {
-        keys: Object.keys(data.nodesByLayer || {}),
-        structure: data.nodesByLayer ? Object.entries(data.nodesByLayer).map(([k, v]: any) => ({
-          layer: k,
-          nodeCount: Array.isArray(v) ? v.length : 0,
-          sampleNode: Array.isArray(v) ? v[0] : null
-        })) : null
-      });
+      if (!res.body) throw new Error('您的浏览器不支持流式传输');
 
-      setRestoreResult(data);
-      setMessage(`成功解析 ${data.nodeCount} 个节点, ${data.edgeCount} 条连接`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      // 从nodesByLayer获取可见的层级
-      // 确保 visibility 始终包含 core, spine, leaf 三个键
-      const visibility: Record<string, boolean> = {
-        core: true,
-        spine: true,
-        leaf: true
+      // 数据累加器
+      let metaData: any = null;
+      const accumulatedNodes: Record<string, any[]> = { core: [], spine: [], leaf: [] };
+      const accumulatedEdges: any[] = [];
+      let totalNodesReceived = 0;
+      let totalNodesExpected = 0;
+
+      // 读取流
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // 保留未完成的行
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const chunk = JSON.parse(line);
+
+              if (chunk.type === 'meta') {
+                metaData = chunk.data;
+                setRenderMode(metaData.renderMode);
+                setLazyMode(!!metaData.isLazy);
+                totalNodesExpected = metaData.nodeCount;
+                console.log('[TopologyStream] Meta:', metaData);
+
+                // 初始化 POD 和 可见性
+                if (metaData.pods?.length > 0) {
+                  const uniquePods = ['ALL', ...metaData.pods.filter((p: string) => p !== 'ALL')];
+                  setPods(uniquePods);
+                  setSelectedPod('ALL');
+                }
+
+                const initialVisibility: Record<string, boolean> = { core: true, spine: true, leaf: true };
+                setLayerVisibility(initialVisibility);
+
+              } else if (chunk.type === 'chunk') {
+                if (chunk.dataType === 'edges') {
+                  accumulatedEdges.push(...chunk.items);
+                } else if (chunk.layer) {
+                  const newNodes = chunk.nodes;
+                  accumulatedNodes[chunk.layer].push(...newNodes);
+                  totalNodesReceived += newNodes.length;
+                }
+
+                // 更新进度
+                if (totalNodesExpected > 0) {
+                  setLoadingProgress(Math.round(((totalNodesReceived + (accumulatedEdges.length / 5)) / (totalNodesExpected + (totalNodesExpected * 2))) * 100)); // 估算进度
+                }
+
+              } else if (chunk.type === 'error') {
+                throw new Error(chunk.error);
+              }
+            } catch (e) {
+              console.error('[TopologyStream] Parse Error:', e);
+            }
+          }
+        }
+
+        if (done) break;
+      }
+
+      // 组装最终数据
+      const finalData = {
+        ...metaData,
+        nodesByLayer: accumulatedNodes,
+        connections: accumulatedEdges,
+        success: true
       };
 
-      // 只包括实际存在的层级
-      const visibleLayers = Object.keys(data.nodesByLayer || {});
-      visibleLayers.forEach((layer: string) => {
-        visibility[layer] = true;
-      });
+      console.log('[TopologyStream] 完成:', finalData);
+      setRestoreResult(finalData);
+      setMessage(`加载完成: ${totalNodesReceived} 节点 (Lazy Mode: ${!!metaData?.isLazy})`);
+      setLoadingProgress(100);
 
-      // 如果某个层不存在，设置为 false（不显示）
-      for (const layer of ['core', 'spine', 'leaf']) {
-        if (!visibleLayers.includes(layer)) {
-          visibility[layer] = false;
-        }
-      }
+      // 初次渲染
+      buildTopology(finalData, 'ALL', { core: true, spine: true, leaf: true });
 
-      setLayerVisibility(visibility);
-
-      console.log('[TopologyRestore] 初始化可见层级:', {
-        visibleLayers,
-        visibility,
-        nodesByLayerKeys: Object.keys(data.nodesByLayer || {})
-      });
-
-      if (data.metadata?.pods?.length > 0) {
-        // 去重 POD 列表（防止重复的 'ALL'）
-        const uniquePods = ['ALL', ...data.metadata.pods.filter((p: string) => p !== 'ALL')];
-        setPods(uniquePods);
-        setSelectedPod('ALL');
-      }
-
-      console.log('[TopologyRestore] 准备调用buildTopology，参数：', {
-        hasData: !!data,
-        pod: 'ALL',
-        visibility: visibility,
-        nodesByLayerKeys: Object.keys(data.nodesByLayer || {})
-      });
-
-      buildTopology(data, 'ALL', visibility);
     } catch (err: any) {
+      console.error('[TopologyRestore] Error:', err);
       setError(err.message || '拓扑还原失败');
     } finally {
       setLoading(false);
@@ -399,8 +443,64 @@ const TopologyRestoreTool: React.FC = () => {
     });
   }, [highlightedNodeId, selectedNodeInfo, selectedEdgeInfo, setNodes, setEdges]);
 
-  const handlePodChange = (pod: string) => {
+  const loadPodDetails = async (podName: string) => {
+    if (!file || loadedPods.has(podName)) return;
+
+    setLoading(true);
+    try {
+      console.log('[TopologyRestore] Loading POD details:', podName);
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('networkType', networkType);
+      formData.append('config', JSON.stringify(config));
+      formData.append('podName', podName);
+
+      const res = await fetch(`${getApiServerUrl()}/api/topology-pod-details`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        setRestoreResult((prev: any) => {
+          if (!prev) return prev;
+          const newState = { ...prev };
+
+          // Merge Leaf Nodes
+          const existingLeaves = newState.nodesByLayer.leaf || [];
+          const newLeaves = data.nodes || [];
+          // simple merge
+          newState.nodesByLayer.leaf = [...existingLeaves, ...newLeaves];
+
+          // Merge Edges
+          newState.connections = [...(newState.connections || []), ...(data.edges || [])];
+          return newState;
+        });
+        setLoadedPods(prev => {
+          const next = new Set(prev);
+          next.add(podName);
+          return next;
+        });
+        setMessage(`已加载 POD: ${podName} 数据`);
+      } else {
+        throw new Error(data.error);
+      }
+    } catch (err: any) {
+      console.error('Failed to load POD:', err);
+      setError(`加载 POD ${podName} 失败: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePodChange = async (pod: string) => {
     setSelectedPod(pod);
+
+    // Check Lazy Loading
+    if (lazyMode && pod !== 'ALL' && !loadedPods.has(pod)) {
+      await loadPodDetails(pod);
+    }
+
     if (restoreResult) buildTopology(restoreResult, pod, layerVisibility);
   };
 
@@ -410,12 +510,93 @@ const TopologyRestoreTool: React.FC = () => {
     if (restoreResult) buildTopology(restoreResult, selectedPod, newVisibility);
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     if (!searchTerm.trim()) { setHighlightedNodeId(null); return; }
-    const foundNode = nodes.find(n => n.id.toLowerCase().includes(searchTerm.toLowerCase()));
-    if (foundNode) {
-      setHighlightedNodeId(foundNode.id);
-      setMessage(`找到设备: ${foundNode.id}`);
+
+    const upperSearch = searchTerm.toUpperCase();
+    let targetNodeId: string | null = null;
+    let targetPod: string | null = null;
+
+    // 1. 本地搜索 (Local Search in visible nodes)
+    const visibleNode = nodes.find(n =>
+      n.id.toUpperCase().includes(upperSearch) ||
+      (typeof n.data?.label === 'string' && n.data.label.toUpperCase().includes(upperSearch))
+    );
+
+    if (visibleNode) {
+      targetNodeId = visibleNode.id;
+      // Try to find pod from node data if possible, or assume it's loaded
+    } else if (restoreResult) {
+      // Search in raw data (including lazy loaded but not currently rendered parts?)
+      // Currently restoreResult has everything loaded so far.
+      Object.entries(restoreResult.nodesByLayer || {}).forEach(([layer, layerNodes]: [string, any]) => {
+        if (targetNodeId) return;
+        const match = Array.isArray(layerNodes) ? layerNodes.find((n: any) => n.id.toUpperCase().includes(upperSearch)) : null;
+        if (match) {
+          targetNodeId = match.id;
+          targetPod = match.pod;
+        }
+      });
+    }
+
+    // 2. 服务端 Deep Search (如果本地没找到 且 是 Lazy Mode)
+    if (!targetNodeId && lazyMode && file) {
+      try {
+        setLoading(true);
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('query', searchTerm);
+        formData.append('networkType', networkType);
+        formData.append('config', JSON.stringify(config));
+
+        const res = await fetch(`${getApiServerUrl()}/api/topology-search`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+
+        if (data.ok && data.matches && data.matches.length > 0) {
+          const match = data.matches[0];
+          targetNodeId = match.id;
+          targetPod = match.pod;
+          setMessage(`已找到远程节点: ${match.id} (POD: ${match.pod})`);
+        } else {
+          setMessage('未找到相关节点');
+        }
+      } catch (e) {
+        console.error('Search error:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // 3. 处理结果
+    if (targetNodeId) {
+      // 如果节点在未加载的 POD 中，先加载 POD
+      if (targetPod && lazyMode && !loadedPods.has(targetPod)) {
+        await loadPodDetails(targetPod);
+        // 加载后，restoreResult 更新，buildTopology 也会更新
+      }
+
+      setHighlightedNodeId(targetNodeId);
+
+      // 切换 POD 视图
+      if (targetPod && targetPod !== 'ALL' && selectedPod !== targetPod && selectedPod !== 'ALL') {
+        // 这里我们不直接调用 handlePodChange，因为我们已经在上面可能加载了 POD
+        // 直接设置 selectedPod 即可，useEffect 会处理重新渲染?
+        // 不，useEffect logic is complex. 
+        // handlePodChange logic: setSelectedPod -> buildTopology.
+        // buildTopology depends on selectedPod.
+        // User usually calls `handlePodChange`.
+        // Let's call buildTopology manually.
+        // Need latest restoreResult. If we just loaded POD, restoreResult is fresh.
+        // But state update acts async. 
+        // For safety, assume user might need to click search again or we rely on `loadPodDetails` triggering update.
+        // But `setSelectedPod` is enough if we trigger build.
+        setSelectedPod(targetPod);
+        // The handlePodChange useEffect will pick this up and call buildTopology
+      }
+      setMessage(`找到设备: ${targetNodeId}`);
     } else {
       setHighlightedNodeId(null);
       setMessage('未找到匹配的设备');
@@ -787,28 +968,58 @@ const TopologyRestoreTool: React.FC = () => {
       {message && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm mb-4">{message}</div>}
 
       {/* 拓扑图 */}
-      {nodes.length > 0 ? (
+      {/* 拓扑图区域 */}
+      {restoreResult || loading ? (
         <div className="flex gap-4">
-          <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '600px' }}>
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodeClick={handleNodeClick}
-              onEdgeClick={handleEdgeClick}
-              onPaneClick={handleCanvasClick}
-              fitView
-              attributionPosition="bottom-left"
-              onlyRenderVisibleElements={true}
-              selectNodesOnDrag={false}
-              edgesFocusable={false}
-              elementsSelectable={true}
-            >
-              <Controls />
-              <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />
-              <Background color="#f0f0f0" gap={20} />
-            </ReactFlow>
+          <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden relative" style={{ height: '600px' }}>
+
+            {/* 加载进度条悬浮层 */}
+            {loading && (
+              <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center backdrop-blur-sm">
+                <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 transition-all duration-300 ease-out" style={{ width: `${loadingProgress}%` }} />
+                </div>
+                <p className="mt-3 text-sm font-medium text-gray-700">正在构建拓扑... {loadingProgress}%</p>
+                <p className="mt-1 text-xs text-gray-400">
+                  {renderMode === 'cytoscape' ? '检测到大规模拓扑，已切换至高性能引擎' : '正在加载节点和连接数据'}
+                </p>
+              </div>
+            )}
+
+            {renderMode === 'cytoscape' ? (
+              <CytoscapeTopology
+                data={restoreResult}
+                selectedPod={selectedPod}
+                layerVisibility={layerVisibility}
+                onNodeClick={(node) => {
+                  setSelectedNodeInfo(node);
+                  setHighlightedNodeId(node.id);
+                }}
+                onEdgeClick={(edge) => setSelectedEdgeInfo({ ...edge, label: `${edge.srcPort}-${edge.dstPort}` })}
+                highlightedNodeId={highlightedNodeId}
+              />
+            ) : (
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={handleNodeClick}
+                onEdgeClick={handleEdgeClick}
+                onPaneClick={handleCanvasClick}
+                fitView
+                attributionPosition="bottom-left"
+                onlyRenderVisibleElements={true}
+                selectNodesOnDrag={false}
+                edgesFocusable={false}
+                elementsSelectable={true}
+                minZoom={0.1}
+              >
+                <Controls />
+                <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />
+                <Background color="#f0f0f0" gap={20} />
+              </ReactFlow>
+            )}
           </div>
 
           {/* 右侧信息面板 */}
@@ -835,8 +1046,8 @@ const TopologyRestoreTool: React.FC = () => {
                   <div>
                     <p className="text-xs font-medium text-gray-500 uppercase mb-1">层级</p>
                     <p className="text-sm">
-                      <span className="inline-block px-2 py-1 rounded text-white text-xs font-medium" style={{ background: layerColors[selectedNodeInfo.id.split('-')[0]] || layerColors.unknown }}>
-                        {selectedNodeInfo.id.split('-')[0].toUpperCase()}
+                      <span className="inline-block px-2 py-1 rounded text-white text-xs font-medium" style={{ background: layerColors[selectedNodeInfo.id.split('-')[0]?.toLowerCase()] || layerColors.unknown }}>
+                        {(selectedNodeInfo.layer || selectedNodeInfo.id.split('-')[0]).toUpperCase()}
                       </span>
                     </p>
                   </div>
@@ -846,31 +1057,43 @@ const TopologyRestoreTool: React.FC = () => {
                       <p className="text-sm text-gray-900">{selectedNodeInfo.data.label}</p>
                     </div>
                   )}
-                  <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">位置</p>
-                    <p className="text-xs text-gray-600">X: {selectedNodeInfo.position?.x.toFixed(0)} | Y: {selectedNodeInfo.position?.y.toFixed(0)}</p>
-                  </div>
+                  {renderMode !== 'cytoscape' && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">位置</p>
+                      <p className="text-xs text-gray-600">X: {selectedNodeInfo.position?.x.toFixed(0)} | Y: {selectedNodeInfo.position?.y.toFixed(0)}</p>
+                    </div>
+                  )}
 
                   {/* 连接到此节点的边 */}
                   <div>
                     <p className="text-xs font-medium text-gray-500 uppercase mb-2">连接关系</p>
                     <div className="space-y-1 text-xs">
-                      {edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id).length > 0 ? (
-                        edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id).map((edge, idx) => (
-                          <div key={idx} className="p-1.5 bg-gray-50 rounded border border-gray-200">
-                            <div className="font-mono text-gray-700">
-                              {edge.source === selectedNodeInfo.id ? (
-                                <>→ {edge.target}</>
-                              ) : (
-                                <>← {edge.source}</>
+                      {(() => {
+                        const relatedEdges = renderMode === 'cytoscape'
+                          ? (restoreResult?.connections || []).filter((e: any) => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id)
+                          : edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id);
+
+                        return relatedEdges.length > 0 ? (
+                          relatedEdges.slice(0, 50).map((edge: any, idx: number) => (
+                            <div key={idx} className="p-1.5 bg-gray-50 rounded border border-gray-200">
+                              <div className="font-mono text-gray-700">
+                                {edge.source === selectedNodeInfo.id ? (
+                                  <>→ {edge.target}</>
+                                ) : (
+                                  <>← {edge.source}</>
+                                )}
+                              </div>
+                              {(edge.label || (edge.srcPort && edge.dstPort)) && (
+                                <div className="text-gray-600 mt-0.5">
+                                  端口: {edge.label || `${edge.srcPort}-${edge.dstPort}`}
+                                </div>
                               )}
                             </div>
-                            {edge.label && <div className="text-gray-600 mt-0.5">端口: {edge.label}</div>}
-                          </div>
-                        ))
-                      ) : (
-                        <p className="text-gray-500 italic">无连接</p>
-                      )}
+                          ))
+                        ) : (
+                          <p className="text-gray-500 italic">无连接</p>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -884,22 +1107,12 @@ const TopologyRestoreTool: React.FC = () => {
                     <p className="text-xs font-medium text-gray-500 uppercase mb-1">目标设备</p>
                     <p className="text-sm font-mono text-gray-900 break-all">{selectedEdgeInfo.target}</p>
                   </div>
-                  {selectedEdgeInfo.label && (
+                  {(selectedEdgeInfo.label || (selectedEdgeInfo.srcPort && selectedEdgeInfo.dstPort)) && (
                     <div>
                       <p className="text-xs font-medium text-gray-500 uppercase mb-1">端口信息</p>
-                      <p className="text-sm font-mono text-gray-900">{selectedEdgeInfo.label}</p>
+                      <p className="text-sm font-mono text-gray-900">{selectedEdgeInfo.label || `${selectedEdgeInfo.srcPort}-${selectedEdgeInfo.dstPort}`}</p>
                     </div>
                   )}
-                  <div className="pt-2 border-t border-gray-200">
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-2">链路概览</p>
-                    <div className="space-y-1 text-xs">
-                      <div className="p-1.5 bg-gray-50 rounded border border-gray-200">
-                        <div className="text-gray-600">{selectedEdgeInfo.source}</div>
-                        <div className="text-center text-gray-400 my-1">↓</div>
-                        <div className="text-gray-600">{selectedEdgeInfo.target}</div>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               ) : (
                 <div className="text-center text-gray-500 pt-8">

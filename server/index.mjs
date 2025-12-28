@@ -1718,6 +1718,273 @@ app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
   }
 });
 
+// ============== 拓扑还原 API V2 (流式加载) ==============
+app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: '请上传文件' });
+    }
+
+    const networkType = req.body.networkType || 'ib';
+    const configStr = req.body.config;
+    const config = configStr ? JSON.parse(configStr) : {};
+    const fileBuffer = req.file.buffer;
+    const fileName = req.file.originalname;
+    const isLazy = req.query.mode === 'lazy' || req.body.mode === 'lazy';
+
+    console.log(`[TopologyV2] 开始流式解析 ${networkType} 拓扑: ${fileName} (Lazy: ${isLazy})`);
+
+    // 1. 解析原始数据
+    let portMap;
+    if (networkType === 'ib') {
+      const csvContent = fileBuffer.toString('utf-8');
+      portMap = parseCSVPortMap(csvContent);
+    } else if (networkType === 'roce') {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+      portMap = parseExcelPortMap(data);
+    } else {
+      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
+    }
+
+    // 2. 构建拓扑结构
+    const result = topology.buildTopologyStructure(portMap, {
+      layerDetection: config.layerDetection || 'auto',
+      manualLayers: config.manualLayers || null,
+      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+      networkType: networkType
+    });
+
+    if (!result || !result.success) {
+      throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
+    }
+
+    // 3. 决定渲染模式
+    const totalNodes = result.nodeCount;
+    let renderMode = 'reactflow';
+    if (totalNodes > 2000) {
+      renderMode = 'cytoscape';
+    } else if (totalNodes > 500) {
+      // 这里的阈值可以根据实际性能测试调整
+      renderMode = 'virtual-reactflow';
+    }
+
+    console.log(`[TopologyV2] 节点数: ${totalNodes}, 模式: ${renderMode}`);
+
+    // 4. 开启流式响应 (NDJSON)
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // (a) 发送元数据
+    res.write(JSON.stringify({
+      type: 'meta',
+      data: {
+        nodeCount: result.nodeCount,
+        edgeCount: result.edgeCount,
+        renderMode,
+        layers: result.metadata.layers,
+        pods: result.metadata.pods,
+        stats: result.metadata.stats,
+        networkType: result.metadata.layerDetection,
+        isLazy
+      }
+    }) + '\n');
+
+    // (b) 发送 Core 层节点 (通常数量少，一次发送)
+    if (result.nodesByLayer.core && result.nodesByLayer.core.length > 0) {
+      res.write(JSON.stringify({
+        type: 'chunk',
+        layer: 'core',
+        nodes: result.nodesByLayer.core
+      }) + '\n');
+    }
+
+    // (c) 发送 Spine 层节点
+    if (result.nodesByLayer.spine && result.nodesByLayer.spine.length > 0) {
+      res.write(JSON.stringify({
+        type: 'chunk',
+        layer: 'spine',
+        nodes: result.nodesByLayer.spine
+      }) + '\n');
+    }
+
+    // (d) 发送 Leaf 层节点 (Lazy 模式下跳过)
+    if (!isLazy && result.nodesByLayer.leaf && result.nodesByLayer.leaf.length > 0) {
+      const leafNodes = result.nodesByLayer.leaf;
+      const chunkSize = 500;
+      for (let i = 0; i < leafNodes.length; i += chunkSize) {
+        const chunk = leafNodes.slice(i, i + chunkSize);
+        res.write(JSON.stringify({
+          type: 'chunk',
+          layer: 'leaf',
+          nodes: chunk
+        }) + '\n');
+        // 极短延迟让IO有机会flush (可选)
+        await new Promise(r => setImmediate(r));
+      }
+    }
+
+    // (e) 发送连接 (分块发送)
+    // 注意：Connections 数组可能很大
+    if (result.connections && result.connections.length > 0) {
+      let edges = result.connections;
+
+      // Lazy 模式下，只发送非 Leaf 相关的边（即 Core-Spine）
+      // 假设我们只过滤掉两端都是 Leaf 或者 连接到 Leaf 的边？
+      // 通常 Core-Spine 是必要的。Spine-Leaf 在加载 Leaf 时加载。
+      if (isLazy) {
+        const leafIds = new Set((result.nodesByLayer.leaf || []).map(n => n.id));
+        // 保留: 源和目标都 NOT IN leafIds
+        edges = edges.filter(e => !leafIds.has(e.source) && !leafIds.has(e.target));
+      }
+
+      const chunkSize = 2000;
+      for (let i = 0; i < edges.length; i += chunkSize) {
+        const chunk = edges.slice(i, i + chunkSize);
+        res.write(JSON.stringify({
+          type: 'chunk',
+          dataType: 'edges',
+          items: chunk
+        }) + '\n');
+        await new Promise(r => setImmediate(r));
+      }
+    }
+
+    // 结束响应
+    res.end();
+
+  } catch (error) {
+    console.error('[TopologyV2] Error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: error.message });
+    } else {
+      // 如果流已经开始，发送一条错误消息
+      res.write(JSON.stringify({ type: 'error', error: error.message }) + '\n');
+      res.end();
+    }
+  }
+});
+
+// ============== 获取 POD 详情 API (Lazy Loading) ==============
+app.post('/api/topology-pod-details', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok: false, error: 'file required' });
+    const podName = req.body.podName;
+    if (!podName) return res.status(400).json({ ok: false, error: 'podName required' });
+
+    const networkType = req.body.networkType || 'ib';
+    const configStr = req.body.config;
+    const config = configStr ? JSON.parse(configStr) : {};
+    const fileBuffer = req.file.buffer;
+
+    // 解析 (复用逻辑)
+    let portMap;
+    if (networkType === 'ib') {
+      portMap = parseCSVPortMap(fileBuffer.toString('utf-8'));
+    } else if (networkType === 'roce') {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      portMap = parseExcelPortMap(XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]));
+    } else {
+      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
+    }
+
+    const result = topology.buildTopologyStructure(portMap, {
+      layerDetection: config.layerDetection || 'auto',
+      manualLayers: config.manualLayers || null,
+      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+      networkType: networkType
+    });
+
+    if (!result || !result.success) throw new Error('Build failed');
+
+    // 过滤 POD 数据 (Leaf Nodes)
+    const leafNodes = (result.nodesByLayer.leaf || []).filter(n => n.pod === podName);
+    const leafIds = new Set(leafNodes.map(n => n.id));
+
+    // 过滤边 (连接到该 POD Leaf 的边)
+    const edges = result.connections.filter(e => leafIds.has(e.source) || leafIds.has(e.target));
+
+    res.json({
+      ok: true,
+      pod: podName,
+      nodes: leafNodes,
+      edges: edges
+    });
+
+  } catch (error) {
+    console.error('[PodDetails] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============== 拓扑搜索 API (Deep Search) ==============
+app.post('/api/topology-search', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok: false, error: 'file required' });
+    const query = req.body.query;
+    if (!query) return res.json({ ok: true, matches: [] });
+
+    // 复用解析逻辑 (同样需要优化复用代码)
+    const networkType = req.body.networkType || 'ib';
+    const configStr = req.body.config;
+    const config = configStr ? JSON.parse(configStr) : {};
+    const fileBuffer = req.file.buffer;
+
+    let portMap;
+    if (networkType === 'ib') {
+      portMap = parseCSVPortMap(fileBuffer.toString('utf-8'));
+    } else if (networkType === 'roce') {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      portMap = parseExcelPortMap(XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]));
+    }
+
+    // 构建拓扑 (Server-side search requires full build to be accurate with layers/pods)
+    const result = topology.buildTopologyStructure(portMap, {
+      layerDetection: config.layerDetection || 'auto',
+      manualLayers: config.manualLayers || null,
+      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+      networkType: networkType
+    });
+
+    if (!result || !result.success) throw new Error('Build failed');
+
+    // 搜索逻辑
+    const matches = [];
+    const searchLower = query.toLowerCase();
+
+    // 遍历所有层级
+    Object.entries(result.nodesByLayer).forEach(([layer, nodes]) => {
+      if (!Array.isArray(nodes)) return;
+      nodes.forEach(node => {
+        if (node.id.toLowerCase().includes(searchLower) || (node.label && node.label.toLowerCase().includes(searchLower))) {
+          matches.push({
+            id: node.id,
+            label: node.label,
+            layer: layer,
+            pod: node.pod
+          });
+        }
+      });
+    });
+
+    // 限制返回数量
+    const limitedMatches = matches.slice(0, 20);
+
+    res.json({
+      ok: true,
+      matches: limitedMatches,
+      total: matches.length
+    });
+
+  } catch (error) {
+    console.error('[TopologySearch] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ============== 拓扑解析辅助函数 ==============
 
 /**
