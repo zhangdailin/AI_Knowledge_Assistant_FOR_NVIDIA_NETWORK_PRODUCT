@@ -1186,6 +1186,32 @@ app.post('/api/sn-to-address', async (req, res) => {
 });
 
 // ========== SN to Topology 查询 API ==========
+// 通过知识库中的连线表数据，还原 IB 网络 (GPU → IBLF → IBSP → IBCR) 和 RoCE 网络 (GPU → ASW → SSW → CSW 等) 的完整链路
+
+// 识别设备类型
+function getDeviceType(deviceName) {
+  if (!deviceName) return null;
+  const upper = deviceName.toUpperCase();
+  // IB 网络设备
+  if (upper.includes('IBCR')) return 'ibcr';
+  if (upper.includes('IBSP')) return 'ibsp';
+  if (upper.includes('IBLF')) return 'iblf';
+  // RoCE 网络设备
+  if (upper.includes('SOOB')) return 'soob';
+  if (upper.includes('OOB') && !upper.includes('SOOB')) return 'oob';
+  if (upper.includes('LSW')) return 'lsw';
+  if (upper.includes('CSW')) return 'csw';
+  if (upper.includes('SSW')) return 'ssw';
+  if (upper.includes('ASW')) return 'asw';
+  // GPU 服务器
+  if (upper.includes('GPU')) return 'gpu';
+  return null;
+}
+
+// 检查是否是网络设备
+function isNetworkDevice(deviceName) {
+  return getDeviceType(deviceName) !== null;
+}
 
 app.post('/api/sn-to-topology', async (req, res) => {
   try {
@@ -1194,143 +1220,208 @@ app.post('/api/sn-to-topology', async (req, res) => {
 
     const snTrimmed = sn.trim().toUpperCase();
     let hostname = '';
-    const connections = [];
-    const devicesByLayer = {
-      server: new Set(), iblf: new Set(), spine: new Set(), core: new Set(),
-      edge: new Set(), leaf: new Set(), oobSpine: new Set(), oobLeaf: new Set()
-    };
+    let rack = '';
 
-    // 预定义正则表达式以重用
-    const patterns = {
-      snHost: new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i'),
-      serverIblf: /(MDC-[A-Z0-9-]+-GPU-\d+),(\d+)[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(MDC-[A-Z0-9-]+-IBLF-\d+),(\d+\/\d+)/gi,
-      iblfSpine: /(MDC-[A-Z0-9-]+-IBLF-\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi,
-      spineCore: /POD(\d+)-SPINE(\d+),([^,]+),(CORE\d+),([^,]+)/gi,
-      coreSpine: /(CORE\d+),([^,]+),(POD\d+-SPINE\d+),([^,]+)/gi,
-      coreEdge: /(CORE\d+),([^,]+),(EDGE\d+|HSS-LEAF\d+|STL-LEAF\d+),([^,]+)/gi,
-      oob: /(OOB-SPINE\d+),([^,]+),(OOB-LEAF\d+|EDGE\d+),([^,]+)/gi
-    };
+    // IB 网络设备
+    const ibDevices = { iblf: new Set(), ibsp: new Set(), ibcr: new Set() };
+    // RoCE 网络设备
+    const roceDevices = { asw: new Set(), ssw: new Set(), csw: new Set(), lsw: new Set(), soob: new Set(), oob: new Set() };
 
-    // 单次扫描提取所有拓扑信息
+    const relevantConnections = [];
+    const connSet = new Set();
+
+    // 构建全局连接映射表
+    const portMap = new Map(); // "device|port" -> { peer, peerPort }
+
+    console.log(`[SN-Topology] 开始查询 SN: ${snTrimmed}`);
+
+    // ============ 第一步：扫描知识库，构建连接映射 + 查找 SN 对应的主机名 ============
     await storage.scanChunks(chunk => {
       const content = chunk.content;
 
-      // 1. 查找主机名 (仅在尚未找到时)
+      // 1. 查找 SN 对应的主机名
       if (!hostname && content.includes(snTrimmed)) {
-        const m = content.match(patterns.snHost);
-        if (m) {
-          hostname = m[1];
-          devicesByLayer.server.add(hostname);
+        const patterns = [
+          new RegExp(`${snTrimmed}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i'),
+          new RegExp(`(MDC-[A-Z0-9-]+-GPU-\\d+)[^\\r\\n]*?${snTrimmed}`, 'i')
+        ];
+        for (const p of patterns) {
+          const m = content.match(p);
+          if (m) {
+            hostname = m[1];
+            const rackMatch = hostname.match(/([A-Z]\d{2})/i);
+            if (rackMatch) rack = rackMatch[1];
+            break;
+          }
         }
       }
 
-      // 2. 提取连接关系 (即使没找到 hostname 也先收集，用于后续回溯)
-      // Server-IBLF
-      let match;
-      while ((match = patterns.serverIblf.exec(content)) !== null) {
-        connections.push({ layer: 'server-iblf', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
-      }
-      // IBLF-SPINE
-      while ((match = patterns.iblfSpine.exec(content)) !== null) {
-        connections.push({ layer: 'iblf-spine', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
-      }
-      // SPINE-CORE
-      while ((match = patterns.spineCore.exec(content)) !== null) {
-        connections.push({ layer: 'spine-core', sourceDevice: `POD${match[1]}-SPINE${match[2]}`, sourcePort: match[3], destDevice: match[4], destPort: match[5] });
-      }
-      while ((match = patterns.coreSpine.exec(content)) !== null) {
-        connections.push({ layer: 'spine-core', sourceDevice: match[3], sourcePort: match[4], destDevice: match[1], destPort: match[2] });
-      }
-      // CORE-EDGE
-      while ((match = patterns.coreEdge.exec(content)) !== null) {
-        connections.push({ layer: 'core-edge', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
-      }
-      // OOB
-      while ((match = patterns.oob.exec(content)) !== null) {
-        connections.push({ layer: 'oob', sourceDevice: match[1], sourcePort: match[2], destDevice: match[3], destPort: match[4] });
+      // 2. 解析连接数据 - 支持多种 CSV 格式
+      const lines = content.split('\n');
+      let headerIdx = { system: -1, port: -1, peer: -1, peerPort: -1 };
+
+      for (const line of lines) {
+        const cols = line.split(',').map(c => c.trim());
+
+        // 检测表头行
+        const lowerLine = line.toLowerCase();
+        if (lowerLine.includes('system') || lowerLine.includes('hostname')) {
+          cols.forEach((col, idx) => {
+            const lc = col.toLowerCase();
+            if (lc === 'system' || lc === 'hostname') headerIdx.system = idx;
+            else if (lc === 'port' || lc === 'ifname') headerIdx.port = idx;
+            else if (lc.includes('peer') && lc.includes('node')) headerIdx.peer = idx;
+            else if (lc.includes('peer') && lc.includes('port')) headerIdx.peerPort = idx;
+          });
+          continue;
+        }
+
+        // 如果有表头，按表头解析
+        if (headerIdx.system >= 0 && headerIdx.peer >= 0) {
+          const sys = cols[headerIdx.system];
+          const port = headerIdx.port >= 0 ? cols[headerIdx.port] : '';
+          const peer = cols[headerIdx.peer];
+          const peerPort = headerIdx.peerPort >= 0 ? cols[headerIdx.peerPort] : '';
+
+          if (sys && peer && isNetworkDevice(sys) && isNetworkDevice(peer)) {
+            const key = `${sys}|${port}`;
+            if (!portMap.has(key)) portMap.set(key, { peer, peerPort });
+            const reverseKey = `${peer}|${peerPort}`;
+            if (!portMap.has(reverseKey)) portMap.set(reverseKey, { peer: sys, peerPort: port });
+          }
+        } else if (cols.length >= 4) {
+          // 无表头时，尝试自动识别设备名列
+          for (let i = 0; i < cols.length - 1; i++) {
+            const sys = cols[i];
+            if (!isNetworkDevice(sys)) continue;
+            // 找下一个设备名列
+            for (let j = i + 1; j < cols.length; j++) {
+              const peer = cols[j];
+              if (!isNetworkDevice(peer)) continue;
+              // sys 和 peer 之间可能有端口
+              const port = (j > i + 1) ? cols[i + 1] : '';
+              const peerPort = (j + 1 < cols.length) ? cols[j + 1] : '';
+              const key = `${sys}|${port}`;
+              if (!portMap.has(key)) portMap.set(key, { peer, peerPort });
+              const reverseKey = `${peer}|${peerPort}`;
+              if (!portMap.has(reverseKey)) portMap.set(reverseKey, { peer: sys, peerPort: port });
+              break;
+            }
+            break;
+          }
+        }
       }
       return true;
     });
 
-    if (!hostname) return res.status(404).json({ ok: false, error: '未找到该 SN 对应的服务器' });
+    console.log(`[SN-Topology] 构建连接映射完成: ${portMap.size} 条记录`);
 
-    // 拓扑剪枝：只保留与目标主机相关的设备
+    if (!hostname) {
+      return res.status(404).json({ ok: false, error: '未找到该 SN 对应的服务器' });
+    }
+
     const podMatch = hostname.match(/POD(\d+)/i);
-    const podNum = podMatch ? podMatch[1].padStart(2, '0') : '01';
-    const hostnameUpper = hostname.toUpperCase();
+    const podNum = podMatch ? podMatch[1] : '1';
+    console.log(`[SN-Topology] SN ${snTrimmed} -> Server ${hostname}`);
 
-    // 构建拓扑链：从服务器开始，逐层向上追踪
-    const relevantConnections = [];
-    const connSet = new Set();
-    const visitedDevices = new Set([hostnameUpper]);
-    const devicesToProcess = [hostnameUpper];
+    // ============ 辅助函数：添加连接 ============
+    const addConnection = (layer, src, srcPort, dst, dstPort) => {
+      const connKey = [src, srcPort, dst, dstPort].sort().join('|');
+      if (connSet.has(connKey)) return;
+      connSet.add(connKey);
+      relevantConnections.push({ layer, sourceDevice: src, sourcePort: srcPort, destDevice: dst, destPort: dstPort });
+    };
 
-    // BFS 遍历构建拓扑
-    while (devicesToProcess.length > 0) {
-      const currentDevice = devicesToProcess.shift();
-
-      for (const conn of connections) {
-        const srcUpper = conn.sourceDevice.toUpperCase();
-        const dstUpper = conn.destDevice.toUpperCase();
-
-        // 检查连接是否与当前设备相关
-        if (srcUpper === currentDevice || dstUpper === currentDevice) {
-          const key = `${srcUpper}-${conn.sourcePort}-${dstUpper}-${conn.destPort}`;
-          if (!connSet.has(key)) {
-            connSet.add(key);
-            relevantConnections.push(conn);
-
-            // 添加新发现的设备到处理队列
-            const otherDevice = srcUpper === currentDevice ? dstUpper : srcUpper;
-            if (!visitedDevices.has(otherDevice)) {
-              visitedDevices.add(otherDevice);
-              devicesToProcess.push(otherDevice);
-
-              // 分层收集设备
-              if (otherDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.sourceDevice.includes('IBLF') ? conn.sourceDevice : conn.destDevice);
-              if (otherDevice.includes('SPINE') && !otherDevice.includes('OOB')) devicesByLayer.spine.add(conn.sourceDevice.includes('SPINE') ? conn.sourceDevice : conn.destDevice);
-              if (otherDevice.includes('CORE')) devicesByLayer.core.add(conn.sourceDevice.includes('CORE') ? conn.sourceDevice : conn.destDevice);
-              if (otherDevice.includes('EDGE') && !otherDevice.includes('OOB')) devicesByLayer.edge.add(conn.sourceDevice.includes('EDGE') ? conn.sourceDevice : conn.destDevice);
-              if ((otherDevice.includes('HSS-LEAF') || otherDevice.includes('STL-LEAF')) && !otherDevice.includes('OOB')) {
-                devicesByLayer.leaf.add(conn.sourceDevice.includes('LEAF') ? conn.sourceDevice : conn.destDevice);
-              }
-              if (otherDevice.includes('OOB-SPINE')) devicesByLayer.oobSpine.add(conn.sourceDevice.includes('OOB-SPINE') ? conn.sourceDevice : conn.destDevice);
-              if (otherDevice.includes('OOB-LEAF')) devicesByLayer.oobLeaf.add(conn.sourceDevice.includes('OOB-LEAF') ? conn.sourceDevice : conn.destDevice);
+    // ============ 辅助函数：从 portMap 查找设备的所有连接 ============
+    const findConnections = (deviceSet, targetTypes, layer) => {
+      const found = new Set();
+      const deviceList = Array.from(deviceSet);
+      for (const [key, value] of portMap) {
+        const [sys, port] = key.split('|');
+        const { peer, peerPort } = value;
+        for (const device of deviceList) {
+          if (sys.toUpperCase() === device.toUpperCase()) {
+            const peerType = getDeviceType(peer);
+            if (targetTypes.includes(peerType)) {
+              addConnection(layer, sys, port, peer, peerPort);
+              found.add(peer);
+            }
+          }
+          if (peer.toUpperCase() === device.toUpperCase()) {
+            const sysType = getDeviceType(sys);
+            if (targetTypes.includes(sysType)) {
+              addConnection(layer, sys, port, peer, peerPort);
+              found.add(sys);
             }
           }
         }
       }
-    }
+      return found;
+    };
 
-    // 如果没有找到连接，尝试更宽松的匹配
-    if (relevantConnections.length === 0) {
-      // 查找所有以该服务器为源的连接
-      for (const conn of connections) {
-        if (conn.sourceDevice.toUpperCase().includes(hostnameUpper.split('-').slice(-2).join('-'))) {
-          const key = `${conn.sourceDevice}-${conn.sourcePort}-${conn.destDevice}-${conn.destPort}`;
-          if (!connSet.has(key)) {
-            connSet.add(key);
-            relevantConnections.push(conn);
-            if (conn.destDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.destDevice);
-          }
-        }
-      }
-    }
+    // ============ IB 网络追溯：GPU -> IBLF -> IBSP -> IBCR ============
+    // Step 1: GPU -> IBLF
+    const gpuSet = new Set([hostname]);
+    const iblfFound = findConnections(gpuSet, ['iblf'], 'gpu-iblf');
+    iblfFound.forEach(d => ibDevices.iblf.add(d));
+    console.log(`[SN-Topology] IB: GPU -> ${ibDevices.iblf.size} IBLF`);
 
-    console.log(`[SN-Topology] Server: ${hostname}, Found ${relevantConnections.length} connections out of ${connections.length} total`);
+    // Step 2: IBLF -> IBSP
+    const ibspFound = findConnections(ibDevices.iblf, ['ibsp'], 'iblf-ibsp');
+    ibspFound.forEach(d => ibDevices.ibsp.add(d));
+    console.log(`[SN-Topology] IB: IBLF -> ${ibDevices.ibsp.size} IBSP`);
+
+    // Step 3: IBSP -> IBCR
+    const ibcrFound = findConnections(ibDevices.ibsp, ['ibcr'], 'ibsp-ibcr');
+    ibcrFound.forEach(d => ibDevices.ibcr.add(d));
+    console.log(`[SN-Topology] IB: IBSP -> ${ibDevices.ibcr.size} IBCR`);
+
+    // ============ RoCE 网络追溯：GPU -> ASW -> SSW -> CSW -> LSW -> SOOB -> OOB ============
+    // Step 1: GPU -> ASW
+    const aswFound = findConnections(gpuSet, ['asw'], 'gpu-asw');
+    aswFound.forEach(d => roceDevices.asw.add(d));
+    console.log(`[SN-Topology] RoCE: GPU -> ${roceDevices.asw.size} ASW`);
+
+    // Step 2: ASW -> SSW
+    const sswFound = findConnections(roceDevices.asw, ['ssw'], 'asw-ssw');
+    sswFound.forEach(d => roceDevices.ssw.add(d));
+    console.log(`[SN-Topology] RoCE: ASW -> ${roceDevices.ssw.size} SSW`);
+
+    // Step 3: SSW -> CSW
+    const cswFound = findConnections(roceDevices.ssw, ['csw'], 'ssw-csw');
+    cswFound.forEach(d => roceDevices.csw.add(d));
+    console.log(`[SN-Topology] RoCE: SSW -> ${roceDevices.csw.size} CSW`);
+
+    // Step 4: CSW -> LSW (可选)
+    const lswFound = findConnections(roceDevices.csw, ['lsw'], 'csw-lsw');
+    lswFound.forEach(d => roceDevices.lsw.add(d));
+
+    // Step 5: -> SOOB (可选)
+    const soobFound = findConnections(new Set([...roceDevices.lsw, ...roceDevices.csw]), ['soob'], 'to-soob');
+    soobFound.forEach(d => roceDevices.soob.add(d));
+
+    // Step 6: -> OOB (可选)
+    const oobFound = findConnections(new Set([...roceDevices.soob, ...roceDevices.lsw, ...gpuSet]), ['oob'], 'to-oob');
+    oobFound.forEach(d => roceDevices.oob.add(d));
+
+    console.log(`[SN-Topology] Total: ${relevantConnections.length} connections`);
 
     res.json({
       ok: true,
-      server: { sn: snTrimmed, hostname, pod: `POD${podNum}` },
-      connections: relevantConnections.slice(0, 100),
+      server: { sn: snTrimmed, hostname, rack, pod: `POD${podNum}` },
+      connections: relevantConnections,
       devices: {
-        iblf: Array.from(devicesByLayer.iblf),
-        spine: Array.from(devicesByLayer.spine),
-        core: Array.from(devicesByLayer.core),
-        edge: Array.from(devicesByLayer.edge),
-        leaf: Array.from(devicesByLayer.leaf),
-        oobSpine: Array.from(devicesByLayer.oobSpine),
-        oobLeaf: Array.from(devicesByLayer.oobLeaf).slice(0, 10)
+        // IB 网络
+        iblf: Array.from(ibDevices.iblf),
+        spine: Array.from(ibDevices.ibsp),
+        core: Array.from(ibDevices.ibcr),
+        // RoCE 网络
+        asw: Array.from(roceDevices.asw),
+        ssw: Array.from(roceDevices.ssw),
+        csw: Array.from(roceDevices.csw),
+        lsw: Array.from(roceDevices.lsw),
+        soob: Array.from(roceDevices.soob),
+        oob: Array.from(roceDevices.oob)
       },
       totalConnections: relevantConnections.length
     });
@@ -1511,6 +1602,482 @@ app.get('/api/models/gemini', async (req, res) => {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
+
+// ============== 拓扑还原 API ==============
+app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: '请上传文件' });
+    }
+
+    const networkType = req.body.networkType || 'ib';
+    const fileBuffer = req.file.buffer;
+    const fileName = req.file.originalname.toLowerCase();
+
+    console.log(`[TopologyRestore] 开始解析 ${networkType} 网络拓扑，文件: ${req.file.originalname}`);
+
+    if (networkType === 'ib') {
+      // IB网络：解析UFM CSV格式
+      const csvContent = fileBuffer.toString('utf-8');
+      const result = parseIBTopology(csvContent);
+      console.log(`[TopologyRestore] IB网络解析完成: ${result.nodeCount} 节点, ${result.edgeCount} 边`);
+      return res.json({ ok: true, ...result });
+    } else if (networkType === 'roce') {
+      // RoCE网络：解析NetQ Excel格式
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+      const result = parseRoCETopology(data);
+      console.log(`[TopologyRestore] RoCE网络解析完成: ${result.nodeCount} 节点, ${result.edgeCount} 边`);
+      return res.json({ ok: true, ...result });
+    } else {
+      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
+    }
+  } catch (error) {
+    console.error('[TopologyRestore] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// IB网络设备层级识别
+function getIBDeviceLayer(deviceName) {
+  if (deviceName.includes('IBCR')) return 'core';
+  if (deviceName.includes('IBSP')) return 'spine';
+  if (deviceName.includes('IBLF')) return 'leaf';
+  return 'unknown';
+}
+
+// 解析IB网络拓扑 (UFM CSV格式) - 严格参考 generate_topology.py
+function parseIBTopology(csvContent) {
+  const lines = csvContent.split('\n').filter(line => line.trim());
+  if (lines.length === 0) throw new Error('CSV文件为空');
+
+  const headerLine = lines[0].replace(/^\ufeff/, '');
+  const headers = headerLine.split(',').map(h => h.trim());
+
+  const systemIdx = headers.findIndex(h => h.toLowerCase() === 'system');
+  const portIdx = headers.findIndex(h => h.toLowerCase() === 'port');
+  const peerNodeIdx = headers.findIndex(h => h.toLowerCase().includes('peer') && h.toLowerCase().includes('node'));
+  const peerPortIdx = headers.findIndex(h => h.toLowerCase().includes('peer') && h.toLowerCase().includes('port'));
+
+  if (systemIdx === -1 || peerNodeIdx === -1) {
+    throw new Error('CSV格式错误：需要 System, Peer Node 列');
+  }
+
+  // 1. 构建完整的端口映射 port_map: (System, Port) -> (Peer Node, Peer Port)
+  const portMap = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.trim());
+    const sys = cols[systemIdx];
+    const port = portIdx >= 0 ? cols[portIdx] : '';
+    const peer = cols[peerNodeIdx];
+    const peerPort = peerPortIdx >= 0 ? cols[peerPortIdx] : '';
+    if (!sys || !peer || sys === 'nan' || peer === 'nan') continue;
+    portMap.set(`${sys}|${port}`, { peer, peerPort });
+  }
+
+  // 2. 追溯三设备链路，收集节点（参考 Python: three_device_chains）
+  const nodes = new Set();
+  const uniqueEdges = new Set();
+  const edges = [];
+
+  for (const [key, value] of portMap) {
+    const [sys, port] = key.split('|');
+    const { peer, peerPort } = value;
+    const keyB = `${peer}|${peerPort}`;
+
+    if (portMap.has(keyB)) {
+      const { peer: peer2 } = portMap.get(keyB);
+      // 检查是否包含 IB 设备 (IBCR/IBSP/IBLF)
+      if (['IBCR', 'IBSP', 'IBLF'].some(r => sys.includes(r) || peer.includes(r) || peer2.includes(r))) {
+        nodes.add(sys);
+        nodes.add(peer);
+        nodes.add(peer2);
+      }
+    }
+  }
+
+  // 3. 补充所有 leaf-spine 直连边（带端口信息，去重）
+  for (const [key, value] of portMap) {
+    const [sys, port] = key.split('|');
+    const { peer, peerPort } = value;
+    if ((sys.includes('IBLF') && peer.includes('IBSP')) || (sys.includes('IBSP') && peer.includes('IBLF'))) {
+      // 使用带端口的 edge_key 去重（参考 Python）
+      const edgeKey = JSON.stringify([[sys, port], [peer, peerPort]].sort());
+      if (!uniqueEdges.has(edgeKey)) {
+        uniqueEdges.add(edgeKey);
+        edges.push({ source: sys, target: peer, srcPort: port, dstPort: peerPort });
+        nodes.add(sys);
+        nodes.add(peer);
+      }
+    }
+  }
+
+  // 4. 补充 spine-core 边（带端口信息）
+  for (const [key, value] of portMap) {
+    const [sys, port] = key.split('|');
+    const { peer, peerPort } = value;
+    if ((sys.includes('IBSP') && peer.includes('IBCR')) || (sys.includes('IBCR') && peer.includes('IBSP'))) {
+      nodes.add(sys);
+      nodes.add(peer);
+      const edgeKey = JSON.stringify([[sys, port], [peer, peerPort]].sort());
+      if (!uniqueEdges.has(edgeKey)) {
+        uniqueEdges.add(edgeKey);
+        edges.push({ source: sys, target: peer, srcPort: port, dstPort: peerPort });
+      }
+    }
+  }
+
+  // 5. 统计三层设备
+  const coreDevices = new Set();
+  const spineDevices = new Set();
+  const leafDevices = new Set();
+  for (const dev of nodes) {
+    const layer = getIBDeviceLayer(dev);
+    if (layer === 'core') coreDevices.add(dev);
+    else if (layer === 'spine') spineDevices.add(dev);
+    else if (layer === 'leaf') leafDevices.add(dev);
+  }
+
+  const coreList = Array.from(coreDevices).sort();
+  const spineList = Array.from(spineDevices).sort();
+  const leafList = Array.from(leafDevices).sort();
+
+  // 6. 统计所有 POD
+  const podSet = new Set();
+  for (const dev of [...spineList, ...leafList]) {
+    const m = dev.match(/POD(\d+)/i);
+    if (m) podSet.add(`POD${m[1]}`);
+  }
+  const pods = Array.from(podSet).sort();
+
+  // 7. 布局参数（参考 Python）
+  const layerGap = 200;
+  const nodeGap = 180;
+  const spineGap = 160;
+  const leafGap = 150;
+  const podSpacing = 800;
+
+  // 8. 构建 nodesByLayer
+  const nodesByLayer = {};
+
+  // 计算所有 spine/leaf 的水平范围，让 Core 居中
+  let childXs = [];
+  if (pods.length > 0) {
+    pods.forEach((pod, podIdx) => {
+      const podOffsetX = (podIdx - (pods.length - 1) / 2) * podSpacing + 500;
+      const podSpines = spineList.filter(s => s.includes(pod));
+      const podLeafs = leafList.filter(l => l.includes(pod));
+      podSpines.forEach((_, idx) => {
+        childXs.push(podOffsetX + (idx - (podSpines.length - 1) / 2) * spineGap);
+      });
+      podLeafs.forEach((_, idx) => {
+        childXs.push(podOffsetX + (idx - (podLeafs.length - 1) / 2) * leafGap);
+      });
+    });
+  }
+  const midX = childXs.length > 0 ? (Math.min(...childXs) + Math.max(...childXs)) / 2 : 500;
+
+  // Core 层（居中于 spine/leaf 上方）
+  if (coreList.length > 0) {
+    nodesByLayer.core = coreList.map((dev, idx) => ({
+      id: dev,
+      label: dev,
+      x: midX + (idx - (coreList.length - 1) / 2) * nodeGap,
+      y: 0
+    }));
+  }
+
+  // Spine 和 Leaf 按 POD 分组
+  if (pods.length > 0) {
+    nodesByLayer.spine = [];
+    nodesByLayer.leaf = [];
+
+    pods.forEach((pod, podIdx) => {
+      const podOffsetX = (podIdx - (pods.length - 1) / 2) * podSpacing + 500;
+      const podSpines = spineList.filter(s => s.includes(pod));
+      const podLeafs = leafList.filter(l => l.includes(pod));
+
+      podSpines.forEach((spine, idx) => {
+        nodesByLayer.spine.push({
+          id: spine,
+          label: spine,
+          pod,
+          x: podOffsetX + (idx - (podSpines.length - 1) / 2) * spineGap,
+          y: layerGap
+        });
+      });
+
+      podLeafs.forEach((leaf, idx) => {
+        nodesByLayer.leaf.push({
+          id: leaf,
+          label: leaf,
+          pod,
+          x: podOffsetX + (idx - (podLeafs.length - 1) / 2) * leafGap,
+          y: layerGap * 2
+        });
+      });
+    });
+  } else {
+    // 无 POD 信息时的布局
+    if (spineList.length > 0) {
+      nodesByLayer.spine = spineList.map((dev, idx) => ({
+        id: dev, label: dev,
+        x: 100 + idx * spineGap, y: layerGap
+      }));
+    }
+    if (leafList.length > 0) {
+      nodesByLayer.leaf = leafList.map((dev, idx) => ({
+        id: dev, label: dev,
+        x: 100 + idx * leafGap, y: layerGap * 2
+      }));
+    }
+  }
+
+  const layers = Object.keys(nodesByLayer).filter(k => nodesByLayer[k]?.length > 0);
+  const layerY = { core: 0, spine: layerGap, leaf: layerGap * 2 };
+
+  console.log(`[IB Topology] Core: ${coreList.length}, Spine: ${spineList.length}, Leaf: ${leafList.length}, Edges: ${edges.length}, PODs: ${pods.join(',')}`);
+
+  return {
+    networkType: 'ib',
+    nodeCount: coreList.length + spineList.length + leafList.length,
+    edgeCount: edges.length,
+    nodesByLayer,
+    connections: edges,
+    layers,
+    pods,
+    layerY
+  };
+}
+
+// RoCE网络设备类型识别 - 严格参考 network_connection_analyzer.py
+function getRoCEDeviceType(deviceName) {
+  if (!deviceName) return 'other';
+  const upper = deviceName.toUpperCase();
+  // 顺序很重要：SOOB 必须在 OOB 之前检查
+  if (upper.includes('SOOB')) return 'soob';
+  if (upper.includes('OOB')) return 'oob';
+  if (upper.includes('LSW')) return 'lsw';
+  if (upper.includes('CSW')) return 'csw';
+  if (upper.includes('SSW')) return 'ssw';
+  if (upper.includes('ASW')) return 'asw';
+  return 'other';
+}
+
+// 解析RoCE网络拓扑 (NetQ Excel格式) - 严格参考 network_connection_analyzer.py
+function parseRoCETopology(data) {
+  if (!data || data.length === 0) throw new Error('Excel数据为空');
+
+  const firstRow = data[0];
+  const keys = Object.keys(firstRow);
+
+  // 自动识别列名（参考 Python: parse_connections）
+  let hostnameCol = keys.find(k => k.toLowerCase().includes('hostname')) || 'Hostname';
+  let ifnameCol = keys.find(k => k.toLowerCase().includes('ifname')) || 'Ifname';
+  let peerNodeCol = keys.find(k => k.toLowerCase().includes('peer') && k.toLowerCase().includes('node')) || 'Peer Node';
+  let peerPortCol = keys.find(k => k.toLowerCase().includes('peer') && k.toLowerCase().includes('port')) || 'Peer Port';
+
+  console.log(`[RoCE Topology] 识别列名: hostname=${hostnameCol}, ifname=${ifnameCol}, peerNode=${peerNodeCol}, peerPort=${peerPortCol}`);
+
+  // 1. 构建连接图和端口映射（参考 Python: parse_connections）
+  const connectionGraph = new Map();  // device -> Set of connected devices
+  const deviceConnections = new Map(); // device -> list of connection IDs
+  const connections = new Map();       // connId -> connection info
+  const allDevices = new Set();
+
+  for (const row of data) {
+    const hostname = String(row[hostnameCol] || '').trim();
+    const ifname = String(row[ifnameCol] || '').trim();
+    const peerNode = String(row[peerNodeCol] || '').trim();
+    const peerPort = String(row[peerPortCol] || '').trim();
+
+    // 跳过空值或无效数据
+    if (!hostname || !peerNode || hostname === 'nan' || peerNode === 'nan') continue;
+    // 排除GPU设备（参考 Python: export_html_topology 中的过滤）
+    if (hostname.toUpperCase().includes('GPU') || peerNode.toUpperCase().includes('GPU')) continue;
+
+    allDevices.add(hostname);
+    allDevices.add(peerNode);
+
+    // 连接图（双向）
+    if (!connectionGraph.has(hostname)) connectionGraph.set(hostname, new Set());
+    if (!connectionGraph.has(peerNode)) connectionGraph.set(peerNode, new Set());
+    connectionGraph.get(hostname).add(peerNode);
+    connectionGraph.get(peerNode).add(hostname);
+
+    // 设备连接映射
+    const connId = `${hostname}_${ifname}_to_${peerNode}_${peerPort}`;
+    connections.set(connId, {
+      localDevice: hostname,
+      localInterface: ifname,
+      peerDevice: peerNode,
+      peerInterface: peerPort
+    });
+
+    if (!deviceConnections.has(hostname)) deviceConnections.set(hostname, []);
+    if (!deviceConnections.has(peerNode)) deviceConnections.set(peerNode, []);
+    deviceConnections.get(hostname).push(connId);
+    deviceConnections.get(peerNode).push(connId);
+  }
+
+  console.log(`[RoCE Topology] 解析完成: ${allDevices.size} 设备, ${connections.size} 连接`);
+
+  // 2. 发现网络拓扑路径 - 2层深度（参考 Python: discover_network_topology）
+  const discoveredPaths = [];
+  const visited = new Set();
+
+  for (const startDevice of allDevices) {
+    visited.add(startDevice);
+    // 第一层：查找直接连接
+    for (const connId of deviceConnections.get(startDevice) || []) {
+      const conn = connections.get(connId);
+      const peerDevice = conn.localDevice === startDevice ? conn.peerDevice : conn.localDevice;
+      if (peerDevice === startDevice) continue;
+
+      discoveredPaths.push([startDevice, peerDevice]);
+
+      // 第二层：查找对端设备的直接连接
+      for (const subConnId of deviceConnections.get(peerDevice) || []) {
+        const subConn = connections.get(subConnId);
+        const subPeer = subConn.localDevice === peerDevice ? subConn.peerDevice : subConn.localDevice;
+        if (subPeer === peerDevice || subPeer === startDevice) continue;
+        discoveredPaths.push([startDevice, peerDevice, subPeer]);
+      }
+    }
+  }
+
+  // 去重路径
+  const uniquePaths = [];
+  const seenPaths = new Set();
+  for (const path of discoveredPaths) {
+    const key = path.join('|');
+    if (!seenPaths.has(key)) {
+      seenPaths.add(key);
+      uniquePaths.push(path);
+    }
+  }
+
+  console.log(`[RoCE Topology] 发现 ${uniquePaths.length} 条路径`);
+
+  // 3. 从路径中提取边和节点（参考 Python: export_html_topology）
+  const edges = new Set();
+  const nodes = new Set();
+  for (const path of uniquePaths) {
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i], b = path[i + 1];
+      const edgeKey = [a, b].sort().join('|');
+      edges.add(edgeKey);
+      nodes.add(a);
+      nodes.add(b);
+    }
+  }
+
+  // 4. 按设备类型分组（参考 Python: 层级顺序 OTHER → OOB → SOOB → LSW → CSW → SSW → ASW）
+  const devicesByType = { other: [], oob: [], soob: [], lsw: [], csw: [], ssw: [], asw: [] };
+  for (const device of nodes) {
+    const type = getRoCEDeviceType(device);
+    devicesByType[type].push(device);
+  }
+
+  // 排序（参考 Python: sorted）
+  Object.values(devicesByType).forEach(arr => arr.sort());
+
+  // CSW 特殊排序（参考 Python: csw_sort_key）
+  devicesByType.csw.sort((a, b) => {
+    const getNum = (name) => {
+      const m = name.toUpperCase().match(/CSW[-_]?0*(\d+)/);
+      return m ? parseInt(m[1]) : 9999;
+    };
+    return getNum(a) - getNum(b);
+  });
+
+  // SSW/ASW 按 POD 和编号排序（参考 Python: extract_pod_and_num）
+  const podNumSort = (a, b) => {
+    const getPodNum = (name) => {
+      const m = name.toUpperCase().match(/POD(\d+)[^\d]*(\d{1,4})$/);
+      return m ? [parseInt(m[1]), parseInt(m[2])] : [9999, 9999];
+    };
+    const [podA, numA] = getPodNum(a);
+    const [podB, numB] = getPodNum(b);
+    return podA !== podB ? podA - podB : numA - numB;
+  };
+  devicesByType.ssw.sort(podNumSort);
+  devicesByType.asw.sort(podNumSort);
+
+  // 5. 布局参数（参考 Python: layer_y = [100, 200, 300, 400, 500, 700, 900]）
+  const layerOrder = ['other', 'oob', 'soob', 'lsw', 'csw', 'ssw', 'asw'];
+  const layerYValues = [100, 200, 300, 400, 500, 700, 900];
+  const layerY = {};
+
+  let layerIndex = 0;
+  layerOrder.forEach((layer) => {
+    if (devicesByType[layer]?.length > 0) {
+      layerY[layer] = layerYValues[layerIndex];
+      layerIndex++;
+    }
+  });
+
+  // 6. 构建 nodesByLayer（参考 Python: node_positions 布局逻辑）
+  const nodesByLayer = {};
+  for (const [layer, devices] of Object.entries(devicesByType)) {
+    if (devices.length === 0) continue;
+
+    const y = layerY[layer] || 0;
+    let startX, endX;
+
+    // 参考 Python: OOB层 150-1850, OTHER层 100-1900, 其他层 600-1400
+    if (layer === 'oob') {
+      startX = 150; endX = 1850;
+    } else if (layer === 'other') {
+      startX = 100; endX = 1900;
+    } else {
+      // SOOB, LSW, CSW, SSW, ASW 集中在中间
+      startX = 600; endX = 1400;
+    }
+
+    const gap = devices.length > 1 ? (endX - startX) / (devices.length - 1) : 0;
+    nodesByLayer[layer] = devices.map((dev, idx) => ({
+      id: dev,
+      label: dev,
+      x: devices.length > 1 ? startX + idx * gap : (startX + endX) / 2,
+      y
+    }));
+  }
+
+  // 7. 构建连接列表（带端口信息，去重）
+  const connectionList = [];
+  const edgeSet = new Set();
+  for (const [connId, conn] of connections) {
+    const edgeKey = [conn.localDevice, conn.peerDevice].sort().join('|');
+    if (edgeSet.has(edgeKey)) continue;
+    // 只保留在 nodes 中的设备
+    if (!nodes.has(conn.localDevice) || !nodes.has(conn.peerDevice)) continue;
+    edgeSet.add(edgeKey);
+    connectionList.push({
+      source: conn.localDevice,
+      target: conn.peerDevice,
+      srcPort: conn.localInterface,
+      dstPort: conn.peerInterface
+    });
+  }
+
+  const layers = Object.keys(nodesByLayer).filter(k => nodesByLayer[k]?.length > 0);
+
+  console.log(`[RoCE Topology] 结果: ${nodes.size} 节点, ${connectionList.length} 边, 层级: ${layers.join(', ')}`);
+
+  return {
+    networkType: 'roce',
+    nodeCount: nodes.size,
+    edgeCount: connectionList.length,
+    nodesByLayer,
+    connections: connectionList,
+    layers,
+    pods: [],
+    layerY
+  };
+}
 
 // 增加 V8 内存限制提示
 const v8 = await import('v8');

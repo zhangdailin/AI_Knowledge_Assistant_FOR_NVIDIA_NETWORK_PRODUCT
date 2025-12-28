@@ -5,6 +5,7 @@ import { Search, Wrench, ChevronRight, X, Network, GitBranch } from 'lucide-reac
 import SnToIblfTool, { pluginMeta as snIblfMeta } from '../plugins/sn-iblf';
 import SnAddressTool, { pluginMeta as snAddressMeta } from '../plugins/sn-address';
 import SnTopologyTool, { pluginMeta as snTopologyMeta } from '../plugins/sn-topology';
+import TopologyRestoreTool, { pluginMeta as topologyRestoreMeta } from '../plugins/topology-restore';
 
 // 插件注册表
 const plugins = [
@@ -19,6 +20,10 @@ const plugins = [
   {
     ...snTopologyMeta,
     component: SnTopologyTool
+  },
+  {
+    ...topologyRestoreMeta,
+    component: TopologyRestoreTool
   }
 ];
 

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback } from 'react';
 import ReactFlow, {
   Node,
   Edge,
@@ -7,10 +7,10 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
   MarkerType,
-  Position
+  MiniMap
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Search, Copy, Check, Network, Server, Cpu } from 'lucide-react';
+import { Search, Copy, Check } from 'lucide-react';
 
 interface Connection {
   layer: string;
@@ -18,27 +18,24 @@ interface Connection {
   sourcePort: string;
   destDevice: string;
   destPort: string;
-  cableType?: string;
-  cableLength?: string;
 }
 
 interface TopologyResult {
   ok: boolean;
-  server: {
-    sn: string;
-    hostname: string;
-    rack: string;
-    pod: string;
-  };
+  server: { sn: string; hostname: string; rack: string; pod: string; };
   connections: Connection[];
   devices: {
+    // IB 网络
     iblf: string[];
     spine: string[];
     core: string[];
-    edge: string[];
-    leaf: string[];
-    oobSpine: string[];
-    oobLeaf: string[];
+    // RoCE 网络
+    asw: string[];
+    ssw: string[];
+    csw: string[];
+    lsw: string[];
+    soob: string[];
+    oob: string[];
   };
   totalConnections: number;
 }
@@ -46,97 +43,33 @@ interface TopologyResult {
 function getApiServerUrl(): string {
   const customUrl = localStorage.getItem('custom_api_server_url');
   if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  return `${protocol}//${hostname}:8787`;
+  return `${window.location.protocol}//${window.location.hostname}:8787`;
 }
 
-// 自定义节点样式
-const nodeStyles = {
-  server: {
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    color: 'white',
-    border: '2px solid #5a67d8',
-    borderRadius: '12px',
-    padding: '12px 16px',
-    fontSize: '12px',
-    fontWeight: 'bold',
-    minWidth: '180px',
+// 设备类型颜色
+const layerColors: Record<string, string> = {
+  // IB 网络
+  server: '#667eea', iblf: '#27ae60', ibsp: '#3498db', ibcr: '#e74c3c',
+  // RoCE 网络
+  asw: '#2ca02c', ssw: '#1f77b4', csw: '#d62728', lsw: '#ff6b35', soob: '#8000ff', oob: '#ffcc00',
+  // 兼容旧名称
+  spine: '#3498db', core: '#e74c3c', leaf: '#27ae60',
+  unknown: '#95a5a6'
+};
+
+const getNodeStyle = (layer: string) => {
+  const color = layerColors[layer] || layerColors.unknown;
+  return {
+    background: color,
+    color: ['oob', 'soob'].includes(layer) ? '#333' : 'white',
+    border: `2px solid ${color}`,
+    borderRadius: '8px',
+    padding: '8px 12px',
+    fontSize: '9px',
+    fontWeight: '600' as const,
+    minWidth: '100px',
     textAlign: 'center' as const,
-    boxShadow: '0 4px 15px rgba(102, 126, 234, 0.4)'
-  },
-  iblf: {
-    background: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)',
-    color: 'white',
-    border: '2px solid #0d8a6f',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '160px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(17, 153, 142, 0.3)'
-  },
-  spine: {
-    background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-    color: 'white',
-    border: '2px solid #e84393',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '140px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(245, 87, 108, 0.3)'
-  },
-  core: {
-    background: 'linear-gradient(135deg, #ff9a56 0%, #ff6b6b 100%)',
-    color: 'white',
-    border: '2px solid #e55039',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '120px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(255, 107, 107, 0.3)'
-  },
-  edge: {
-    background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-    color: 'white',
-    border: '2px solid #0984e3',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '120px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(79, 172, 254, 0.3)'
-  },
-  leaf: {
-    background: 'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)',
-    color: '#333',
-    border: '2px solid #74b9ff',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '120px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(116, 185, 255, 0.3)'
-  },
-  oob: {
-    background: 'linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%)',
-    color: 'white',
-    border: '2px solid #5f27cd',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    fontSize: '11px',
-    fontWeight: '600',
-    minWidth: '120px',
-    textAlign: 'center' as const,
-    boxShadow: '0 4px 12px rgba(108, 92, 231, 0.3)'
-  }
+  };
 };
 
 const SnTopologyTool: React.FC = () => {
@@ -151,10 +84,7 @@ const SnTopologyTool: React.FC = () => {
 
   const handleQuery = async () => {
     const sn = input.trim();
-    if (!sn) {
-      setError('请输入 SN');
-      return;
-    }
+    if (!sn) { setError('请输入 SN'); return; }
 
     setLoading(true);
     setError('');
@@ -166,11 +96,8 @@ const SnTopologyTool: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sn })
       });
-
       const data = await res.json();
-      if (!data.ok) {
-        throw new Error(data.error || '查询失败');
-      }
+      if (!data.ok) throw new Error(data.error || '查询失败');
       setResult(data);
       buildTopology(data);
     } catch (err: any) {
@@ -183,198 +110,181 @@ const SnTopologyTool: React.FC = () => {
   const buildTopology = useCallback((data: TopologyResult) => {
     const newNodes: Node[] = [];
     const newEdges: Edge[] = [];
-    const { devices, connections } = data;
+    const { devices } = data;
 
-    // 层级 Y 坐标配置
-    const layerY = {
-      edge: 0,
-      core: 100,
-      spine: 200,
-      iblf: 350,
-      server: 500,
-      oob: 600
+    // 布局：左侧 IB 网络，右侧 RoCE 网络
+    const ibX = 200;  // IB 网络 X 基准
+    const roceX = 700; // RoCE 网络 X 基准
+    const serverX = 450; // 服务器居中
+
+    // Y 坐标层级
+    const layerY: Record<string, number> = {
+      ibcr: 0, csw: 0,           // 顶层
+      ibsp: 120, ssw: 120,       // 第二层
+      iblf: 240, asw: 240,       // 第三层
+      server: 400,               // 服务器
+      oob: 520, soob: 520, lsw: 520  // 底层
     };
 
-    // 服务器节点（底部中央）
+    // 服务器节点
     newNodes.push({
       id: 'server',
       type: 'default',
-      position: { x: 400, y: layerY.server },
+      position: { x: serverX, y: layerY.server },
       data: {
         label: (
-          <div style={nodeStyles.server}>
-            <div style={{ marginBottom: '4px' }}>🖥️ 服务器</div>
-            <div style={{ fontSize: '10px', opacity: 0.9 }}>{data.server.hostname}</div>
-            <div style={{ fontSize: '9px', opacity: 0.7 }}>{data.server.sn}</div>
+          <div style={getNodeStyle('server')}>
+            <div>🖥️ GPU Server</div>
+            <div style={{ fontSize: '8px', marginTop: '2px' }}>{data.server.hostname}</div>
           </div>
         )
       },
       style: { background: 'transparent', border: 'none', padding: 0 }
     });
 
-    // IBLF 节点
-    devices.iblf.forEach((iblf, idx) => {
-      const xPos = 150 + idx * 200;
+    // ========== IB 网络节点 ==========
+    // IBLF
+    devices.iblf.forEach((dev, idx) => {
       newNodes.push({
-        id: `iblf-${iblf}`,
+        id: `iblf-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.iblf },
-        data: {
-          label: (
-            <div style={nodeStyles.iblf}>
-              <div style={{ marginBottom: '2px' }}>🔀 IBLF</div>
-              <div style={{ fontSize: '9px' }}>{iblf.split('-').slice(-3).join('-')}</div>
-            </div>
-          )
-        },
+        position: { x: ibX - 100 + idx * 150, y: layerY.iblf },
+        data: { label: <div style={getNodeStyle('iblf')}><div>IBLF</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // SPINE 节点
-    devices.spine.forEach((spine, idx) => {
-      const xPos = 200 + idx * 200;
+    // IBSP (Spine)
+    devices.spine.forEach((dev, idx) => {
       newNodes.push({
-        id: `spine-${spine}`,
+        id: `ibsp-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.spine },
-        data: {
-          label: (
-            <div style={nodeStyles.spine}>
-              <div style={{ marginBottom: '2px' }}>📡 Spine</div>
-              <div style={{ fontSize: '9px' }}>{spine}</div>
-            </div>
-          )
-        },
+        position: { x: ibX - 50 + idx * 120, y: layerY.ibsp },
+        data: { label: <div style={getNodeStyle('ibsp')}><div>IBSP</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // CORE 节点
-    devices.core.forEach((core, idx) => {
-      const xPos = 250 + idx * 180;
+    // IBCR (Core)
+    devices.core.forEach((dev, idx) => {
       newNodes.push({
-        id: `core-${core}`,
+        id: `ibcr-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.core },
-        data: {
-          label: (
-            <div style={nodeStyles.core}>
-              <div style={{ marginBottom: '2px' }}>🔲 Core</div>
-              <div style={{ fontSize: '9px' }}>{core}</div>
-            </div>
-          )
-        },
+        position: { x: ibX + idx * 100, y: layerY.ibcr },
+        data: { label: <div style={getNodeStyle('ibcr')}><div>IBCR</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // EDGE 节点
-    devices.edge.forEach((edge, idx) => {
-      const xPos = 100 + idx * 160;
+    // ========== RoCE 网络节点 ==========
+    // ASW
+    devices.asw.forEach((dev, idx) => {
       newNodes.push({
-        id: `edge-${edge}`,
+        id: `asw-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.edge },
-        data: {
-          label: (
-            <div style={nodeStyles.edge}>
-              <div style={{ marginBottom: '2px' }}>🌐 Edge</div>
-              <div style={{ fontSize: '9px' }}>{edge}</div>
-            </div>
-          )
-        },
+        position: { x: roceX - 100 + idx * 150, y: layerY.asw },
+        data: { label: <div style={getNodeStyle('asw')}><div>ASW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // LEAF 节点 (HSS-LEAF, STL-LEAF)
-    devices.leaf.forEach((leaf, idx) => {
-      const xPos = 500 + idx * 160;
+    // SSW
+    devices.ssw.forEach((dev, idx) => {
       newNodes.push({
-        id: `leaf-${leaf}`,
+        id: `ssw-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.edge },
-        data: {
-          label: (
-            <div style={nodeStyles.leaf}>
-              <div style={{ marginBottom: '2px' }}>🍃 Leaf</div>
-              <div style={{ fontSize: '9px' }}>{leaf}</div>
-            </div>
-          )
-        },
+        position: { x: roceX - 50 + idx * 120, y: layerY.ssw },
+        data: { label: <div style={getNodeStyle('ssw')}><div>SSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // OOB 节点（带外管理网络）
-    const oobDevices = [...devices.oobSpine, ...devices.oobLeaf];
-    oobDevices.forEach((oob, idx) => {
-      const xPos = 100 + idx * 150;
+    // CSW
+    devices.csw.forEach((dev, idx) => {
       newNodes.push({
-        id: `oob-${oob}`,
+        id: `csw-${dev}`,
         type: 'default',
-        position: { x: xPos, y: layerY.oob },
-        data: {
-          label: (
-            <div style={nodeStyles.oob}>
-              <div style={{ marginBottom: '2px' }}>🔧 OOB</div>
-              <div style={{ fontSize: '9px' }}>{oob}</div>
-            </div>
-          )
-        },
+        position: { x: roceX + idx * 100, y: layerY.csw },
+        data: { label: <div style={getNodeStyle('csw')}><div>CSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
         style: { background: 'transparent', border: 'none', padding: 0 }
       });
     });
 
-    // 创建节点 ID 集合用于验证边的有效性
+    // LSW
+    devices.lsw.forEach((dev, idx) => {
+      newNodes.push({
+        id: `lsw-${dev}`,
+        type: 'default',
+        position: { x: roceX + 200 + idx * 100, y: layerY.lsw },
+        data: { label: <div style={getNodeStyle('lsw')}><div>LSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
+        style: { background: 'transparent', border: 'none', padding: 0 }
+      });
+    });
+
+    // OOB
+    devices.oob.forEach((dev, idx) => {
+      newNodes.push({
+        id: `oob-${dev}`,
+        type: 'default',
+        position: { x: serverX - 100 + idx * 120, y: layerY.oob },
+        data: { label: <div style={getNodeStyle('oob')}><div>OOB</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
+        style: { background: 'transparent', border: 'none', padding: 0 }
+      });
+    });
+
+    // SOOB
+    devices.soob.forEach((dev, idx) => {
+      newNodes.push({
+        id: `soob-${dev}`,
+        type: 'default',
+        position: { x: serverX + 150 + idx * 120, y: layerY.soob },
+        data: { label: <div style={getNodeStyle('soob')}><div>SOOB</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
+        style: { background: 'transparent', border: 'none', padding: 0 }
+      });
+    });
+
+    // ========== 构建边 ==========
     const nodeIds = new Set(newNodes.map(n => n.id));
-
-    // 根据连接数据创建边
     const edgeColors: Record<string, string> = {
-      'server-iblf': '#667eea',
-      'iblf-spine': '#11998e',
-      'spine-core': '#f5576c',
-      'core-edge': '#ff6b6b',
-      'oob': '#6c5ce7'
+      'gpu-iblf': '#27ae60', 'iblf-ibsp': '#3498db', 'ibsp-ibcr': '#e74c3c',
+      'gpu-asw': '#2ca02c', 'asw-ssw': '#1f77b4', 'ssw-csw': '#d62728',
+      'csw-lsw': '#ff6b35', 'to-oob': '#ffcc00', 'to-soob': '#8000ff'
     };
 
-    // 辅助函数：根据设备名称获取节点 ID
-    const getNodeIdForEdge = (device: string): string => {
-      const deviceUpper = device.toUpperCase();
-      if (deviceUpper.includes('GPU') || (deviceUpper.startsWith('MDC-') && !deviceUpper.includes('IBLF') && !deviceUpper.includes('SPINE'))) {
-        return 'server';
+    const getNodeId = (device: string): string => {
+      const upper = device.toUpperCase();
+      if (upper.includes('GPU') || upper.includes('MDC-')) {
+        if (!upper.includes('IBLF') && !upper.includes('IBSP') && !upper.includes('ASW') && !upper.includes('SSW')) return 'server';
       }
-      if (deviceUpper.includes('IBLF')) return `iblf-${device}`;
-      if (deviceUpper.includes('SPINE') && !deviceUpper.includes('OOB')) return `spine-${device}`;
-      if (deviceUpper.includes('CORE')) return `core-${device}`;
-      if (deviceUpper.includes('EDGE') && !deviceUpper.includes('OOB')) return `edge-${device}`;
-      if (deviceUpper.includes('LEAF') && !deviceUpper.includes('OOB')) return `leaf-${device}`;
-      if (deviceUpper.includes('OOB')) return `oob-${device}`;
+      if (upper.includes('IBLF')) return `iblf-${device}`;
+      if (upper.includes('IBSP')) return `ibsp-${device}`;
+      if (upper.includes('IBCR')) return `ibcr-${device}`;
+      if (upper.includes('ASW')) return `asw-${device}`;
+      if (upper.includes('SSW')) return `ssw-${device}`;
+      if (upper.includes('CSW')) return `csw-${device}`;
+      if (upper.includes('LSW')) return `lsw-${device}`;
+      if (upper.includes('SOOB')) return `soob-${device}`;
+      if (upper.includes('OOB')) return `oob-${device}`;
       return 'server';
     };
 
-    connections.forEach((conn, idx) => {
-      const sourceId = getNodeIdForEdge(conn.sourceDevice);
-      const targetId = getNodeIdForEdge(conn.destDevice);
+    data.connections.forEach((conn, idx) => {
+      const sourceId = getNodeId(conn.sourceDevice);
+      const targetId = getNodeId(conn.destDevice);
       const color = edgeColors[conn.layer] || '#999';
 
-      // 只添加源和目标节点都存在的边
-      if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
+      if (nodeIds.has(sourceId) && nodeIds.has(targetId) && sourceId !== targetId) {
         newEdges.push({
           id: `edge-${idx}`,
           source: sourceId,
           target: targetId,
-          label: conn.sourcePort && conn.destPort ? `${conn.sourcePort} → ${conn.destPort}` : undefined,
-          labelStyle: { fontSize: '8px', fill: '#666' },
-          style: { stroke: color, strokeWidth: conn.layer === 'server-iblf' ? 2 : 1.5 },
-          markerEnd: { type: MarkerType.ArrowClosed, color },
-          animated: conn.layer === 'server-iblf'
+          label: conn.sourcePort && conn.destPort ? `${conn.sourcePort} - ${conn.destPort}` : undefined,
+          labelStyle: { fontSize: '7px', fill: '#666' },
+          style: { stroke: color, strokeWidth: 1.5 },
+          markerEnd: { type: MarkerType.ArrowClosed, color }
         });
       }
     });
-
-    console.log(`[Topology] Created ${newNodes.length} nodes, ${newEdges.length} edges from ${connections.length} connections`);
 
     setNodes(newNodes);
     setEdges(newEdges);
@@ -382,74 +292,51 @@ const SnTopologyTool: React.FC = () => {
 
   const copyResult = () => {
     if (!result) return;
-
-    let text = `SN 拓扑查询结果\n`;
-    text += `服务器: ${result.server.hostname} (${result.server.sn})\n`;
+    let text = `SN 拓扑查询结果\n服务器: ${result.server.hostname} (${result.server.sn})\n`;
     text += `机架: ${result.server.rack} | POD: ${result.server.pod}\n\n`;
-
-    text += `设备统计:\n`;
-    text += `  IBLF: ${result.devices.iblf.length} | SPINE: ${result.devices.spine.length}\n`;
-    text += `  CORE: ${result.devices.core.length} | EDGE: ${result.devices.edge.length}\n`;
-    if (result.devices.leaf.length > 0) text += `  LEAF: ${result.devices.leaf.length}\n`;
-    if (result.devices.oobSpine.length > 0 || result.devices.oobLeaf.length > 0) {
-      text += `  OOB: ${result.devices.oobSpine.length + result.devices.oobLeaf.length}\n`;
-    }
-
-    text += `\n连接详情 (${result.totalConnections} 条):\n`;
+    text += `=== IB 网络 ===\nIBLF: ${result.devices.iblf.length}, IBSP: ${result.devices.spine.length}, IBCR: ${result.devices.core.length}\n\n`;
+    text += `=== RoCE 网络 ===\nASW: ${result.devices.asw.length}, SSW: ${result.devices.ssw.length}, CSW: ${result.devices.csw.length}\n\n`;
+    text += `连接详情 (${result.totalConnections} 条):\n`;
     result.connections.forEach(conn => {
-      text += `  [${conn.layer}] ${conn.sourceDevice}:${conn.sourcePort} → ${conn.destDevice}:${conn.destPort}`;
-      if (conn.cableType) text += ` (${conn.cableType})`;
-      text += '\n';
+      text += `  [${conn.layer}] ${conn.sourceDevice}:${conn.sourcePort} → ${conn.destDevice}:${conn.destPort}\n`;
     });
-
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const ibCount = (result?.devices.iblf.length || 0) + (result?.devices.spine.length || 0) + (result?.devices.core.length || 0);
+  const roceCount = (result?.devices.asw.length || 0) + (result?.devices.ssw.length || 0) + (result?.devices.csw.length || 0);
+
   return (
     <div className="p-6">
       <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          输入服务器 SN
-        </label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">输入服务器 SN</label>
         <div className="flex gap-3">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleQuery()}
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
             placeholder="GOG4X8312A0131"
           />
-          <button
-            onClick={handleQuery}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-          >
+          <button onClick={handleQuery} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
             <Search className="w-4 h-4" />
             {loading ? '查询中...' : '查询'}
           </button>
           {result && (
-            <button
-              onClick={copyResult}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
-            >
+            <button onClick={copyResult} className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700">
               {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             </button>
           )}
         </div>
       </div>
 
-      {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 mb-4">
-          {error}
-        </div>
-      )}
+      {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">{error}</div>}
 
       {result && (
         <div className="space-y-4">
-          {/* 服务器信息 */}
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <h3 className="font-bold text-blue-800 mb-2">服务器信息</h3>
             <div className="grid grid-cols-4 gap-4 text-sm">
@@ -460,72 +347,68 @@ const SnTopologyTool: React.FC = () => {
             </div>
           </div>
 
-          {/* 设备统计 */}
-          <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-            <h3 className="font-bold text-gray-800 mb-2">设备统计</h3>
-            <div className="flex flex-wrap gap-3 text-sm">
-              <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full">IBLF: {result.devices.iblf.length}</span>
-              <span className="px-3 py-1 bg-pink-100 text-pink-800 rounded-full">SPINE: {result.devices.spine.length}</span>
-              <span className="px-3 py-1 bg-orange-100 text-orange-800 rounded-full">CORE: {result.devices.core.length}</span>
-              <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full">EDGE: {result.devices.edge.length}</span>
-              {result.devices.leaf.length > 0 && (
-                <span className="px-3 py-1 bg-teal-100 text-teal-800 rounded-full">LEAF: {result.devices.leaf.length}</span>
-              )}
-              {(result.devices.oobSpine.length > 0 || result.devices.oobLeaf.length > 0) && (
-                <span className="px-3 py-1 bg-purple-100 text-purple-800 rounded-full">OOB: {result.devices.oobSpine.length + result.devices.oobLeaf.length}</span>
-              )}
-              <span className="px-3 py-1 bg-gray-200 text-gray-700 rounded-full">连接: {result.totalConnections}</span>
+          <div className="grid grid-cols-2 gap-4">
+            {/* IB 网络统计 */}
+            <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+              <h3 className="font-bold text-green-800 mb-2">IB 网络 (InfiniBand)</h3>
+              <div className="flex flex-wrap gap-2 text-sm">
+                <span className="px-2 py-1 bg-green-100 text-green-800 rounded">IBLF: {result.devices.iblf.length}</span>
+                <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded">IBSP: {result.devices.spine.length}</span>
+                <span className="px-2 py-1 bg-red-100 text-red-800 rounded">IBCR: {result.devices.core.length}</span>
+              </div>
+            </div>
+            {/* RoCE 网络统计 */}
+            <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
+              <h3 className="font-bold text-purple-800 mb-2">RoCE 网络 (以太网)</h3>
+              <div className="flex flex-wrap gap-2 text-sm">
+                <span className="px-2 py-1 bg-green-100 text-green-800 rounded">ASW: {result.devices.asw.length}</span>
+                <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded">SSW: {result.devices.ssw.length}</span>
+                <span className="px-2 py-1 bg-red-100 text-red-800 rounded">CSW: {result.devices.csw.length}</span>
+                {result.devices.oob.length > 0 && <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded">OOB: {result.devices.oob.length}</span>}
+              </div>
             </div>
           </div>
+        </div>
+      )}
 
-          {/* 拓扑图 */}
-          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '650px' }}>
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              fitView
-              attributionPosition="bottom-left"
-            >
-              <Controls />
-              <Background color="#f0f0f0" gap={20} />
-            </ReactFlow>
+      {nodes.length > 0 && (
+        <div className="mt-4 bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '550px' }}>
+          <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView attributionPosition="bottom-left">
+            <Controls />
+            <MiniMap style={{ background: '#f0f0f0' }} />
+            <Background color="#f0f0f0" gap={20} />
+          </ReactFlow>
+        </div>
+      )}
+
+      {result && result.connections.length > 0 && (
+        <div className="mt-4 bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+            <h4 className="font-semibold text-gray-800">连接详情 ({result.connections.length} 条)</h4>
           </div>
-
-          {/* 连接详情表格 */}
-          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-            <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
-              <h4 className="font-semibold text-gray-800">连接详情 ({result.connections.length} 条，共 {result.totalConnections} 条)</h4>
-            </div>
-            <div className="overflow-x-auto max-h-60">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">层级</th>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">源设备</th>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">源端口</th>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">目标设备</th>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">目标端口</th>
-                    <th className="text-left py-2 px-4 font-medium text-gray-600">类型</th>
+          <div className="overflow-x-auto max-h-60">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="text-left py-2 px-4 font-medium text-gray-600">层级</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-600">源设备</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-600">源端口</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-600">目标设备</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-600">目标端口</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {result.connections.map((conn, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="py-2 px-4 text-xs"><span className="px-2 py-0.5 bg-gray-100 rounded">{conn.layer}</span></td>
+                    <td className="py-2 px-4 font-mono text-xs">{conn.sourceDevice}</td>
+                    <td className="py-2 px-4">{conn.sourcePort}</td>
+                    <td className="py-2 px-4 font-mono text-xs">{conn.destDevice}</td>
+                    <td className="py-2 px-4">{conn.destPort}</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {result.connections.map((conn, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50">
-                      <td className="py-2 px-4 text-xs">
-                        <span className="px-2 py-0.5 bg-gray-100 rounded">{conn.layer}</span>
-                      </td>
-                      <td className="py-2 px-4 font-mono text-xs">{conn.sourceDevice}</td>
-                      <td className="py-2 px-4">{conn.sourcePort}</td>
-                      <td className="py-2 px-4 font-mono text-xs">{conn.destDevice}</td>
-                      <td className="py-2 px-4">{conn.destPort}</td>
-                      <td className="py-2 px-4 text-gray-500">{conn.cableType || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -533,13 +416,12 @@ const SnTopologyTool: React.FC = () => {
   );
 };
 
-// 插件元数据
 export const pluginMeta = {
   id: 'sn-topology',
   name: 'SN 拓扑查询',
-  description: '根据服务器 SN 查询网络连线拓扑',
+  description: '根据SN查询服务器的IB和RoCE双网络拓扑链路',
   icon: 'GitBranch',
-  version: '1.0.0'
+  version: '3.0.0'
 };
 
 export default SnTopologyTool;
