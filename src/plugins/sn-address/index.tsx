@@ -197,6 +197,7 @@ const SnAddressTool: React.FC = () => {
 };
 
 // 插件元数据
+// eslint-disable-next-line react-refresh/only-export-components
 export const pluginMeta = {
   id: 'sn-address',
   name: 'SN 地址查询',

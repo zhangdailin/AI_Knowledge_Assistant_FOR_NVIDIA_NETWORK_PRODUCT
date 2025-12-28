@@ -140,7 +140,7 @@ const TopologyRestoreTool: React.FC = () => {
       setCollapsedPods(new Set(pods));
       setMessage(`已自动折叠 ${pods.length} 个POD以优化显示 - 点击POD可展开查看详情`);
     }
-  }, [pods]);
+  }, [pods, collapsedPods.size]);
 
   // Phase 2 V3: Global LOD control functions
   const collapseAllPods = useCallback(() => {
@@ -517,7 +517,15 @@ const TopologyRestoreTool: React.FC = () => {
         leaf: newNodes.filter(n => n.id.toUpperCase().includes('IBLF')).length
       }
     });
-  }, [highlightedNodeId, selectedNodeInfo, selectedEdgeInfo, setNodes, setEdges]);
+  }, [
+    highlightedNodeId,
+    selectedNodeInfo,
+    selectedEdgeInfo,
+    enableEdgeBundling,
+    edgeBundlingThreshold,
+    setNodes,
+    setEdges
+  ]);
 
   const loadPodDetails = async (podName: string) => {
     if (!file || loadedPods.has(podName)) return;
@@ -1469,6 +1477,7 @@ function extractRails(nodes: any[]): string[] {
   });
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const pluginMeta = {
   id: 'topology-restore',
   name: '拓扑还原',

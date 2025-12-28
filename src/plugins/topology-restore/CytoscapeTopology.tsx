@@ -312,7 +312,8 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             // layerVisibility removed
             selectedRail,
             activeCoreFilter,
-            collapsedPods as Set<string>
+            collapsedPods as Set<string>,
+            networkType
         );
 
         // 如果已有实例，更新数据
@@ -392,7 +393,17 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             edges: edges.length,
             renderTime: `${Math.round(endTime - startTime)}ms`
         });
-    }, [data, selectedPod, layerVisibility, onNodeClick, onEdgeClick]);
+    }, [
+        data,
+        selectedPod,
+        selectedRail,
+        activeCoreFilter,
+        collapsedPods,
+        networkType,
+        styles,
+        onNodeClick,
+        onEdgeClick
+    ]);
 
     /**
      * 组件卸载时销毁实例
@@ -546,4 +557,5 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
 export default CytoscapeTopology;
 
 // 导出辅助函数
+// eslint-disable-next-line react-refresh/only-export-components
 export { convertToCytoscapeFormat, layerColors };

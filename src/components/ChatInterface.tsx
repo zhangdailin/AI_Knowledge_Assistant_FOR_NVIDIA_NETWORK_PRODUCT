@@ -44,7 +44,7 @@ const ChatInterface: React.FC = () => {
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [user]); // 保持对 user 的依赖
+  }, [user, loadConversations]); // 保持对 user 的依赖
 
   // 自动选择或创建对话
   useEffect(() => {
@@ -59,7 +59,7 @@ const ChatInterface: React.FC = () => {
       });
       selectConversation(sorted[0]);
     }
-  }, [user, conversations, currentConversation]);
+  }, [user, conversations, currentConversation, selectConversation]);
 
   useEffect(() => {
     scrollToBottom();

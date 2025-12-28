@@ -19,13 +19,13 @@ function App() {
 
   useEffect(() => {
     checkAuth();
-  }, []);
+  }, [checkAuth]);
 
   useEffect(() => {
     if (user) {
       loadConversations(user.id);
     }
-  }, [user]);
+  }, [user, loadConversations]);
 
   return (
     <Router>

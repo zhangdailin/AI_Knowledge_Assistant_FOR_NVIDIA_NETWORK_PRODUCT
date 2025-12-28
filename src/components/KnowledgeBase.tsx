@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Upload, File as FileIcon, Search, Trash2, Download, Eye, Plus, FolderOpen, RefreshCw, MoreVertical, FileText, Table, Grid, Move } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
@@ -33,16 +33,16 @@ const KnowledgeBase: React.FC = () => {
       loadDocuments();
       loadCategories();
     }
-  }, [user]);
+  }, [user, loadDocuments, loadCategories]);
 
-  const loadCategories = async () => {
+  const loadCategories = useCallback(async () => {
     try {
       const data = await serverStorageManager.getCategories();
       setCategories(data.tree || []);
     } catch (error) {
       console.error('加载分类失败:', error);
     }
-  };
+  }, []);
 
   const handleAddCategory = async (parentId: string | null, name: string) => {
     try {
@@ -104,7 +104,7 @@ const KnowledgeBase: React.FC = () => {
       }, 3000);
       return () => clearInterval(timer);
     }
-  }, [documents, regeneratingDocs]);
+  }, [documents, regeneratingDocs, loadDocuments]);
 
   const openChunkViewer = async (doc: Document) => {
     try {
@@ -118,12 +118,12 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  const loadDocuments = async () => {
+  const loadDocuments = useCallback(async () => {
     if (user) {
       const docs = await unifiedStorageManager.getDocuments(user.id);
       setDocuments(docs);
     }
-  };
+  }, [user]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();

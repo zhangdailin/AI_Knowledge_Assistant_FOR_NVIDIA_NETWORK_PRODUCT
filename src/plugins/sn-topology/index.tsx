@@ -479,6 +479,7 @@ const SnTopologyTool: React.FC = () => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const pluginMeta = {
   id: 'sn-topology',
   name: 'SN 拓扑查询',

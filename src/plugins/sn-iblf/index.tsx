@@ -275,6 +275,7 @@ const SnToIblfTool: React.FC = () => {
 };
 
 // 插件元数据
+// eslint-disable-next-line react-refresh/only-export-components
 export const pluginMeta = {
   id: 'sn-iblf',
   name: 'SN-IBLF 查询',
