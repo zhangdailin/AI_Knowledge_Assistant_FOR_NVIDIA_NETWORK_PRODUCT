@@ -149,17 +149,37 @@ const TopologyRestoreTool: React.FC = () => {
       if (!data.ok) throw new Error(data.error || '拓扑还原失败');
 
       console.log('[TopologyRestore] Result:', data);
+      console.log('[TopologyRestore] nodesByLayer 内容:', {
+        keys: Object.keys(data.nodesByLayer || {}),
+        structure: data.nodesByLayer ? Object.entries(data.nodesByLayer).map(([k, v]: any) => ({
+          layer: k,
+          nodeCount: Array.isArray(v) ? v.length : 0,
+          sampleNode: Array.isArray(v) ? v[0] : null
+        })) : null
+      });
+
       setRestoreResult(data);
       setMessage(`成功解析 ${data.nodeCount} 个节点, ${data.edgeCount} 条连接`);
 
+      // 从nodesByLayer获取可见的层级
+      const visibleLayers = Object.keys(data.nodesByLayer || {});
       const visibility: Record<string, boolean> = {};
-      (data.layers || []).forEach((layer: string) => { visibility[layer] = true; });
+      visibleLayers.forEach((layer: string) => { visibility[layer] = true; });
       setLayerVisibility(visibility);
 
-      if (data.pods?.length > 0) {
-        setPods(['ALL', ...data.pods]);
+      console.log('[TopologyRestore] 初始化可见层级:', visibleLayers, visibility);
+
+      if (data.metadata?.pods?.length > 0) {
+        setPods(['ALL', ...data.metadata.pods]);
         setSelectedPod('ALL');
       }
+
+      console.log('[TopologyRestore] 准备调用buildTopology，参数：', {
+        hasData: !!data,
+        pod: 'ALL',
+        visibility: visibility,
+        nodesByLayerKeys: Object.keys(data.nodesByLayer || {})
+      });
 
       buildTopology(data, 'ALL', visibility);
     } catch (err: any) {
@@ -180,6 +200,20 @@ const TopologyRestoreTool: React.FC = () => {
     // 构建节点信息映射
     const nodeInfoMap = new Map<string, any>();
 
+    // 预先计算层级的Y坐标和水平布局
+    const layerOrder = ['core', 'spine', 'leaf'];
+    const layerYPositions: Record<string, number> = {};
+    const layerXGaps: Record<string, number> = { core: 150, spine: 130, leaf: 120 };
+    const baseY = 100;
+    const layerGap = 200;
+
+    layerOrder.forEach((layer, idx) => {
+      layerYPositions[layer] = baseY + idx * layerGap;
+    });
+
+    // 按层级组织节点，计算位置
+    const nodesByLayerWithPos = new Map<string, any[]>();
+
     Object.entries(nodesByLayer).forEach(([layer, layerNodes]: [string, any]) => {
       if (!visibility[layer]) return;
 
@@ -189,15 +223,22 @@ const TopologyRestoreTool: React.FC = () => {
         filteredNodes = nodeList.filter((n: any) => n.pod === pod || n.id?.includes(pod) || !n.pod);
       }
 
-      filteredNodes.forEach((node: any) => {
+      // 为该层的节点计算x坐标
+      const xGap = layerXGaps[layer] || 120;
+      const startX = 100;
+      const yPos = layerYPositions[layer];
+
+      filteredNodes.forEach((node: any, nodeIdx: number) => {
+        const xPos = startX + nodeIdx * xGap;
+
         nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
         const isSelected = selectedNodeInfo?.id === node.id;
 
-        newNodes.push({
+        const nodeData = {
           id: node.id,
           type: 'default',
-          position: { x: node.x || 0, y: node.y || 0 },
+          position: { x: xPos, y: yPos },
           data: {
             label: (
               <div style={{
@@ -211,7 +252,14 @@ const TopologyRestoreTool: React.FC = () => {
             )
           },
           style: { background: 'transparent', border: 'none', padding: 0 }
-        });
+        };
+
+        newNodes.push(nodeData);
+
+        if (!nodesByLayerWithPos.has(layer)) {
+          nodesByLayerWithPos.set(layer, []);
+        }
+        nodesByLayerWithPos.get(layer)!.push(nodeData);
       });
     });
 
@@ -247,8 +295,30 @@ const TopologyRestoreTool: React.FC = () => {
       }
     });
 
+    if (newNodes.length === 0) {
+      console.warn('[TopologyRestore] 警告：没有生成任何节点！', {
+        nodesByLayer: Object.keys(nodesByLayer),
+        visibility,
+        pod
+      });
+    }
+
     setNodes(newNodes);
     setEdges(newEdges);
+
+    console.log('[TopologyRestore] 拓扑渲染完成:', {
+      nodeCount: newNodes.length,
+      edgeCount: newEdges.length,
+      sampleNodes: newNodes.slice(0, 3),
+      sampleEdges: newEdges.slice(0, 3),
+      nodesByLayerKeys: Object.keys(nodesByLayer),
+      visibility,
+      layerCounts: {
+        core: newNodes.filter(n => n.id.toLowerCase().includes('core')).length,
+        spine: newNodes.filter(n => n.id.toLowerCase().includes('spine')).length,
+        leaf: newNodes.filter(n => n.id.toLowerCase().includes('leaf')).length
+      }
+    });
   }, [highlightedNodeId, selectedNodeInfo, selectedEdgeInfo, setNodes, setEdges]);
 
   const handlePodChange = (pod: string) => {
