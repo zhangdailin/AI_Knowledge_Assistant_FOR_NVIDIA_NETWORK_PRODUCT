@@ -4,62 +4,70 @@
  */
 
 /**
- * 自动识别设备层级（基于拓扑度数）
- * Core层: 度数最低，连接度最高（>20）
- * Spine层: 度数中等（8-20）
- * Leaf层: 度数最高（<8）
+ * 自动识别设备层级（基于设备名称匹配）
+ * 简单直接的方法：
+ * - IBCR → Core
+ * - IBSP → Spine
+ * - IBLF → Leaf
+ *
+ * 支持自定义模式识别
  */
-export function autoDetectLayers(portMap) {
-  const degreeMap = new Map(); // device -> degree count
+export function autoDetectLayers(portMap, manualPatterns = null) {
   const deviceSet = new Set();
 
-  // 计算每个设备的度数
+  // 收集所有设备
   for (const [key, val] of portMap) {
     const [sys] = key.split('|');
     const { peer } = val;
     deviceSet.add(sys);
     deviceSet.add(peer);
-    degreeMap.set(sys, (degreeMap.get(sys) || 0) + 1);
-    degreeMap.set(peer, (degreeMap.get(peer) || 0) + 1);
   }
 
   const devices = Array.from(deviceSet);
-  const degrees = Array.from(degreeMap.values()).sort((a, b) => a - b);
-  const avgDegree = degrees.reduce((a, b) => a + b, 0) / degrees.length;
-
-  // 分类设备
   const layers = { core: [], spine: [], leaf: [] };
-  for (const device of devices) {
-    const degree = degreeMap.get(device);
-    if (degree > avgDegree * 1.5) {
-      layers.core.push(device);
-    } else if (degree > avgDegree * 0.8) {
-      layers.spine.push(device);
-    } else {
-      layers.leaf.push(device);
+
+  // 如果提供了自定义模式，使用自定义模式
+  if (manualPatterns && manualPatterns.corePattern) {
+    const coreRegex = new RegExp(manualPatterns.corePattern, 'i');
+    const spineRegex = new RegExp(manualPatterns.spinePattern || 'IBSP', 'i');
+    const leafRegex = new RegExp(manualPatterns.leafPattern || 'IBLF', 'i');
+
+    for (const device of devices) {
+      if (coreRegex.test(device)) {
+        layers.core.push(device);
+      } else if (spineRegex.test(device)) {
+        layers.spine.push(device);
+      } else if (leafRegex.test(device)) {
+        layers.leaf.push(device);
+      }
+    }
+  } else {
+    // 使用默认的简单名称匹配（参考参考项目的方法）
+    for (const device of devices) {
+      if (device.includes('IBCR')) {
+        layers.core.push(device);
+      } else if (device.includes('IBSP')) {
+        layers.spine.push(device);
+      } else if (device.includes('IBLF')) {
+        layers.leaf.push(device);
+      }
     }
   }
 
-  // 如果自动识别失败，降级处理
-  if (layers.core.length === 0) {
-    const sorted = devices.sort((a, b) => degreeMap.get(b) - degreeMap.get(a));
-    const coreCount = Math.max(1, Math.ceil(sorted.length * 0.05)); // 5%
-    const spineCount = Math.max(1, Math.ceil(sorted.length * 0.25)); // 25%
-    layers.core = sorted.slice(0, coreCount);
-    layers.spine = sorted.slice(coreCount, coreCount + spineCount);
-    layers.leaf = sorted.slice(coreCount + spineCount);
-  }
+  // 排序使结果一致
+  layers.core.sort();
+  layers.spine.sort();
+  layers.leaf.sort();
 
   return {
     layers,
-    degreeMap,
     detection: 'auto',
     stats: {
       totalDevices: devices.length,
       coreCount: layers.core.length,
       spineCount: layers.spine.length,
       leafCount: layers.leaf.length,
-      avgDegree: avgDegree.toFixed(2)
+      avgDegree: (devices.length > 0 ? 'N/A' : 'unknown')
     }
   };
 }
@@ -192,11 +200,18 @@ export function buildTopologyStructure(portMap, config = {}) {
 
   // 步骤1: 识别层级
   const layerResult = layerDetection === 'auto'
-    ? autoDetectLayers(portMap)
-    : { layers: manualLayers, detection: 'manual' };
+    ? autoDetectLayers(portMap, null)
+    : autoDetectLayers(portMap, manualLayers);
 
   const { layers, stats } = layerResult;
-  const allDevices = [...layers.core, ...layers.spine, ...layers.leaf];
+
+  // 处理没有 Core 层的情况（两层或三层组网）
+  const hasCore = layers.core && layers.core.length > 0;
+  const allDevices = [
+    ...(layers.core || []),
+    ...(layers.spine || []),
+    ...(layers.leaf || [])
+  ];
 
   // 步骤2: 提取POD标识
   const podResult = extractPodIdentifiers(allDevices, podExtraction);
@@ -210,7 +225,10 @@ export function buildTopologyStructure(portMap, config = {}) {
   const allNodesList = [];
 
   // 组织节点：按层级分组，但保留POD信息
+  // 仅包括存在的层级
   for (const layer of ['core', 'spine', 'leaf']) {
+    if (!layers[layer] || layers[layer].length === 0) continue;
+
     nodesByLayer[layer] = [];
 
     for (const device of layers[layer]) {

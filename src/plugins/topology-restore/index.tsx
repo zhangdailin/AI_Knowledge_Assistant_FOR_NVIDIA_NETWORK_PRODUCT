@@ -162,12 +162,33 @@ const TopologyRestoreTool: React.FC = () => {
       setMessage(`成功解析 ${data.nodeCount} 个节点, ${data.edgeCount} 条连接`);
 
       // 从nodesByLayer获取可见的层级
+      // 确保 visibility 始终包含 core, spine, leaf 三个键
+      const visibility: Record<string, boolean> = {
+        core: true,
+        spine: true,
+        leaf: true
+      };
+
+      // 只包括实际存在的层级
       const visibleLayers = Object.keys(data.nodesByLayer || {});
-      const visibility: Record<string, boolean> = {};
-      visibleLayers.forEach((layer: string) => { visibility[layer] = true; });
+      visibleLayers.forEach((layer: string) => {
+        visibility[layer] = true;
+      });
+
+      // 如果某个层不存在，设置为 false（不显示）
+      for (const layer of ['core', 'spine', 'leaf']) {
+        if (!visibleLayers.includes(layer)) {
+          visibility[layer] = false;
+        }
+      }
+
       setLayerVisibility(visibility);
 
-      console.log('[TopologyRestore] 初始化可见层级:', visibleLayers, visibility);
+      console.log('[TopologyRestore] 初始化可见层级:', {
+        visibleLayers,
+        visibility,
+        nodesByLayerKeys: Object.keys(data.nodesByLayer || {})
+      });
 
       if (data.metadata?.pods?.length > 0) {
         setPods(['ALL', ...data.metadata.pods]);
@@ -195,41 +216,70 @@ const TopologyRestoreTool: React.FC = () => {
 
     if (!data?.nodesByLayer) return;
 
-    const { nodesByLayer, connections, layerY: serverLayerY } = data;
+    const { nodesByLayer, connections } = data;
 
     // 构建节点信息映射
     const nodeInfoMap = new Map<string, any>();
 
-    // 预先计算层级的Y坐标和水平布局
-    const layerOrder = ['core', 'spine', 'leaf'];
-    const layerYPositions: Record<string, number> = {};
-    const layerXGaps: Record<string, number> = { core: 150, spine: 130, leaf: 120 };
-    const baseY = 100;
-    const layerGap = 200;
+    // 获取每层的所有设备，用于计算坐标
+    const allLayers = {
+      core: (nodesByLayer.core || []).map((n: any) => n.id),
+      spine: (nodesByLayer.spine || []).map((n: any) => n.id),
+      leaf: (nodesByLayer.leaf || []).map((n: any) => n.id)
+    };
 
-    layerOrder.forEach((layer, idx) => {
-      layerYPositions[layer] = baseY + idx * layerGap;
-    });
+    // 计算最大设备数，用于居中计算
+    const maxCount = Math.max(
+      allLayers.core.length || 0,
+      allLayers.spine.length || 0,
+      allLayers.leaf.length || 0
+    );
 
-    // 按层级组织节点，计算位置
-    const nodesByLayerWithPos = new Map<string, any[]>();
+    // 布局参数（参考参考项目的优化方案）
+    const layerGap = 200; // 层级间距
+    const nodeGap = 150; // Core 层节点间距
+    const spineNodeGap = 130; // Spine 层节点间距
+    const leafNodeGap = 120; // Leaf 层节点间距
 
+    // 动态计算中心 X 坐标（用于水平居中）
+    const centerX = maxCount > 0 ? ((maxCount - 1) * nodeGap) / 2 : 0;
+
+    const layerYPositions: Record<string, number> = {
+      core: 0,
+      spine: layerGap,
+      leaf: layerGap * 2
+    };
+
+    // 处理每一层的节点
     Object.entries(nodesByLayer).forEach(([layer, layerNodes]: [string, any]) => {
       if (!visibility[layer]) return;
 
       const nodeList = Array.isArray(layerNodes) ? layerNodes : [];
       let filteredNodes = nodeList;
+
+      // POD 过滤
       if (pod !== 'ALL') {
         filteredNodes = nodeList.filter((n: any) => n.pod === pod || n.id?.includes(pod) || !n.pod);
       }
 
-      // 为该层的节点计算x坐标
-      const xGap = layerXGaps[layer] || 120;
-      const startX = 100;
+      // 为该层的节点计算坐标
       const yPos = layerYPositions[layer];
+      let xGap = nodeGap; // 默认使用 Core 间距
+
+      if (layer === 'spine') {
+        xGap = spineNodeGap;
+      } else if (layer === 'leaf') {
+        xGap = leafNodeGap;
+      }
+
+      // 计算该层节点的起始 X 坐标（用于居中对齐）
+      const layerCenterX = filteredNodes.length > 0
+        ? ((filteredNodes.length - 1) * xGap) / 2
+        : 0;
 
       filteredNodes.forEach((node: any, nodeIdx: number) => {
-        const xPos = startX + nodeIdx * xGap;
+        // 使用 nodeIdx 而非全局索引，确保 POD 过滤后也正确
+        const xPos = nodeIdx * xGap - layerCenterX + centerX;
 
         nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
@@ -255,14 +305,10 @@ const TopologyRestoreTool: React.FC = () => {
         };
 
         newNodes.push(nodeData);
-
-        if (!nodesByLayerWithPos.has(layer)) {
-          nodesByLayerWithPos.set(layer, []);
-        }
-        nodesByLayerWithPos.get(layer)!.push(nodeData);
       });
     });
 
+    // 构建边
     const nodeIds = new Set(newNodes.map(n => n.id));
     const edgeInfoMap = new Map<string, any>();
 
@@ -313,10 +359,18 @@ const TopologyRestoreTool: React.FC = () => {
       sampleEdges: newEdges.slice(0, 3),
       nodesByLayerKeys: Object.keys(nodesByLayer),
       visibility,
+      layoutInfo: {
+        maxCount,
+        centerX: centerX.toFixed(2),
+        layerGap,
+        nodeGap,
+        spineNodeGap,
+        leafNodeGap
+      },
       layerCounts: {
-        core: newNodes.filter(n => n.id.toLowerCase().includes('core')).length,
-        spine: newNodes.filter(n => n.id.toLowerCase().includes('spine')).length,
-        leaf: newNodes.filter(n => n.id.toLowerCase().includes('leaf')).length
+        core: newNodes.filter(n => n.id.toUpperCase().includes('IBCR')).length,
+        spine: newNodes.filter(n => n.id.toUpperCase().includes('IBSP')).length,
+        leaf: newNodes.filter(n => n.id.toUpperCase().includes('IBLF')).length
       }
     });
   }, [highlightedNodeId, selectedNodeInfo, selectedEdgeInfo, setNodes, setEdges]);
