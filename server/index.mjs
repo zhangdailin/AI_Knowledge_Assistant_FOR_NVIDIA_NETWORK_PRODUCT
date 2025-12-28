@@ -1693,8 +1693,15 @@ app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
       podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' }
     });
 
+    if (!result || !result.success) {
+      throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
+    }
+
     console.log(`[TopologyRestore] 拓扑解析完成: ${result.metadata.stats.totalDevices} 设备, ${result.chainsCount} 链路`);
-    return res.json(result);
+    return res.json({
+      ok: true,
+      ...result
+    });
   } catch (error) {
     console.error('[TopologyRestore] Error:', error);
     res.status(500).json({ ok: false, error: error.message });

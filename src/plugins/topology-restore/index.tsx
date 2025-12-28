@@ -79,6 +79,8 @@ const TopologyRestoreTool: React.FC = () => {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedNodeInfo, setSelectedNodeInfo] = useState<any>(null);
+  const [selectedEdgeInfo, setSelectedEdgeInfo] = useState<any>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -175,6 +177,9 @@ const TopologyRestoreTool: React.FC = () => {
 
     const { nodesByLayer, connections, layerY: serverLayerY } = data;
 
+    // 构建节点信息映射
+    const nodeInfoMap = new Map<string, any>();
+
     Object.entries(nodesByLayer).forEach(([layer, layerNodes]: [string, any]) => {
       if (!visibility[layer]) return;
 
@@ -185,7 +190,10 @@ const TopologyRestoreTool: React.FC = () => {
       }
 
       filteredNodes.forEach((node: any) => {
+        nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
+        const isSelected = selectedNodeInfo?.id === node.id;
+
         newNodes.push({
           id: node.id,
           type: 'default',
@@ -194,6 +202,7 @@ const TopologyRestoreTool: React.FC = () => {
             label: (
               <div style={{
                 ...getNodeStyle(layer),
+                ...(isSelected ? { boxShadow: '0 0 15px rgba(59, 130, 246, 0.6)', border: '3px solid #3b82f6' } : {}),
                 ...(isHighlighted ? { boxShadow: '0 0 20px rgba(255, 0, 0, 0.8)', border: '3px solid #ff0000' } : {})
               }}>
                 <div>{layer.toUpperCase()}</div>
@@ -207,23 +216,40 @@ const TopologyRestoreTool: React.FC = () => {
     });
 
     const nodeIds = new Set(newNodes.map(n => n.id));
+    const edgeInfoMap = new Map<string, any>();
+
     (connections || []).forEach((conn: any, idx: number) => {
       if (nodeIds.has(conn.source) && nodeIds.has(conn.target)) {
-        newEdges.push({
-          id: `edge-${idx}`,
+        const edgeId = `edge-${idx}`;
+        edgeInfoMap.set(edgeId, {
+          id: edgeId,
           source: conn.source,
           target: conn.target,
-          label: conn.srcPort && conn.dstPort ? `${conn.srcPort} - ${conn.dstPort}` : undefined,
-          labelStyle: { fontSize: '8px', fill: '#666' },
-          style: { stroke: '#666', strokeWidth: 1.5 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#666' }
+          srcPort: conn.srcPort,
+          dstPort: conn.dstPort,
+          sourceNode: nodeInfoMap.get(conn.source),
+          targetNode: nodeInfoMap.get(conn.target)
+        });
+
+        const isSelected = selectedEdgeInfo?.id === edgeId;
+        newEdges.push({
+          id: edgeId,
+          source: conn.source,
+          target: conn.target,
+          label: conn.srcPort && conn.dstPort ? `${conn.srcPort}-${conn.dstPort}` : undefined,
+          labelStyle: { fontSize: '8px', fill: '#666', backgroundColor: '#fff', padding: '2px 4px' },
+          style: {
+            stroke: isSelected ? '#3b82f6' : '#999',
+            strokeWidth: isSelected ? 2.5 : 1.5
+          },
+          markerEnd: { type: MarkerType.ArrowClosed, color: isSelected ? '#3b82f6' : '#999' }
         });
       }
     });
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [highlightedNodeId, setNodes, setEdges]);
+  }, [highlightedNodeId, selectedNodeInfo, selectedEdgeInfo, setNodes, setEdges]);
 
   const handlePodChange = (pod: string) => {
     setSelectedPod(pod);
@@ -246,6 +272,30 @@ const TopologyRestoreTool: React.FC = () => {
       setHighlightedNodeId(null);
       setMessage('未找到匹配的设备');
     }
+  };
+
+  const handleNodeClick = (event: any, node: Node) => {
+    setSelectedNodeInfo({ id: node.id, data: node.data, position: node.position });
+    setSelectedEdgeInfo(null);
+  };
+
+  const handleEdgeClick = (event: any, edge: Edge) => {
+    const sourceNode = nodes.find(n => n.id === edge.source);
+    const targetNode = nodes.find(n => n.id === edge.target);
+    setSelectedEdgeInfo({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label,
+      sourceNode,
+      targetNode
+    });
+    setSelectedNodeInfo(null);
+  };
+
+  const handleCanvasClick = () => {
+    setSelectedNodeInfo(null);
+    setSelectedEdgeInfo(null);
   };
 
   return (
@@ -526,12 +576,123 @@ const TopologyRestoreTool: React.FC = () => {
 
       {/* 拓扑图 */}
       {nodes.length > 0 ? (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '600px' }}>
-          <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView attributionPosition="bottom-left">
-            <Controls />
-            <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />
-            <Background color="#f0f0f0" gap={20} />
-          </ReactFlow>
+        <div className="flex gap-4">
+          <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '600px' }}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={handleNodeClick}
+              onEdgeClick={handleEdgeClick}
+              onPaneClick={handleCanvasClick}
+              fitView
+              attributionPosition="bottom-left"
+            >
+              <Controls />
+              <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />
+              <Background color="#f0f0f0" gap={20} />
+            </ReactFlow>
+          </div>
+
+          {/* 右侧信息面板 */}
+          <div className="w-64 bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col">
+            <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+              <h4 className="font-semibold text-gray-800 text-sm">详细信息</h4>
+              {(selectedNodeInfo || selectedEdgeInfo) && (
+                <button
+                  onClick={handleCanvasClick}
+                  className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-200 rounded"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {selectedNodeInfo ? (
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">设备ID</p>
+                    <p className="text-sm font-mono text-gray-900 break-all">{selectedNodeInfo.id}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">层级</p>
+                    <p className="text-sm">
+                      <span className="inline-block px-2 py-1 rounded text-white text-xs font-medium" style={{ background: layerColors[selectedNodeInfo.id.split('-')[0]] || layerColors.unknown }}>
+                        {selectedNodeInfo.id.split('-')[0].toUpperCase()}
+                      </span>
+                    </p>
+                  </div>
+                  {selectedNodeInfo.data?.label && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">标签</p>
+                      <p className="text-sm text-gray-900">{selectedNodeInfo.data.label}</p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">位置</p>
+                    <p className="text-xs text-gray-600">X: {selectedNodeInfo.position?.x.toFixed(0)} | Y: {selectedNodeInfo.position?.y.toFixed(0)}</p>
+                  </div>
+
+                  {/* 连接到此节点的边 */}
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-2">连接关系</p>
+                    <div className="space-y-1 text-xs">
+                      {edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id).length > 0 ? (
+                        edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id).map((edge, idx) => (
+                          <div key={idx} className="p-1.5 bg-gray-50 rounded border border-gray-200">
+                            <div className="font-mono text-gray-700">
+                              {edge.source === selectedNodeInfo.id ? (
+                                <>→ {edge.target}</>
+                              ) : (
+                                <>← {edge.source}</>
+                              )}
+                            </div>
+                            {edge.label && <div className="text-gray-600 mt-0.5">端口: {edge.label}</div>}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-gray-500 italic">无连接</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : selectedEdgeInfo ? (
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">源设备</p>
+                    <p className="text-sm font-mono text-gray-900 break-all">{selectedEdgeInfo.source}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">目标设备</p>
+                    <p className="text-sm font-mono text-gray-900 break-all">{selectedEdgeInfo.target}</p>
+                  </div>
+                  {selectedEdgeInfo.label && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">端口信息</p>
+                      <p className="text-sm font-mono text-gray-900">{selectedEdgeInfo.label}</p>
+                    </div>
+                  )}
+                  <div className="pt-2 border-t border-gray-200">
+                    <p className="text-xs font-medium text-gray-500 uppercase mb-2">链路概览</p>
+                    <div className="space-y-1 text-xs">
+                      <div className="p-1.5 bg-gray-50 rounded border border-gray-200">
+                        <div className="text-gray-600">{selectedEdgeInfo.source}</div>
+                        <div className="text-center text-gray-400 my-1">↓</div>
+                        <div className="text-gray-600">{selectedEdgeInfo.target}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 pt-8">
+                  <p className="text-sm">点击设备或连接线</p>
+                  <p className="text-xs mt-2">查看详细信息</p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       ) : (
         <div
