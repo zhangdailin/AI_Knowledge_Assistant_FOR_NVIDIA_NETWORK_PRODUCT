@@ -40,7 +40,7 @@ function classifyModel(modelId: string): 'llm' | 'embedding' | 'reranking' | 'un
   const id = modelId.toLowerCase();
 
   if (id.includes('embed') || id.includes('bge') || id.includes('e5') ||
-      id.includes('gte') || id.includes('text-embedding') || id.includes('xiaobu')) {
+    id.includes('gte') || id.includes('text-embedding') || id.includes('xiaobu')) {
     return 'embedding';
   }
 
@@ -49,10 +49,10 @@ function classifyModel(modelId: string): 'llm' | 'embedding' | 'reranking' | 'un
   }
 
   if (id.includes('qwen') || id.includes('llama') || id.includes('mistral') ||
-      id.includes('gemma') || id.includes('deepseek') || id.includes('yi-') ||
-      id.includes('glm') || id.includes('baichuan') || id.includes('internlm') ||
-      id.includes('chat') || id.includes('instruct') || id.includes('gemini') ||
-      id.includes('gpt') || id.includes('claude')) {
+    id.includes('gemma') || id.includes('deepseek') || id.includes('yi-') ||
+    id.includes('glm') || id.includes('baichuan') || id.includes('internlm') ||
+    id.includes('chat') || id.includes('instruct') || id.includes('gemini') ||
+    id.includes('gpt') || id.includes('claude')) {
     return 'llm';
   }
 
@@ -72,6 +72,11 @@ const ModelSettings: React.FC = () => {
     llm: '',
     embedding: '',
     reranking: ''
+  });
+  const [defaults] = useState<ModelSelection>({
+    llm: 'Qwen/Qwen3-32B',
+    embedding: 'BAAI/bge-m3',
+    reranking: 'BAAI/bge-reranker-v2-m3'
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
@@ -188,17 +193,64 @@ const ModelSettings: React.FC = () => {
           <button
             onClick={handleSave}
             disabled={saveStatus === 'saving'}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              saveStatus === 'saved'
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${saveStatus === 'saved'
                 ? 'bg-green-500 text-white'
                 : saveStatus === 'saving'
-                ? 'bg-gray-200 text-gray-400'
-                : 'bg-blue-500 text-white hover:bg-blue-600'
-            }`}
+                  ? 'bg-gray-200 text-gray-400'
+                  : 'bg-blue-500 text-white hover:bg-blue-600'
+              }`}
           >
             {saveStatus === 'saved' ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
             {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : '保存配置'}
           </button>
+        </div>
+
+        {/* 当前配置概览 */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">当前配置</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* LLM 模型 */}
+            <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-xl">
+              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                <MessageSquare className="w-5 h-5 text-blue-600" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-gray-500">LLM 对话模型</p>
+                <p className="text-sm font-semibold text-gray-900 truncate mt-1" title={selection.llm || defaults.llm}>
+                  {(selection.llm || defaults.llm).split('/').pop()}
+                </p>
+                {!selection.llm && <p className="text-xs text-gray-400">(默认)</p>}
+              </div>
+            </div>
+
+            {/* Embedding 模型 */}
+            <div className="flex items-start gap-3 p-4 bg-green-50 rounded-xl">
+              <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Cpu className="w-5 h-5 text-green-600" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-gray-500">嵌入模型</p>
+                <p className="text-sm font-semibold text-gray-900 truncate mt-1" title={selection.embedding || defaults.embedding}>
+                  {(selection.embedding || defaults.embedding).split('/').pop()}
+                </p>
+                {!selection.embedding && <p className="text-xs text-gray-400">(默认)</p>}
+              </div>
+            </div>
+
+            {/* Reranking 模型 */}
+            <div className="flex items-start gap-3 p-4 bg-purple-50 rounded-xl">
+              <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Search className="w-5 h-5 text-purple-600" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-gray-500">重排序模型</p>
+                <p className="text-sm font-semibold text-gray-900 truncate mt-1" title={selection.reranking || defaults.reranking}>
+                  {(selection.reranking || defaults.reranking).split('/').pop()}
+                </p>
+                {!selection.reranking && <p className="text-xs text-gray-400">(默认)</p>}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* 模型提供商配置 */}
@@ -209,9 +261,8 @@ const ModelSettings: React.FC = () => {
               <div key={key} className="border border-gray-200 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      key === 'siliconflow' ? 'bg-blue-100' : 'bg-purple-100'
-                    }`}>
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${key === 'siliconflow' ? 'bg-blue-100' : 'bg-purple-100'
+                      }`}>
                       <Cpu className={`w-5 h-5 ${key === 'siliconflow' ? 'text-blue-600' : 'text-purple-600'}`} />
                     </div>
                     <div>
@@ -355,20 +406,18 @@ const ModelSettings: React.FC = () => {
                           <tr key={model.id} className="hover:bg-gray-50">
                             <td className="px-4 py-2 font-mono text-xs">{model.id}</td>
                             <td className="px-4 py-2">
-                              <span className={`text-xs px-2 py-0.5 rounded ${
-                                model.provider === 'siliconflow' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
-                              }`}>
+                              <span className={`text-xs px-2 py-0.5 rounded ${model.provider === 'siliconflow' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                                }`}>
                                 {model.provider === 'siliconflow' ? '硅基' : 'Gemini'}
                               </span>
                             </td>
                             <td className="px-4 py-2 text-center">
                               <button
                                 onClick={() => setSelection(prev => ({ ...prev, [type]: model.id }))}
-                                className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
-                                  selection[type] === model.id
+                                className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${selection[type] === model.id
                                     ? 'border-blue-500 bg-blue-500'
                                     : 'border-gray-300 hover:border-blue-400'
-                                }`}
+                                  }`}
                               >
                                 {selection[type] === model.id && <Check className="w-4 h-4 text-white" />}
                               </button>

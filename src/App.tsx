@@ -11,6 +11,7 @@ import AdminLayout from './components/AdminLayout';
 import AITools from './components/AITools';
 import Dashboard from './components/Dashboard';
 import ModelSettings from './components/ModelSettings';
+import RetrievalSettings from './components/RetrievalSettings';
 
 function App() {
   const { isAuthenticated, checkAuth, user } = useAuthStore();
@@ -46,15 +47,15 @@ function App() {
       >
         <Routes>
           {/* 首页 - 问答页面，无导航栏 */}
-          <Route 
-            path="/" 
+          <Route
+            path="/"
             element={
               <div className="h-screen">
                 <ChatInterface />
               </div>
-            } 
+            }
           />
-          
+
           {/* 管理后台 - 包含导航栏 */}
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Navigate to="/admin/dashboard" replace />} />
@@ -74,13 +75,13 @@ function App() {
                 </div>
               }
             />
-            <Route 
-              path="history" 
+            <Route
+              path="history"
               element={
                 <div className="h-full">
                   <ConversationHistory />
                 </div>
-              } 
+              }
             />
             <Route
               path="settings"
@@ -106,8 +107,16 @@ function App() {
                 </div>
               }
             />
+            <Route
+              path="retrieval"
+              element={
+                <div className="h-full overflow-auto">
+                  <RetrievalSettings />
+                </div>
+              }
+            />
           </Route>
-          
+
           {/* 重定向旧路由到新路由 */}
           <Route path="/knowledge" element={<Navigate to="/admin/knowledge" replace />} />
           <Route path="/history" element={<Navigate to="/admin/history" replace />} />

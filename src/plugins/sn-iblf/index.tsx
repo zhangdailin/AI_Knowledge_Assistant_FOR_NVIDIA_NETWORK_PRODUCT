@@ -1,9 +1,16 @@
 import React, { useState } from 'react';
 import { Search, Copy, Check } from 'lucide-react';
 
+interface Connection {
+  iblf: string;
+  gpuPort: string | null;
+  iblfPort: string | null;
+}
+
 interface Server {
   sn: string;
   hostname: string;
+  connections?: Connection[];
 }
 
 interface Group {
@@ -18,10 +25,15 @@ interface QueryResult {
     found: number;
     notFound: number;
     groups: number;
+    totalConnections?: number;
   };
   groups: Group[];
   notFound: string[];
-  details: Array<{ sn: string; hostname: string; iblfs: string[] }>;
+  details: Array<{ sn: string; hostname: string; iblfs: string[]; connections?: Connection[] }>;
+  topology?: {
+    nodes: Array<{ id: string; type: string; label: string; sn?: string }>;
+    edges: Array<{ source: string; target: string; sourcePort?: string; targetPort?: string }>;
+  };
 }
 
 function getApiServerUrl(): string {
@@ -143,7 +155,16 @@ const SnToIblfTool: React.FC = () => {
         <div className="space-y-6">
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <h3 className="font-bold text-blue-800 mb-2">查询结果</h3>
-            <p>共查询 {result.summary.total} 个SN，找到 {result.summary.found} 个匹配。</p>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span>共查询 <strong>{result.summary.total}</strong> 个SN</span>
+              <span className="text-green-600">✓ 找到 <strong>{result.summary.found}</strong> 个</span>
+              {result.summary.notFound > 0 && (
+                <span className="text-amber-600">✗ 未找到 <strong>{result.summary.notFound}</strong> 个</span>
+              )}
+              {result.summary.totalConnections && (
+                <span className="text-indigo-600">🔗 共 <strong>{result.summary.totalConnections}</strong> 条连接</span>
+              )}
+            </div>
             {result.summary.groups > 1 && (
               <p className="text-orange-600 mt-2">
                 ⚠️ 这些SN连接到不同的IBLF交换机组（共 {result.summary.groups} 组）
@@ -189,24 +210,60 @@ const SnToIblfTool: React.FC = () => {
           )}
 
           <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-            <h4 className="font-bold text-gray-800 mb-3">详细映射</h4>
-            <div className="overflow-x-auto">
+            <h4 className="font-bold text-gray-800 mb-3">详细连接映射</h4>
+            <div className="overflow-x-auto max-h-80">
               <table className="w-full text-sm">
-                <thead>
+                <thead className="bg-gray-100 sticky top-0">
                   <tr className="border-b">
-                    <th className="text-left py-2 px-2">SN</th>
-                    <th className="text-left py-2 px-2">主机名</th>
-                    <th className="text-left py-2 px-2">连接的IBLF</th>
+                    <th className="text-left py-2 px-2 font-medium text-gray-600">SN</th>
+                    <th className="text-left py-2 px-2 font-medium text-gray-600">主机名</th>
+                    <th className="text-left py-2 px-2 font-medium text-gray-600">GPU端口</th>
+                    <th className="text-left py-2 px-2 font-medium text-gray-600">IBLF</th>
+                    <th className="text-left py-2 px-2 font-medium text-gray-600">IBLF端口</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {result.details.map((item, idx) => (
-                    <tr key={idx} className="border-b hover:bg-gray-100">
-                      <td className="py-2 px-2 font-mono">{item.sn}</td>
-                      <td className="py-2 px-2">{item.hostname}</td>
-                      <td className="py-2 px-2 text-xs">{item.iblfs.join(', ')}</td>
-                    </tr>
-                  ))}
+                <tbody className="divide-y divide-gray-100">
+                  {result.details.map((item) => {
+                    // 如果有端口级连接信息，展开显示每条连接
+                    if (item.connections && item.connections.length > 0) {
+                      return item.connections.map((conn, connIdx) => (
+                        <tr key={`${item.sn}-${connIdx}`} className="hover:bg-gray-50">
+                          {connIdx === 0 ? (
+                            <>
+                              <td className="py-2 px-2 font-mono text-xs" rowSpan={item.connections!.length}>
+                                {item.sn}
+                              </td>
+                              <td className="py-2 px-2 text-xs" rowSpan={item.connections!.length}>
+                                {item.hostname}
+                              </td>
+                            </>
+                          ) : null}
+                          <td className="py-2 px-2 text-center">
+                            <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-mono">
+                              {conn.gpuPort || '-'}
+                            </span>
+                          </td>
+                          <td className="py-2 px-2 font-mono text-xs text-green-700">
+                            {conn.iblf.split('-').slice(-3).join('-')}
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs font-mono">
+                              {conn.iblfPort || '-'}
+                            </span>
+                          </td>
+                        </tr>
+                      ));
+                    }
+                    // 兼容旧数据格式
+                    return (
+                      <tr key={item.sn} className="hover:bg-gray-50">
+                        <td className="py-2 px-2 font-mono text-xs">{item.sn}</td>
+                        <td className="py-2 px-2 text-xs">{item.hostname}</td>
+                        <td className="py-2 px-2 text-center text-gray-400">-</td>
+                        <td className="py-2 px-2 text-xs" colSpan={2}>{item.iblfs.join(', ')}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

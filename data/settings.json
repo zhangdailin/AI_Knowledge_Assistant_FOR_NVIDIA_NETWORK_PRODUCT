@@ -5,5 +5,35 @@
     "google": "AIzaSyBbDJPgZm8FRzXndiaKcI4h3ShTXLLUptk",
     "openrouter": "6421f4c1de708d753d72945d06f760143bd1fee5d146d0a097da01d3c6a1ef8c",
     "siliconflow": "sk-vfiiyizfqtxlhsfurukjvjdhhjoujoziniixmskejftkcqfn"
+  },
+  "modelSelection": {
+    "llm": "",
+    "embedding": "",
+    "reranking": "BAAI/bge-reranker-v2-m3"
+  },
+  "retrieval": {
+    "searchCacheSize": 200,
+    "chunkCacheTTL": 30000,
+    "chunkCacheMaxEntries": 20,
+    "searchLimit": 30,
+    "rrfK": 60,
+    "keywordWeight": 1.0,
+    "vectorWeight": 1.0,
+    "vectorMinScore": 0.2,
+    "rerankTopN": 10
+  },
+  "providers": {
+    "siliconflow": {
+      "name": "硅基流动",
+      "enabled": true,
+      "apiKey": "sk-vfiiyizfqtxlhsfurukjvjdhhjoujoziniixmskejftkcqfn",
+      "baseUrl": "https://api.siliconflow.cn"
+    },
+    "gemini": {
+      "name": "Gemini",
+      "enabled": true,
+      "apiKey": "Zhang1996",
+      "baseUrl": "https://gemini.chinablog.xyz"
+    }
   }
 }

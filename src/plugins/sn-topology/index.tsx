@@ -327,6 +327,9 @@ const SnTopologyTool: React.FC = () => {
       });
     });
 
+    // 创建节点 ID 集合用于验证边的有效性
+    const nodeIds = new Set(newNodes.map(n => n.id));
+
     // 根据连接数据创建边
     const edgeColors: Record<string, string> = {
       'server-iblf': '#667eea',
@@ -336,38 +339,46 @@ const SnTopologyTool: React.FC = () => {
       'oob': '#6c5ce7'
     };
 
+    // 辅助函数：根据设备名称获取节点 ID
+    const getNodeIdForEdge = (device: string): string => {
+      const deviceUpper = device.toUpperCase();
+      if (deviceUpper.includes('GPU') || (deviceUpper.startsWith('MDC-') && !deviceUpper.includes('IBLF') && !deviceUpper.includes('SPINE'))) {
+        return 'server';
+      }
+      if (deviceUpper.includes('IBLF')) return `iblf-${device}`;
+      if (deviceUpper.includes('SPINE') && !deviceUpper.includes('OOB')) return `spine-${device}`;
+      if (deviceUpper.includes('CORE')) return `core-${device}`;
+      if (deviceUpper.includes('EDGE') && !deviceUpper.includes('OOB')) return `edge-${device}`;
+      if (deviceUpper.includes('LEAF') && !deviceUpper.includes('OOB')) return `leaf-${device}`;
+      if (deviceUpper.includes('OOB')) return `oob-${device}`;
+      return 'server';
+    };
+
     connections.forEach((conn, idx) => {
-      const sourceId = getNodeId(conn.sourceDevice);
-      const targetId = getNodeId(conn.destDevice);
+      const sourceId = getNodeIdForEdge(conn.sourceDevice);
+      const targetId = getNodeIdForEdge(conn.destDevice);
       const color = edgeColors[conn.layer] || '#999';
 
-      newEdges.push({
-        id: `edge-${idx}`,
-        source: sourceId,
-        target: targetId,
-        label: conn.sourcePort && conn.destPort ? `${conn.sourcePort} → ${conn.destPort}` : undefined,
-        labelStyle: { fontSize: '8px', fill: '#666' },
-        style: { stroke: color, strokeWidth: conn.layer === 'server-iblf' ? 2 : 1.5 },
-        markerEnd: { type: MarkerType.ArrowClosed, color },
-        animated: conn.layer === 'server-iblf'
-      });
+      // 只添加源和目标节点都存在的边
+      if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
+        newEdges.push({
+          id: `edge-${idx}`,
+          source: sourceId,
+          target: targetId,
+          label: conn.sourcePort && conn.destPort ? `${conn.sourcePort} → ${conn.destPort}` : undefined,
+          labelStyle: { fontSize: '8px', fill: '#666' },
+          style: { stroke: color, strokeWidth: conn.layer === 'server-iblf' ? 2 : 1.5 },
+          markerEnd: { type: MarkerType.ArrowClosed, color },
+          animated: conn.layer === 'server-iblf'
+        });
+      }
     });
+
+    console.log(`[Topology] Created ${newNodes.length} nodes, ${newEdges.length} edges from ${connections.length} connections`);
 
     setNodes(newNodes);
     setEdges(newEdges);
   }, [setNodes, setEdges]);
-
-  // 根据设备名称获取节点 ID
-  const getNodeId = (device: string): string => {
-    if (device.includes('GPU') || device.includes('SERVER') || device.startsWith('MDC-') && !device.includes('IBLF')) return 'server';
-    if (device.includes('IBLF')) return `iblf-${device}`;
-    if (device.includes('SPINE') && !device.includes('OOB')) return `spine-${device}`;
-    if (device.includes('CORE')) return `core-${device}`;
-    if (device.includes('EDGE') && !device.includes('OOB')) return `edge-${device}`;
-    if (device.includes('LEAF') && !device.includes('OOB')) return `leaf-${device}`;
-    if (device.includes('OOB')) return `oob-${device}`;
-    return 'server'; // 默认返回 server
-  };
 
   const copyResult = () => {
     if (!result) return;

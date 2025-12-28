@@ -52,7 +52,7 @@ async function writeJSON(filePath, data) {
     await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
     await fs.rename(tempPath, filePath);
   } catch (error) {
-    try { await fs.unlink(tempPath); } catch {}
+    try { await fs.unlink(tempPath); } catch { }
     throw error;
   }
 }
@@ -95,12 +95,12 @@ export async function deleteDocument(documentId) {
     const documents = await getAllDocuments();
     const filtered = documents.filter(d => d.id !== documentId);
     await writeJSON(DOCUMENTS_FILE, filtered);
-    
+
     // 删除 chunks 文件
     try {
-        await fs.unlink(path.join(CHUNKS_DIR, `${documentId}.json`));
-    } catch {}
-    
+      await fs.unlink(path.join(CHUNKS_DIR, `${documentId}.json`));
+    } catch { }
+
     return filtered.length < documents.length;
   } catch (error) {
     console.error(`[storage] 删除文档失败:`, error);
@@ -147,11 +147,11 @@ export async function getChunkStats(documentId) {
     const parentChunks = chunks.filter(c => c.chunkType === 'parent');
     const childChunks = chunks.filter(c => c.chunkType === 'child');
     const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
-    
+
     // 需要 Embedding 的块
     const chunksRequiringEmbedding = [...childChunks, ...normalChunks];
     const withEmbedding = chunksRequiringEmbedding.filter(c => Array.isArray(c.embedding) && c.embedding.length > 0).length;
-    
+
     return {
       total,
       parentCount: parentChunks.length,
@@ -172,28 +172,28 @@ export async function createChunks(chunksData) {
 
   const byDoc = {};
   chunksData.forEach(c => {
-      if(!byDoc[c.documentId]) byDoc[c.documentId] = [];
-      byDoc[c.documentId].push(c);
+    if (!byDoc[c.documentId]) byDoc[c.documentId] = [];
+    byDoc[c.documentId].push(c);
   });
-  
+
   const result = [];
-  
+
   for (const [docId, chunks] of Object.entries(byDoc)) {
-      const filePath = path.join(CHUNKS_DIR, `${docId}.json`);
-      const release = await acquireWriteLock(filePath);
-      try {
-          const existing = await readJSON(filePath, []);
-          const newChunks = chunks.map((c, i) => ({
-              ...c,
-              id: c.id || `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${i}`,
-              createdAt: c.createdAt || new Date().toISOString()
-          }));
-          existing.push(...newChunks);
-          await writeJSON(filePath, existing);
-          result.push(...newChunks);
-      } finally {
-          release();
-      }
+    const filePath = path.join(CHUNKS_DIR, `${docId}.json`);
+    const release = await acquireWriteLock(filePath);
+    try {
+      const existing = await readJSON(filePath, []);
+      const newChunks = chunks.map((c, i) => ({
+        ...c,
+        id: c.id || `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${i}`,
+        createdAt: c.createdAt || new Date().toISOString()
+      }));
+      existing.push(...newChunks);
+      await writeJSON(filePath, existing);
+      result.push(...newChunks);
+    } finally {
+      release();
+    }
   }
   return result;
 }
@@ -215,25 +215,25 @@ export async function updateChunkEmbedding(chunkId, embedding) {
   // 遍历查找（性能较差，但为了兼容性）
   const files = await fs.readdir(CHUNKS_DIR);
   for (const file of files) {
-      if (!file.endsWith('.json')) continue;
-      const filePath = path.join(CHUNKS_DIR, file);
-      const chunks = await readJSON(filePath, []);
-      const index = chunks.findIndex(c => c.id === chunkId);
-      if (index !== -1) {
-          const release = await acquireWriteLock(filePath);
-          try {
-              // 重新读取以防并发
-              const currentChunks = await readJSON(filePath, []);
-              const currentIndex = currentChunks.findIndex(c => c.id === chunkId);
-              if (currentIndex !== -1) {
-                  currentChunks[currentIndex] = { ...currentChunks[currentIndex], embedding };
-                  await writeJSON(filePath, currentChunks);
-                  return true;
-              }
-          } finally {
-              release();
-          }
+    if (!file.endsWith('.json')) continue;
+    const filePath = path.join(CHUNKS_DIR, file);
+    const chunks = await readJSON(filePath, []);
+    const index = chunks.findIndex(c => c.id === chunkId);
+    if (index !== -1) {
+      const release = await acquireWriteLock(filePath);
+      try {
+        // 重新读取以防并发
+        const currentChunks = await readJSON(filePath, []);
+        const currentIndex = currentChunks.findIndex(c => c.id === chunkId);
+        if (currentIndex !== -1) {
+          currentChunks[currentIndex] = { ...currentChunks[currentIndex], embedding };
+          await writeJSON(filePath, currentChunks);
+          return true;
+        }
+      } finally {
+        release();
       }
+    }
   }
   return false;
 }
@@ -243,43 +243,43 @@ export async function updateChunkEmbedding(chunkId, embedding) {
 export async function updateChunkEmbeddings(updates, documentId) {
   await initStorage();
   if (!updates || updates.length === 0) return { success: 0, failed: 0 };
-  
+
   // 如果提供了 documentId，直接去该文件更新
   if (documentId) {
-      const filePath = path.join(CHUNKS_DIR, `${documentId}.json`);
-      const release = await acquireWriteLock(filePath);
-      try {
-          const chunks = await readJSON(filePath, []);
-          const updateMap = new Map(updates.map(u => [u.chunkId, u.embedding]));
-          let updated = 0;
-          
-          for (let i = 0; i < chunks.length; i++) {
-              if (updateMap.has(chunks[i].id)) {
-                  chunks[i] = { ...chunks[i], embedding: updateMap.get(chunks[i].id) };
-                  updated++;
-              }
-          }
-          
-          if (updated > 0) {
-              await writeJSON(filePath, chunks);
-          }
-          return { success: updated, failed: updates.length - updated };
-      } catch (e) {
-          console.error('[storage] 批量更新失败:', e);
-          return { success: 0, failed: updates.length };
-      } finally {
-          release();
+    const filePath = path.join(CHUNKS_DIR, `${documentId}.json`);
+    const release = await acquireWriteLock(filePath);
+    try {
+      const chunks = await readJSON(filePath, []);
+      const updateMap = new Map(updates.map(u => [u.chunkId, u.embedding]));
+      let updated = 0;
+
+      for (let i = 0; i < chunks.length; i++) {
+        if (updateMap.has(chunks[i].id)) {
+          chunks[i] = { ...chunks[i], embedding: updateMap.get(chunks[i].id) };
+          updated++;
+        }
       }
+
+      if (updated > 0) {
+        await writeJSON(filePath, chunks);
+      }
+      return { success: updated, failed: updates.length - updated };
+    } catch (e) {
+      console.error('[storage] 批量更新失败:', e);
+      return { success: 0, failed: updates.length };
+    } finally {
+      release();
+    }
   } else {
-      // 没有 documentId，退化为逐个更新（或者按文件分组）
-      // 这里简化处理：逐个调用 updateChunkEmbedding
-      let success = 0;
-      for (const update of updates) {
-          if (await updateChunkEmbedding(update.chunkId, update.embedding)) {
-              success++;
-          }
+    // 没有 documentId，退化为逐个更新（或者按文件分组）
+    // 这里简化处理：逐个调用 updateChunkEmbedding
+    let success = 0;
+    for (const update of updates) {
+      if (await updateChunkEmbedding(update.chunkId, update.embedding)) {
+        success++;
       }
-      return { success, failed: updates.length - success };
+    }
+    return { success, failed: updates.length - success };
   }
 }
 
@@ -303,7 +303,7 @@ const TERM_MAPPINGS = {
   '调试': ['debug', 'trace', 'log', 'monitor'],
   '升级': ['upgrade', 'update', 'install', 'patch'],
   '连接': ['connect', 'ssh', 'telnet', 'console', 'link'],
-  
+
   // --- Objects / Entities ---
   '所有': ['all', 'full', 'entire', 'everything', 'total', 'whole'],
   '设备': ['device', 'system', 'switch', 'router', 'box', 'hardware', 'platform', 'node', 'chassis'],
@@ -319,7 +319,7 @@ const TERM_MAPPINGS = {
   '错误': ['error', 'fail', 'failure', 'drop', 'discard', 'loss', 'down'],
   '起不来': ['down', 'fail', 'failure', 'not established'],
   '怎么办': ['troubleshoot', 'fix', 'solution', 'how to', 'debug'],
-  
+
   // --- Protocols / Technologies ---
   'bgp': ['border gateway protocol', 'ebgp', 'ibgp'],
   'ospf': ['open shortest path first'],
@@ -345,63 +345,89 @@ const TERM_MAPPINGS = {
   'dns': ['domain name system', 'resolve', 'nameserver']
 };
 
-// 简单的内存缓存
+// 简单的内存缓存 (带 LRU 淘汰)
 const chunkCache = new Map(); // file -> { data: [], timestamp: number }
-const CACHE_TTL = 60 * 1000; // 1 minute
+let CACHE_TTL = 30 * 1000; // 默认 30s，可从配置覆盖
+let MAX_CACHE_ENTRIES = 20; // 默认最大 20 个文件，可从配置覆盖
+
+// 从配置加载缓存参数
+async function loadCacheConfig() {
+  try {
+    const settings = await readJSON(SETTINGS_FILE, {});
+    if (settings.retrieval) {
+      CACHE_TTL = settings.retrieval.chunkCacheTTL || CACHE_TTL;
+      MAX_CACHE_ENTRIES = settings.retrieval.chunkCacheMaxEntries || MAX_CACHE_ENTRIES;
+    }
+  } catch (e) {
+    // 使用默认值
+  }
+}
+
+// 初始化时加载配置
+loadCacheConfig();
 
 async function getChunksFromFile(file) {
-    const now = Date.now();
-    const cached = chunkCache.get(file);
-    if (cached && (now - cached.timestamp < CACHE_TTL)) {
-        return cached.data;
+  const now = Date.now();
+  const cached = chunkCache.get(file);
+  if (cached && (now - cached.timestamp < CACHE_TTL)) {
+    // LRU: 移动到最后
+    chunkCache.delete(file);
+    chunkCache.set(file, cached);
+    return cached.data;
+  }
+
+  // 清理过期缓存
+  for (const [key, val] of chunkCache.entries()) {
+    if (now - val.timestamp > CACHE_TTL) {
+      chunkCache.delete(key);
     }
-    
-    // 清理过期缓存
-    for (const [key, val] of chunkCache.entries()) {
-        if (now - val.timestamp > CACHE_TTL) {
-            chunkCache.delete(key);
-        }
+  }
+
+  // LRU 淘汰：当超过最大条目数时删除最早的
+  while (chunkCache.size >= MAX_CACHE_ENTRIES) {
+    const firstKey = chunkCache.keys().next().value;
+    chunkCache.delete(firstKey);
+  }
+
+  const filePath = path.join(CHUNKS_DIR, file);
+  try {
+    const data = await readJSON(filePath, []);
+    // 只有数据是数组时才缓存
+    if (Array.isArray(data)) {
+      chunkCache.set(file, { data, timestamp: now });
+      return data;
     }
-    
-    const filePath = path.join(CHUNKS_DIR, file);
-    try {
-        const data = await readJSON(filePath, []);
-        // 只有数据是数组时才缓存
-        if (Array.isArray(data)) {
-            chunkCache.set(file, { data, timestamp: now });
-            return data;
-        }
-        return [];
-    } catch (e) {
-        console.error(`[storage] 读取文件缓存失败: ${file}`, e);
-        return [];
-    }
+    return [];
+  } catch (e) {
+    console.error(`[storage] 读取文件缓存失败: ${file}`, e);
+    return [];
+  }
 }
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export async function searchChunks(query, limit = 30) {
+export async function searchChunks(query, limit = 30, categoryIds = null) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   const queryLower = query.toLowerCase();
-  
+
   const rawQueryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
-    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w))); 
+    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w)));
 
   const intent = { isCommand: false, isConcept: false, isTroubleshooting: false };
 
   if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k)) ||
-      /nv\s+(set|show|config|unset|action)/.test(queryLower) ||
-      queryLower.includes('nvue') || queryLower.includes('如何使用')) {
+    /nv\s+(set|show|config|unset|action)/.test(queryLower) ||
+    queryLower.includes('nvue') || queryLower.includes('如何使用')) {
     intent.isCommand = true;
   }
 
   if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理', '解释'].some(k => queryLower.includes(k))) {
     intent.isConcept = true;
   }
-  
+
   if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错', '怎么办', '起不来'].some(k => queryLower.includes(k))) {
     intent.isTroubleshooting = true;
   }
@@ -417,43 +443,51 @@ export async function searchChunks(query, limit = 30) {
       }
     }
   }
-  
+
   const expandedQueryWords = Array.from(queryWordsSet);
   const technicalTerms = expandedQueryWords.filter(w => /^[a-z0-9]+$/.test(w));
   const technicalTermsSet = new Set(technicalTerms);
-  
+
   const documents = await getAllDocuments();
   const docMap = new Map(documents.map(d => [d.id, d]));
 
   const results = [];
-  
+
   // Pre-compile word patterns for faster matching if needed, but includes is often faster for simple strings
-  
+
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const docId = file.replace('.json', '');
     const doc = docMap.get(docId);
     let docScoreBonus = 0;
-    
+
     if (doc) {
       const filenameLower = doc.filename.toLowerCase();
       for (const word of expandedQueryWords) {
         if (filenameLower.includes(word)) docScoreBonus += 2;
       }
+
+      // 分类优先加分：如果指定了分类，匹配分类的文档获得加分
+      if (categoryIds && categoryIds.length > 0) {
+        const docCatId = doc.categoryId || 'default';
+        if (categoryIds.includes(docCatId)) {
+          docScoreBonus += 20; // 分类匹配加分
+        }
+      }
     }
 
     const chunks = await getChunksFromFile(file);
-    
+
     for (const chunk of chunks) {
       const contentLower = chunk.content.toLowerCase();
       let score = docScoreBonus;
       let matchedCount = 0;
-      
+
       if (contentLower.includes(queryLower)) score += 10;
-      
+
       for (const word of expandedQueryWords) {
         if (!word) continue;
-        
+
         // Use a more efficient way to count occurrences without creating arrays
         let count = 0;
         let pos = contentLower.indexOf(word);
@@ -461,7 +495,7 @@ export async function searchChunks(query, limit = 30) {
           count++;
           pos = contentLower.indexOf(word, pos + word.length);
         }
-        
+
         if (count > 0) {
           const tf = 1 + Math.log(count);
           const wordScore = technicalTermsSet.has(word) ? 3 : 1;
@@ -469,50 +503,46 @@ export async function searchChunks(query, limit = 30) {
           matchedCount++;
         }
       }
-      
+
       if (matchedCount > 1) score += matchedCount * 1.5;
 
       if (score > 2) {
-          if (intent.isCommand) {
-             const hasCommandKeywords = contentLower.includes('nv config') ||
-                                      contentLower.includes('nv show') ||
-                                      contentLower.includes('nv set') ||
-                                      /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower);
+        if (intent.isCommand) {
+          const hasCommandKeywords = contentLower.includes('nv config') ||
+            contentLower.includes('nv show') ||
+            contentLower.includes('nv set') ||
+            /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower);
 
-             if (hasCommandKeywords || contentLower.includes('```')) {
-                 score += 10;
-                 if ((queryLower.includes('show') || queryLower.includes('显示')) && contentLower.includes('show')) score += 5;
-                 if ((queryLower.includes('config') || queryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
-                 if (queryLower.includes('set') && contentLower.includes('nv set')) score += 8;
-                 if ((queryLower.includes('mlag') || queryLower.includes('clag')) && (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) score += 15;
-             }
+          if (hasCommandKeywords || contentLower.includes('```')) {
+            score += 10;
+            if ((queryLower.includes('show') || queryLower.includes('显示')) && contentLower.includes('show')) score += 5;
+            if ((queryLower.includes('config') || queryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
+            if (queryLower.includes('set') && contentLower.includes('nv set')) score += 8;
+            if ((queryLower.includes('mlag') || queryLower.includes('clag')) && (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) score += 15;
           }
+        }
 
-          if (intent.isConcept) {
-             if (/\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower)) score += 15;
-             if (contentLower.startsWith('#')) score += 10;
-          }
-          
-          if (intent.isTroubleshooting) {
-             if (['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'].some(t => contentLower.includes(t))) score += 15;
-          }
+        if (intent.isConcept) {
+          if (/\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower)) score += 15;
+          if (contentLower.startsWith('#')) score += 10;
+        }
+
+        if (intent.isTroubleshooting) {
+          if (['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'].some(t => contentLower.includes(t))) score += 15;
+        }
       }
-      
+
       if (score > 0) {
         results.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
       }
     }
 
     if (results.length > limit * 50) {
-        results.sort((a, b) => b.score - a.score);
-        results.length = limit * 25; 
+      results.sort((a, b) => b.score - a.score);
+      results.length = limit * 25;
     }
   }
-  
-  return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
-}
 
-  
   return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
 }
 
@@ -528,26 +558,42 @@ function cosine(a, b) {
   return denom > 0 ? dot / denom : 0;
 }
 
-export async function vectorSearchChunks(queryEmbedding, limit = 30) {
+export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds = null) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   let topResults = [];
 
-  // 降低向量搜索阈值，提高召回率
-  const minScore = 0.2;
+  // 从配置读取向量搜索阈值
+  const settings = await readJSON(SETTINGS_FILE, {});
+  const minScore = settings.retrieval?.vectorMinScore ?? 0.2;
+
+  // 获取文档映射用于分类匹配
+  const documents = await getAllDocuments();
+  const docMap = new Map(documents.map(d => [d.id, d]));
 
   // 第一步：从所有文件中收集所有chunks
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
+    const docId = file.replace('.json', '');
+    const doc = docMap.get(docId);
 
     const chunks = await getChunksFromFile(file);
 
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
-        const score = cosine(queryEmbedding, chunk.embedding);
+        let score = cosine(queryEmbedding, chunk.embedding);
+
+        // 分类优先加分：如果指定了分类，匹配分类的结果获得加分
+        if (categoryIds && categoryIds.length > 0 && doc) {
+          const docCatId = doc.categoryId || 'default';
+          if (categoryIds.includes(docCatId)) {
+            score += 0.15; // 分类匹配加分（向量分数范围 0-1）
+          }
+        }
+
         // 只保留相似度足够的结果
         if (score > minScore) {
-           topResults.push({ chunk, score });
+          topResults.push({ chunk, score });
         }
       }
     }
@@ -563,7 +609,7 @@ export async function findChunksByPattern(pattern, limit = 10) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   const results = [];
-  
+
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const chunks = await getChunksFromFile(file);

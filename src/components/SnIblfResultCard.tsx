@@ -1,9 +1,16 @@
 import React, { useState } from 'react';
 import { Copy, Check, Server, Network, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 
+interface Connection {
+  iblf: string;
+  gpuPort: string | null;
+  iblfPort: string | null;
+}
+
 interface Server {
   sn: string;
   hostname: string;
+  connections?: Connection[];
 }
 
 interface Group {
@@ -18,6 +25,7 @@ export interface SnIblfResult {
     found: number;
     notFound: number;
     groups: number;
+    totalConnections?: number;
   };
   groups: Group[];
   notFound: string[];
@@ -81,6 +89,11 @@ const SnIblfResultCard: React.FC<Props> = ({ result, queriedSNs }) => {
           {result.summary.notFound > 0 && (
             <span className="text-amber-600">
               ✗ 未找到 <span className="font-semibold">{result.summary.notFound}</span>
+            </span>
+          )}
+          {result.summary.totalConnections && (
+            <span className="text-indigo-600">
+              🔗 <span className="font-semibold">{result.summary.totalConnections}</span> 条连接
             </span>
           )}
         </div>

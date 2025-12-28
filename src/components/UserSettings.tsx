@@ -144,30 +144,33 @@ export default function UserSettings() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      {/* 顶部区域 */}
-      <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200/50 sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-gray-500">管理您的账户和应用偏好</p>
-            <button
-              onClick={handleSave}
-              disabled={saveStatus === 'saving'}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 shadow-sm ${
-                saveStatus === 'saved'
-                  ? 'bg-green-500 text-white'
-                  : saveStatus === 'saving'
-                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-blue-500 to-indigo-500 text-white hover:shadow-md hover:scale-[1.02]'
-              }`}
-            >
-              {saveStatus === 'saved' ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-              <span>{saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : '保存更改'}</span>
-            </button>
+    <div className="p-6 bg-gray-50 min-h-full">
+      <div className="max-w-5xl mx-auto space-y-6">
+        {/* 标题栏 */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">用户设置</h1>
+            <p className="text-sm text-gray-500 mt-1">管理您的账户和应用偏好</p>
           </div>
+          <button
+            onClick={handleSave}
+            disabled={saveStatus === 'saving'}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+              saveStatus === 'saved'
+                ? 'bg-green-500 text-white'
+                : saveStatus === 'saving'
+                ? 'bg-gray-200 text-gray-400'
+                : 'bg-blue-500 text-white hover:bg-blue-600'
+            }`}
+          >
+            {saveStatus === 'saved' ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+            <span>{saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : '保存更改'}</span>
+          </button>
+        </div>
 
-          {/* 标签导航 */}
-          <div className="flex gap-1 mt-4 overflow-x-auto pb-px">
+        {/* 标签导航 */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-1">
+          <div className="flex gap-1 overflow-x-auto">
             {tabs.map(tab => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -175,10 +178,10 @@ export default function UserSettings() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-xl transition-all whitespace-nowrap ${
+                  className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${
                     isActive
-                      ? 'bg-white text-blue-600 shadow-sm border-t border-x border-gray-200/50'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-white/50'
+                      ? 'bg-blue-50 text-blue-600'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
                   }`}
                 >
                   <Icon className="w-4 h-4" />
@@ -188,12 +191,9 @@ export default function UserSettings() {
             })}
           </div>
         </div>
-      </div>
 
-      {/* 内容区域 */}
-      <div className="max-w-5xl mx-auto px-6 py-8">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200/50 overflow-hidden">
-          <div className="p-6 sm:p-8">
+        {/* 内容区域 */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sm:p-8">
             {activeTab === 'profile' && (
               <div className="space-y-8">
                 {/* 用户头像卡片 */}
@@ -478,7 +478,6 @@ export default function UserSettings() {
                 </div>
               </div>
             )}
-          </div>
         </div>
       </div>
     </div>

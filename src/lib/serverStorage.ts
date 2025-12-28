@@ -73,7 +73,7 @@ class ServerStorageManager {
         userId: 'shared', // 服务器存储使用共享用户ID
         ...documentData
       };
-      
+
       const res = await fetch(`${this.apiUrl}/api/documents`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -106,6 +106,23 @@ class ServerStorageManager {
     } catch (error) {
       console.error('更新文档失败:', error);
       return null;
+    }
+  }
+
+  async moveDocumentCategory(documentId: string, categoryId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/documents/${documentId}/category`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoryId })
+      });
+      if (!res.ok) {
+        throw new Error(`移动文档失败: ${res.statusText}`);
+      }
+      return true;
+    } catch (error) {
+      console.error('移动文档失败:', error);
+      return false;
     }
   }
 

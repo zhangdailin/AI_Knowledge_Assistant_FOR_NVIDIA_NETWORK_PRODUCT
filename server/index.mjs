@@ -4,7 +4,7 @@ import multer from 'multer';
 import { createRequire } from 'node:module';
 import * as storage from './storage.mjs';
 import * as taskQueue from './taskQueue.mjs';
-import { embedText } from './embedding.mjs';
+import { embedText, rerankDocuments } from './embedding.mjs';
 import { validateFileType, getFileCategory } from './fileValidation.mjs';
 import XLSX from 'xlsx';
 
@@ -46,17 +46,22 @@ class SimpleLRUCache {
 }
 const searchCache = new SimpleLRUCache(200);
 
-// RRF 融合算法
-function fuseResults(keywordResults, vectorResults, query, maxResults) {
+// RRF 融合算法 (参数可配置)
+function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
   const queryLower = query.toLowerCase();
   const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
-                        ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
+    ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
   const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus'].some(k => queryLower.includes(k));
 
   const combinedResults = new Map();
-  const k = 60;
-  const keywordWeight = (isCommandQuery || isTechQuery) ? 1.5 : 1.0;
-  const vectorWeight = (isCommandQuery || isTechQuery) ? 0.8 : 1.0;
+  // 从配置读取 RRF K 值，默认 60
+  const k = config.rrfK ?? 60;
+  // 从配置读取基础权重
+  const baseKeywordWeight = config.keywordWeight ?? 1.0;
+  const baseVectorWeight = config.vectorWeight ?? 1.0;
+  // 根据查询类型动态调整
+  const keywordWeight = (isCommandQuery || isTechQuery) ? baseKeywordWeight * 1.5 : baseKeywordWeight;
+  const vectorWeight = (isCommandQuery || isTechQuery) ? baseVectorWeight * 0.8 : baseVectorWeight;
 
   keywordResults.forEach((chunk, index) => {
     const id = chunk.id;
@@ -146,26 +151,26 @@ async function processUploadedFile(documentId, file) {
     const fileCategory = getFileCategory(fixedFilename, mime);
 
     if (fileCategory === 'pdf') {
-       const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
-       const parser = new PdfParseClass({ data: file.buffer });
-       const result = await parser.getText({});
-       text = result?.text || '';
+      const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
+      const parser = new PdfParseClass({ data: file.buffer });
+      const result = await parser.getText({});
+      text = result?.text || '';
     } else if (fileCategory === 'word') {
-       const result = await mammoth.extractRawText({ buffer: file.buffer });
-       text = result.value;
+      const result = await mammoth.extractRawText({ buffer: file.buffer });
+      text = result.value;
     } else if (fileCategory === 'excel') {
-       const workbook = XLSX.read(file.buffer, { type: 'buffer', cellFormula: false, cellStyles: false });
-       const sheets = workbook.SheetNames.map(name => {
-         const sheet = workbook.Sheets[name];
-         const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-         return `【${name}】\n${csv}`;
-       });
-       text = sheets.join('\n\n');
+      const workbook = XLSX.read(file.buffer, { type: 'buffer', cellFormula: false, cellStyles: false });
+      const sheets = workbook.SheetNames.map(name => {
+        const sheet = workbook.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+        return `【${name}】\n${csv}`;
+      });
+      text = sheets.join('\n\n');
     } else if (fileCategory === 'text') {
-       text = file.buffer.toString('utf-8');
+      text = file.buffer.toString('utf-8');
     } else {
-       console.warn(`[Async] 未知文件类型: ${mime}, 尝试作为文本处理`);
-       text = file.buffer.toString('utf-8');
+      console.warn(`[Async] 未知文件类型: ${mime}, 尝试作为文本处理`);
+      text = file.buffer.toString('utf-8');
     }
 
     text = (text || '').trim();
@@ -178,42 +183,42 @@ async function processUploadedFile(documentId, file) {
     await storage.updateDocument(documentId, {
       contentPreview: text.substring(0, 500)
     });
-    
+
     // 2. 分块
     // 根据文件大小调整参数
     // 大文件使用更大的块大小，减少块数量
     let parentSize = 2000;
     let childSize = 600;
-    
+
     if (text.length > 500 * 1024) {
       // 大文件：使用更大的块
       parentSize = 3000;
       childSize = 800;
       console.log(`[Async] 大文件检测，使用优化参数: parentSize=${parentSize}, childSize=${childSize}`);
     }
-    
+
     const chunkStartTime = Date.now();
     const chunks = chunking.enhancedParentChildChunking(text, 4000, parentSize, childSize);
     const chunkTime = Date.now() - chunkStartTime;
-    
+
     // 详细统计
     const parentChunks = chunks.filter(c => c.chunkType === 'parent');
     const childChunks = chunks.filter(c => c.chunkType === 'child');
     const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
-    
+
     console.log(`[Async] 分块完成，耗时: ${chunkTime}ms`);
     console.log(`[Async] 块数统计: 总计 ${chunks.length} 个`);
     console.log(`[Async]   - 父块: ${parentChunks.length} 个`);
     console.log(`[Async]   - 子块: ${childChunks.length} 个`);
     console.log(`[Async]   - 普通块: ${normalChunks.length} 个`);
-    
+
     // 检查内容长度
     const chunksWithContent = chunks.filter(c => c.content && c.content.trim().length > 0);
     const emptyChunks = chunks.length - chunksWithContent.length;
     if (emptyChunks > 0) {
       console.warn(`[Async] 警告: 有 ${emptyChunks} 个空 chunks`);
     }
-    
+
     // 显示前几个 chunks 的内容长度
     if (chunks.length > 0) {
       const sampleChunks = chunks.slice(0, 5);
@@ -223,7 +228,7 @@ async function processUploadedFile(documentId, file) {
         console.log(`[Async]   [${idx + 1}] ${c.chunkType || 'normal'}: ${contentLen} 字符`);
       });
     }
-    
+
     if (chunks.length === 0) {
       throw new Error('分块失败：未生成任何 chunks');
     }
@@ -232,22 +237,22 @@ async function processUploadedFile(documentId, file) {
     const chunksWithDocId = chunks.map(c => ({ ...c, documentId }));
     await storage.createChunks(chunksWithDocId);
     console.log(`[Async] chunks 已保存到存储`);
-    
+
     // 4. 生成 Embedding (复用 taskQueue)
     // 注意：taskQueue.processEmbeddingTask 需要手动触发
     // 或者我们直接创建任务并调用它
     const task = taskQueue.createTask('generate_embeddings', documentId);
     await taskQueue.processEmbeddingTask(task.id, documentId);
-    
+
     // 5. 更新状态
     await storage.updateDocument(documentId, { status: 'ready' });
     console.log(`[Async] 文档处理完成: ${documentId}`);
-    
+
   } catch (error) {
     console.error(`[Async] 处理文档失败: ${documentId}`, error);
-    await storage.updateDocument(documentId, { 
-      status: 'error', 
-      errorMessage: error.message 
+    await storage.updateDocument(documentId, {
+      status: 'error',
+      errorMessage: error.message
     });
   }
 }
@@ -459,6 +464,25 @@ app.put('/api/documents/:id', async (req, res) => {
   }
 });
 
+// 移动文档到指定分类
+app.put('/api/documents/:id/category', async (req, res) => {
+  try {
+    const { categoryId } = req.body;
+    if (!categoryId) {
+      return res.status(400).json({ ok: false, error: '缺少 categoryId' });
+    }
+    const document = await storage.updateDocument(req.params.id, { categoryId });
+    if (!document) {
+      return res.status(404).json({ ok: false, error: '文档不存在' });
+    }
+    console.log(`[API] 文档 ${req.params.id} 移动到分类 ${categoryId}`);
+    res.json({ ok: true, document });
+  } catch (error) {
+    console.error('移动文档失败:', error);
+    res.status(500).json({ ok: false, error: '移动文档失败' });
+  }
+});
+
 // 删除文档
 app.delete('/api/documents/:id', async (req, res) => {
   try {
@@ -471,10 +495,10 @@ app.delete('/api/documents/:id', async (req, res) => {
     console.error('[API] 错误堆栈:', error.stack);
     // 如果是 JSON 解析错误，尝试返回更友好的错误信息
     if (error instanceof SyntaxError || error.message.includes('JSON')) {
-      res.status(500).json({ 
-        ok: false, 
+      res.status(500).json({
+        ok: false,
         error: '删除文档失败：数据文件可能已损坏，系统已尝试自动修复。请刷新页面后重试。',
-        detail: error.message 
+        detail: error.message
       });
     } else {
       res.status(500).json({ ok: false, error: '删除文档失败', detail: error.message });
@@ -525,13 +549,13 @@ app.post('/api/documents/:id/chunks', async (req, res) => {
     if (!Array.isArray(chunksData)) {
       return res.status(400).json({ ok: false, error: 'chunks 必须是数组' });
     }
-    
+
     // 为每个 chunk 添加 documentId
     const chunksWithDocId = chunksData.map(chunk => ({
       ...chunk,
       documentId: req.params.id
     }));
-    
+
     const newChunks = await storage.createChunks(chunksWithDocId);
     res.json({ ok: true, chunks: newChunks });
   } catch (error) {
@@ -547,7 +571,7 @@ app.put('/api/chunks/:id/embedding', async (req, res) => {
     if (!Array.isArray(embedding)) {
       return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
     }
-    
+
     const updated = await storage.updateChunkEmbedding(req.params.id, embedding);
     if (!updated) {
       return res.status(404).json({ ok: false, error: 'chunk 不存在' });
@@ -562,23 +586,57 @@ app.put('/api/chunks/:id/embedding', async (req, res) => {
 // 搜索 chunks (混合检索：关键词 + 向量)
 app.get('/api/chunks/search', async (req, res) => {
   try {
-    const { q, limit = 30 } = req.query;
+    const { q, limit, categoryId } = req.query;
     if (!q) return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
 
-    const cacheKey = `${q}_${limit}`;
+    // 从配置读取检索参数
+    const settings = await storage.getSettings();
+    const retrievalConfig = settings.retrieval || {};
+    const searchLimit = parseInt(limit) || retrievalConfig.searchLimit || 30;
+    const rerankTopN = retrievalConfig.rerankTopN || 10;
+
+    // 展开分类：如果指定了 categoryId，获取该分类及其子分类的所有 ID
+    let categoryIds = null;
+    if (categoryId) {
+      const categoriesData = await storage.getCategories();
+      const categoryTree = categoriesData.tree || [];
+
+      // 递归获取分类及其子分类 ID
+      const getCategoryAndChildrenIds = (catId, nodes) => {
+        const ids = [catId];
+        const findAndCollect = (nodeList) => {
+          for (const node of nodeList) {
+            if (node.id === catId) {
+              const collectIds = (n) => {
+                ids.push(n.id);
+                if (n.children) n.children.forEach(collectIds);
+              };
+              if (node.children) node.children.forEach(collectIds);
+              return;
+            }
+            if (node.children) findAndCollect(node.children);
+          }
+        };
+        findAndCollect(nodes);
+        return ids;
+      };
+
+      categoryIds = getCategoryAndChildrenIds(categoryId, categoryTree);
+    }
+
+    const cacheKey = `${q}_${searchLimit}_${categoryId || 'all'}`;
     const cached = searchCache.get(cacheKey);
     if (cached) return res.json({ ok: true, chunks: cached, _cached: true });
 
-    const maxResults = parseInt(limit);
     const startTime = Date.now();
 
-    // 1. 并行执行：关键词搜索 + 向量生成
-    const keywordSearchPromise = storage.searchChunks(q, maxResults);
+    // 1. 并行执行：关键词搜索 + 向量生成（带分类优先加分）
+    const keywordSearchPromise = storage.searchChunks(q, searchLimit, categoryIds);
     const vectorSearchPromise = (async () => {
       try {
         const embedding = await embedText(q);
-        if (embedding) return await storage.vectorSearchChunks(embedding, maxResults);
-      } catch (e) {}
+        if (embedding) return await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
+      } catch (e) { }
       return [];
     })();
 
@@ -587,12 +645,17 @@ app.get('/api/chunks/search', async (req, res) => {
       vectorSearchPromise
     ]);
 
-    console.log(`[Search] Query: "${q}" | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
+    console.log(`[Search] Query: "${q}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
 
-    // 2. 结果融合
-    const finalResults = fuseResults(keywordResults, vectorResults, q, maxResults);
-    
-    // 3. 写入缓存
+    // 2. 结果融合 (传入配置参数)
+    let finalResults = fuseResults(keywordResults, vectorResults, q, searchLimit, retrievalConfig);
+
+    // 3. Reranking (使用配置的 topN)
+    if (finalResults.length > 0) {
+      finalResults = await rerankDocuments(q, finalResults, rerankTopN);
+    }
+
+    // 4. 写入缓存
     searchCache.set(cacheKey, finalResults);
 
     res.json({ ok: true, chunks: finalResults });
@@ -609,7 +672,7 @@ app.post('/api/chunks/vector-search', async (req, res) => {
     if (!Array.isArray(embedding)) {
       return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
     }
-    
+
     const results = await storage.vectorSearchChunks(embedding, parseInt(limit));
     res.json({ ok: true, results });
   } catch (error) {
@@ -802,13 +865,13 @@ app.post('/api/documents/:id/generate-embeddings', async (req, res) => {
     console.log(`[API] [DEBUG] 创建 embedding 任务，文档 ID: ${documentId}`);
     // #endregion
     console.log(`[API] 创建 embedding 任务，文档 ID: ${documentId}`);
-    
+
     const task = taskQueue.createTask('generate_embeddings', documentId);
     // #region agent log
     console.log(`[API] [DEBUG] 任务已创建: ${task.id}, status=${task.status}, type=${task.type}`);
     // #endregion
     console.log(`[API] 任务已创建: ${task.id}, status=${task.status}`);
-    
+
     // 异步处理任务（不阻塞响应）
     // #region agent log
     console.log(`[API] [DEBUG] 准备异步处理任务 ${task.id}`);
@@ -821,13 +884,13 @@ app.post('/api/documents/:id/generate-embeddings', async (req, res) => {
       console.error(`[API] 处理 embedding 任务 ${task.id} 失败:`, error);
       console.error(`[API] 错误堆栈:`, error.stack);
     });
-    
+
     // 添加日志以确认任务已启动
     // #region agent log
     console.log(`[API] [DEBUG] 任务 ${task.id} 已提交异步处理`);
     // #endregion
     console.log(`[API] 任务 ${task.id} 已提交异步处理`);
-    
+
     res.json({ ok: true, taskId: task.id, task });
   } catch (error) {
     // #region agent log
@@ -878,39 +941,74 @@ app.post('/api/sn-to-iblf', async (req, res) => {
     const results = [];
     const notFound = [];
     const snMap = new Map(); // SN -> Hostname
-    const iblfMap = new Map(); // Hostname -> Set<IBLF>
+    const connectionMap = new Map(); // Hostname -> [{iblf, gpuPort, iblfPort}]
+    const allConnections = []; // 所有连接关系
 
     // 预处理查询列表
     const pendingSNs = snList.map(sn => sn.trim().toUpperCase()).filter(Boolean);
     if (pendingSNs.length === 0) return res.json({ ok: true, groups: [], notFound: [] });
 
-    // 只需要扫描一次所有 Chunks，而不是拼接巨型字符串
+    // 扫描所有 Chunks
     await storage.scanChunks(chunk => {
       const content = chunk.content;
-      
-      // 优化 1：一次扫描匹配所有待查 SN
+
+      // 1. 匹配 SN -> Hostname
       for (const sn of pendingSNs) {
         if (!snMap.has(sn) && content.includes(sn)) {
-          const snPattern = new RegExp(`${sn}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
-          const match = content.match(snPattern);
-          if (match) snMap.set(sn, match[1]);
+          // 匹配格式: SN,SN,SN,SN,SN,hostname
+          const snPattern = new RegExp(`${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]*(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+          let match = content.match(snPattern);
+          if (match) {
+            snMap.set(sn, match[1]);
+          } else {
+            // 备选匹配
+            const altPattern = new RegExp(`${sn}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+            match = content.match(altPattern);
+            if (match) snMap.set(sn, match[1]);
+          }
         }
       }
 
-      // 优化 2：匹配 IBLF 连接关系
-      // 如果内容包含 IBLF 关键字，尝试提取所有连接信息并缓存
-      if (content.includes('IBLF')) {
-        const iblfMatches = [...content.matchAll(/(MDC-[A-Z0-9-]+-GPU-\d+)[^\\n]*?(MDC-[A-Z0-9-]+-IBLF-\d+)/gi)];
-        for (const m of iblfMatches) {
-          const host = m[1];
-          const iblf = m[2];
-          if (!iblfMap.has(host)) iblfMap.set(host, new Set());
-          iblfMap.get(host).add(iblf);
+      // 2. 解析 CSV 格式的连接关系
+      // 格式: ...,MDC-DH1E-A07-POD1-GPU-001,1,MMS4X00,1E,1E-G-22,17,MDC-DH1E-G22-17U-POD1-RAIL1-IBLF-001,1/1,...
+      if (content.includes('IBLF') && content.includes('GPU')) {
+        const lines = content.split('\n');
+        for (const line of lines) {
+          // 提取 GPU 主机名和 IBLF 名称
+          const gpuMatch = line.match(/(MDC-[A-Z0-9-]+-GPU-\d+)/gi);
+          const iblfMatch = line.match(/(MDC-[A-Z0-9-]+-IBLF-\d+)/gi);
+
+          if (gpuMatch && iblfMatch) {
+            const gpu = gpuMatch[0].toUpperCase();
+            const iblf = iblfMatch[0].toUpperCase();
+
+            // 尝试提取端口信息
+            // GPU 端口: 在 GPU 名称后面的单个数字
+            const gpuPortMatch = line.match(new RegExp(`${gpu.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,\\s]+(\\d+)`, 'i'));
+            // IBLF 端口: 在 IBLF 名称后面的 x/x 格式
+            const iblfPortMatch = line.match(new RegExp(`${iblf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,\\s]+(\\d+/\\d+)`, 'i'));
+
+            const conn = {
+              gpu,
+              iblf,
+              gpuPort: gpuPortMatch ? gpuPortMatch[1] : null,
+              iblfPort: iblfPortMatch ? iblfPortMatch[1] : null
+            };
+
+            if (!connectionMap.has(gpu)) connectionMap.set(gpu, []);
+            // 避免重复
+            const existing = connectionMap.get(gpu);
+            if (!existing.some(c => c.iblf === iblf && c.gpuPort === conn.gpuPort)) {
+              existing.push(conn);
+              allConnections.push(conn);
+            }
+          }
         }
       }
-      return true; // 继续扫描
+      return true;
     });
 
+    // 构建结果
     for (const sn of pendingSNs) {
       const hostname = snMap.get(sn);
       if (!hostname) {
@@ -918,21 +1016,22 @@ app.post('/api/sn-to-iblf', async (req, res) => {
         continue;
       }
 
-      let iblfs = Array.from(iblfMap.get(hostname) || []);
+      const connections = connectionMap.get(hostname.toUpperCase()) || [];
+      const iblfs = [...new Set(connections.map(c => c.iblf))].sort();
 
-      // 备用逻辑：推断 IBLF
-      if (iblfs.length === 0) {
-        const locMatch = hostname.match(/MDC-(DH\d[EW])-[A-Z](\d+)-POD(\d)/i);
-        if (locMatch) {
-          // 如果需要推断，我们可以进行二次精准扫描（这里简化处理）
-          // 实际生产中建议在第一次扫描时就收集位置信息
-        }
-      }
-
-      results.push({ sn, hostname, iblfs: iblfs.sort() });
+      results.push({
+        sn,
+        hostname,
+        iblfs,
+        connections: connections.map(c => ({
+          iblf: c.iblf,
+          gpuPort: c.gpuPort,
+          iblfPort: c.iblfPort
+        }))
+      });
     }
 
-    // 3. 按 IBLF 组合分组
+    // 按 IBLF 组合分组
     const groups = new Map();
     for (const result of results) {
       const key = result.iblfs.join('|');
@@ -944,11 +1043,50 @@ app.post('/api/sn-to-iblf', async (req, res) => {
       }
       groups.get(key).servers.push({
         sn: result.sn,
-        hostname: result.hostname
+        hostname: result.hostname,
+        connections: result.connections
       });
     }
 
-    // 转换为数组并排序
+    // 构建拓扑图数据
+    const topology = {
+      nodes: [],
+      edges: []
+    };
+
+    const nodeSet = new Set();
+    for (const result of results) {
+      // 添加 GPU 节点
+      if (!nodeSet.has(result.hostname)) {
+        nodeSet.add(result.hostname);
+        topology.nodes.push({
+          id: result.hostname,
+          type: 'gpu',
+          label: result.hostname,
+          sn: result.sn
+        });
+      }
+
+      // 添加 IBLF 节点和边
+      for (const conn of result.connections) {
+        if (!nodeSet.has(conn.iblf)) {
+          nodeSet.add(conn.iblf);
+          topology.nodes.push({
+            id: conn.iblf,
+            type: 'iblf',
+            label: conn.iblf
+          });
+        }
+
+        topology.edges.push({
+          source: result.hostname,
+          target: conn.iblf,
+          sourcePort: conn.gpuPort,
+          targetPort: conn.iblfPort
+        });
+      }
+    }
+
     const groupedResults = Array.from(groups.values())
       .sort((a, b) => b.servers.length - a.servers.length);
 
@@ -958,11 +1096,13 @@ app.post('/api/sn-to-iblf', async (req, res) => {
         total: snList.length,
         found: results.length,
         notFound: notFound.length,
-        groups: groupedResults.length
+        groups: groupedResults.length,
+        totalConnections: allConnections.length
       },
       groups: groupedResults,
       notFound,
-      details: results
+      details: results,
+      topology
     });
   } catch (error) {
     console.error('[SN-IBLF] Error:', error);
@@ -987,7 +1127,7 @@ app.post('/api/sn-to-address', async (req, res) => {
     // 单次扫描所有 Chunks，提取 IP 地址信息
     await storage.scanChunks(chunk => {
       const content = chunk.content;
-      
+
       // 优化匹配：只在内容包含待查 SN 时进行正则处理
       for (const sn of notFound) {
         if (content.includes(sn)) {
@@ -1020,7 +1160,7 @@ app.post('/api/sn-to-address', async (req, res) => {
               if (ip.startsWith('10.240.8.') || ip.startsWith('10.240.9.')) outband = ip;
               else if (ip.startsWith('10.240.0.') || ip.startsWith('10.240.1.')) inband = ip;
             }
-            
+
             snResultMap.set(sn, { sn, hostname, inband, outband });
             notFound.delete(sn);
           }
@@ -1045,22 +1185,6 @@ app.post('/api/sn-to-address', async (req, res) => {
   }
 });
 
-    res.json({
-      ok: true,
-      summary: {
-        total: snList.length,
-        found: results.length,
-        notFound: notFound.length
-      },
-      results,
-      notFound
-    });
-  } catch (error) {
-    console.error('[SN-Address] Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
 // ========== SN to Topology 查询 API ==========
 
 app.post('/api/sn-to-topology', async (req, res) => {
@@ -1072,7 +1196,7 @@ app.post('/api/sn-to-topology', async (req, res) => {
     let hostname = '';
     const connections = [];
     const devicesByLayer = {
-      server: new Set(), iblf: new Set(), spine: new Set(), core: new Set(), 
+      server: new Set(), iblf: new Set(), spine: new Set(), core: new Set(),
       edge: new Set(), leaf: new Set(), oobSpine: new Set(), oobLeaf: new Set()
     };
 
@@ -1090,7 +1214,7 @@ app.post('/api/sn-to-topology', async (req, res) => {
     // 单次扫描提取所有拓扑信息
     await storage.scanChunks(chunk => {
       const content = chunk.content;
-      
+
       // 1. 查找主机名 (仅在尚未找到时)
       if (!hostname && content.includes(snTrimmed)) {
         const m = content.match(patterns.snHost);
@@ -1133,32 +1257,72 @@ app.post('/api/sn-to-topology', async (req, res) => {
     // 拓扑剪枝：只保留与目标主机相关的设备
     const podMatch = hostname.match(/POD(\d+)/i);
     const podNum = podMatch ? podMatch[1].padStart(2, '0') : '01';
-    
-    // 逻辑填充：如果扫描没结果，增加默认 SPINE/CORE
-    if (!connections.some(c => c.sourceDevice === hostname)) {
-      // 这里的逻辑可以根据业务需求进一步细化
-    }
+    const hostnameUpper = hostname.toUpperCase();
 
-    // 这里保留原有的连接过滤和设备分组逻辑，但基于已扫描到的 connections 数组
-    const uniqueConnections = [];
+    // 构建拓扑链：从服务器开始，逐层向上追踪
+    const relevantConnections = [];
     const connSet = new Set();
-    for (const conn of connections) {
-      const key = `${conn.sourceDevice}-${conn.sourcePort}-${conn.destDevice}-${conn.destPort}`;
-      if (!connSet.has(key)) {
-        connSet.add(key);
-        uniqueConnections.push(conn);
-        
-        // 分层收集设备
-        if (conn.destDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.destDevice);
-        if (conn.destDevice.includes('SPINE')) devicesByLayer.spine.add(conn.destDevice);
-        if (conn.destDevice.includes('CORE')) devicesByLayer.core.add(conn.destDevice);
+    const visitedDevices = new Set([hostnameUpper]);
+    const devicesToProcess = [hostnameUpper];
+
+    // BFS 遍历构建拓扑
+    while (devicesToProcess.length > 0) {
+      const currentDevice = devicesToProcess.shift();
+
+      for (const conn of connections) {
+        const srcUpper = conn.sourceDevice.toUpperCase();
+        const dstUpper = conn.destDevice.toUpperCase();
+
+        // 检查连接是否与当前设备相关
+        if (srcUpper === currentDevice || dstUpper === currentDevice) {
+          const key = `${srcUpper}-${conn.sourcePort}-${dstUpper}-${conn.destPort}`;
+          if (!connSet.has(key)) {
+            connSet.add(key);
+            relevantConnections.push(conn);
+
+            // 添加新发现的设备到处理队列
+            const otherDevice = srcUpper === currentDevice ? dstUpper : srcUpper;
+            if (!visitedDevices.has(otherDevice)) {
+              visitedDevices.add(otherDevice);
+              devicesToProcess.push(otherDevice);
+
+              // 分层收集设备
+              if (otherDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.sourceDevice.includes('IBLF') ? conn.sourceDevice : conn.destDevice);
+              if (otherDevice.includes('SPINE') && !otherDevice.includes('OOB')) devicesByLayer.spine.add(conn.sourceDevice.includes('SPINE') ? conn.sourceDevice : conn.destDevice);
+              if (otherDevice.includes('CORE')) devicesByLayer.core.add(conn.sourceDevice.includes('CORE') ? conn.sourceDevice : conn.destDevice);
+              if (otherDevice.includes('EDGE') && !otherDevice.includes('OOB')) devicesByLayer.edge.add(conn.sourceDevice.includes('EDGE') ? conn.sourceDevice : conn.destDevice);
+              if ((otherDevice.includes('HSS-LEAF') || otherDevice.includes('STL-LEAF')) && !otherDevice.includes('OOB')) {
+                devicesByLayer.leaf.add(conn.sourceDevice.includes('LEAF') ? conn.sourceDevice : conn.destDevice);
+              }
+              if (otherDevice.includes('OOB-SPINE')) devicesByLayer.oobSpine.add(conn.sourceDevice.includes('OOB-SPINE') ? conn.sourceDevice : conn.destDevice);
+              if (otherDevice.includes('OOB-LEAF')) devicesByLayer.oobLeaf.add(conn.sourceDevice.includes('OOB-LEAF') ? conn.sourceDevice : conn.destDevice);
+            }
+          }
+        }
       }
     }
+
+    // 如果没有找到连接，尝试更宽松的匹配
+    if (relevantConnections.length === 0) {
+      // 查找所有以该服务器为源的连接
+      for (const conn of connections) {
+        if (conn.sourceDevice.toUpperCase().includes(hostnameUpper.split('-').slice(-2).join('-'))) {
+          const key = `${conn.sourceDevice}-${conn.sourcePort}-${conn.destDevice}-${conn.destPort}`;
+          if (!connSet.has(key)) {
+            connSet.add(key);
+            relevantConnections.push(conn);
+            if (conn.destDevice.includes('IBLF')) devicesByLayer.iblf.add(conn.destDevice);
+          }
+        }
+      }
+    }
+
+    console.log(`[SN-Topology] Server: ${hostname}, Found ${relevantConnections.length} connections out of ${connections.length} total`);
 
     res.json({
       ok: true,
       server: { sn: snTrimmed, hostname, pod: `POD${podNum}` },
-      connections: uniqueConnections.slice(0, 100),
+      connections: relevantConnections.slice(0, 100),
       devices: {
         iblf: Array.from(devicesByLayer.iblf),
         spine: Array.from(devicesByLayer.spine),
@@ -1168,13 +1332,9 @@ app.post('/api/sn-to-topology', async (req, res) => {
         oobSpine: Array.from(devicesByLayer.oobSpine),
         oobLeaf: Array.from(devicesByLayer.oobLeaf).slice(0, 10)
       },
-      totalConnections: uniqueConnections.length
+      totalConnections: relevantConnections.length
     });
   } catch (error) {
-    console.error('[SN-Topology] Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
     console.error('[SN-Topology] Error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -1198,6 +1358,16 @@ async function getProviderConfig(provider) {
     baseUrl: config?.baseUrl || defaults[provider]?.baseUrl || '',
     apiKey: config?.apiKey || defaults[provider]?.apiKey || ''
   };
+}
+
+// 获取当前配置的 LLM 模型
+async function getLLMModel() {
+  try {
+    const settings = await storage.getSettings();
+    return settings?.modelSelection?.llm || 'Qwen/Qwen3-32B';
+  } catch (e) {
+    return 'Qwen/Qwen3-32B';
+  }
 }
 
 app.post('/api/chat', async (req, res) => {
@@ -1258,7 +1428,7 @@ app.post('/api/chat', async (req, res) => {
         'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: model || 'Qwen/Qwen3-32B',
+        model: model || await getLLMModel(),
         messages,
         max_tokens: max_tokens || 8192,
         temperature: temperature || 0.7

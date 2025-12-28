@@ -31,7 +31,12 @@
       "Bash(del \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\components\\\\SnToIblfTool.tsx\")",
       "Bash(more +1)",
       "Bash(dir \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\data\\\\chunks\"\")",
-      "Bash(grep -i \"inband\\\\|带内\\\\|带外\\\\|outband\\\\|oob\\\\|bmc\\\\|ipmi\" \"D:/Github Code HUB/AI_Knowledge_Assistant/data/chunks/\"*.json)"
+      "Bash(grep -i \"inband\\\\|带内\\\\|带外\\\\|outband\\\\|oob\\\\|bmc\\\\|ipmi\" \"D:/Github Code HUB/AI_Knowledge_Assistant/data/chunks/\"*.json)",
+      "Bash(npm run)",
+      "Bash(npm run server)",
+      "Bash(node -e \"const fs=require\\(''fs''\\); const c=fs.readFileSync\\(''src/components/UserSettings.tsx'',''utf8''\\); const o=c.split\\(''<div''\\).length-1; const cl=c.split\\(''</div>''\\).length-1; console.log\\(''Open divs:'', o, ''Close divs:'', cl\\)\")",
+      "Bash(cat \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\data\\\\settings.json\")",
+      "Bash(node -e \"const fs=require\\(''fs''\\); const data=JSON.parse\\(fs.readFileSync\\(''doc-1766829626912.json''\\)\\); const chunk=data.find\\(c=>c.content && c.content.includes\\(''GPU''\\) && c.content.includes\\(''IBLF''\\)\\); if\\(chunk\\) console.log\\(chunk.content.substring\\(0,3000\\)\\);\")"
     ]
   }
 }

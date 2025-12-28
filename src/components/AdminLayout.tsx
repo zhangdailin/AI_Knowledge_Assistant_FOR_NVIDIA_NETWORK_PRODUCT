@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, FolderOpen, History, Settings, Home, Wrench,
-  ChevronLeft, ChevronRight, Bot, LogOut, User, Bell, Cpu
+  ChevronLeft, ChevronRight, Bot, LogOut, User, Bell, Cpu, Sliders
 } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 
@@ -17,6 +17,7 @@ const AdminLayout: React.FC = () => {
     { path: '/admin/tools', label: 'AI工具', icon: Wrench },
     { path: '/admin/history', label: '历史记录', icon: History },
     { path: '/admin/models', label: '模型管理', icon: Cpu },
+    { path: '/admin/retrieval', label: '检索设置', icon: Sliders },
     { path: '/admin/settings', label: '设置', icon: Settings },
   ];
 
@@ -24,9 +25,8 @@ const AdminLayout: React.FC = () => {
     <div className="h-screen bg-gray-50 flex overflow-hidden">
       {/* 侧边栏 */}
       <div
-        className={`${
-          collapsed ? 'w-20' : 'w-64'
-        } bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col transition-all duration-300 ease-in-out`}
+        className={`${collapsed ? 'w-20' : 'w-64'
+          } bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col transition-all duration-300 ease-in-out`}
       >
         {/* Logo区域 */}
         <div className="p-4 border-b border-slate-700/50">
@@ -56,11 +56,10 @@ const AdminLayout: React.FC = () => {
               <Link
                 key={item.path}
                 to={item.path}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group ${
-                  isActive
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group ${isActive
                     ? 'bg-indigo-500/20 text-indigo-400 shadow-lg shadow-indigo-500/10'
                     : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
-                }`}
+                  }`}
                 title={collapsed ? item.label : undefined}
               >
                 <Icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-indigo-400' : 'group-hover:text-white'}`} />
@@ -79,9 +78,8 @@ const AdminLayout: React.FC = () => {
         <div className="p-3 border-t border-slate-700/50">
           <Link
             to="/"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all duration-200 ${
-              collapsed ? 'justify-center' : ''
-            }`}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all duration-200 ${collapsed ? 'justify-center' : ''
+              }`}
             title={collapsed ? '返回对话' : undefined}
           >
             <Home className="w-5 h-5 flex-shrink-0" />

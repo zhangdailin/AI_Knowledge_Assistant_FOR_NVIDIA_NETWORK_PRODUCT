@@ -203,11 +203,12 @@ const ConversationHistory: React.FC = () => {
   };
 
   return (
-    <div className="h-full bg-gradient-to-br from-blue-50 to-cyan-50 p-6">
+    <div className="h-full bg-gray-50 p-6 overflow-auto">
       <div className="max-w-4xl mx-auto">
-        {/* 描述 */}
-        <div className="mb-8">
-          <p className="text-gray-600">查看和管理您的对话历史</p>
+        {/* 标题栏 */}
+        <div className="mb-6">
+          <h1 className="text-xl font-bold text-gray-900">对话历史</h1>
+          <p className="text-sm text-gray-500 mt-1">查看和管理您的对话历史</p>
         </div>
 
         {/* 搜索和筛选 */}

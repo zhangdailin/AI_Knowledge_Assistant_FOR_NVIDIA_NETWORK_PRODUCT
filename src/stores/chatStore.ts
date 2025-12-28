@@ -227,7 +227,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: deepThinking ? AI_MODEL_CONFIG.QWEN_MODEL : AI_MODEL_CONFIG.FAST_MODEL,
+          // 不发送 model，让后端使用配置的模型
           messages: [
             { role: 'system', content: systemPrompt },
             ...historyMessages,
@@ -247,7 +247,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const data = await response.json();
       const assistantContent = data.choices?.[0]?.message?.content || '抱歉，我无法生成回复。';
-      const modelUsed = data.source === 'gemini' ? 'Gemini' : (deepThinking ? AI_MODEL_CONFIG.QWEN_MODEL : AI_MODEL_CONFIG.FAST_MODEL);
+      const modelUsed = data.source === 'gemini' ? 'Gemini' : (data.model || '已配置模型');
 
       const assistantMessage = localStorageManager.addMessage({
         conversationId: currentConversation.id,

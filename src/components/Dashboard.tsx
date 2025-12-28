@@ -92,9 +92,13 @@ const Dashboard: React.FC = () => {
   if (!stats) {
     // API 失败时显示错误状态
     return (
-      <div className="p-6 space-y-6 bg-gray-50 min-h-full">
+      <div className="p-6 bg-gray-50 min-h-full">
+        <div className="max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
-          <p className="text-gray-500">知识库运行状态概览</p>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">数据概览</h1>
+            <p className="text-sm text-gray-500 mt-1">知识库运行状态概览</p>
+          </div>
           <button
             onClick={fetchStats}
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center gap-2"
@@ -125,6 +129,7 @@ const Dashboard: React.FC = () => {
               <span className="text-sm font-medium">{systemStatus === 'offline' ? '离线' : '异常'}</span>
             </div>
           </div>
+        </div>
         </div>
       </div>
     );
@@ -166,10 +171,14 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="p-6 space-y-6 bg-gray-50 min-h-full">
-      {/* 操作栏 */}
+    <div className="p-6 bg-gray-50 min-h-full">
+      <div className="max-w-6xl mx-auto space-y-6">
+      {/* 标题栏 */}
       <div className="flex items-center justify-between">
-        <p className="text-gray-500">知识库运行状态概览</p>
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">数据概览</h1>
+          <p className="text-sm text-gray-500 mt-1">知识库运行状态概览</p>
+        </div>
         <button
           onClick={fetchStats}
           className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center gap-2"
@@ -324,6 +333,7 @@ const Dashboard: React.FC = () => {
             </span>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
