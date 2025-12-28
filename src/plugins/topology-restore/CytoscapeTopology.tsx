@@ -8,6 +8,7 @@ import Cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { Layers, Zap, Maximize, Move } from 'lucide-react';
 
+// eslint-disable-next-line react-hooks/rules-of-hooks
 Cytoscape.use(coseBilkent);
 
 // Import Premium Styles

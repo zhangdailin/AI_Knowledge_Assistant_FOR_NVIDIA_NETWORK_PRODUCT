@@ -149,7 +149,7 @@ class LocalStorageManager {
       createdAt: new Date().toISOString()
     };
     
-    let messages = this.getAllMessages();
+    const messages = this.getAllMessages();
     messages.push(newMessage);
     
     try {

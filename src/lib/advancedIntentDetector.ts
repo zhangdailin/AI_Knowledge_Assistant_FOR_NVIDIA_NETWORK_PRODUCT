@@ -89,7 +89,7 @@ export class AdvancedIntentDetector {
     // 问题类：为什么、是否、能否
     question: {
       keywords: ['为什么', '是否', '能否', '可以', '会不会', 'why', 'whether', 'can', 'could', '吗'],
-      patterns: [/^(为什么|为啥).*/i, /^(是否|能否|可以).*/i, /.*[吗？\?]$/i],
+      patterns: [/^(为什么|为啥).*/i, /^(是否|能否|可以).*/i, /.*[吗？?]$/i],
       weight: 0.8
     }
   };

@@ -64,6 +64,7 @@ export function useVirtualViewport(
   // 尝试获取 ReactFlow 实例（可能不在 ReactFlow 上下文中）
   let reactFlowInstance: ReturnType<typeof useReactFlow> | null = null;
   try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
     reactFlowInstance = useReactFlow();
   } catch {
     // 不在 ReactFlow 上下文中，跳过

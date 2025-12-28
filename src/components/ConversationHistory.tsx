@@ -149,7 +149,7 @@ const ConversationHistory: React.FC = () => {
       let cleanContent = msg.content
         .replace(/```[\s\S]*?```/g, '[代码]') // 移除代码块
         .replace(/`[^`]+`/g, '[代码]') // 移除行内代码
-        .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // 移除markdown链接，保留文本
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 移除markdown链接，保留文本
         .replace(/[#*_~]/g, '') // 移除markdown格式标记
         .replace(/<[^>]+>/g, '') // 移除HTML标签
         .trim();

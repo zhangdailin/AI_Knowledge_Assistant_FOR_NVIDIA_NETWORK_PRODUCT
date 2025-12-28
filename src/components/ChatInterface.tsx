@@ -120,6 +120,13 @@ const ChatInterface: React.FC = () => {
     }
   }, [inputValue]);
 
+  // 不再过滤空对话，直接显示所有对话，按更新时间倒序排列
+  const sortedConversations = React.useMemo(() => {
+    return [...conversations].sort((a, b) =>
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }, [conversations]);
+
   if (!user) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -130,13 +137,6 @@ const ChatInterface: React.FC = () => {
       </div>
     );
   }
-
-  // 不再过滤空对话，直接显示所有对话，按更新时间倒序排列
-  const sortedConversations = React.useMemo(() => {
-    return [...conversations].sort((a, b) =>
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-    );
-  }, [conversations]);
 
   const getConversationPreview = (conversation: any) => {
     const convMessages = localStorageManager.getMessages(conversation.id);
