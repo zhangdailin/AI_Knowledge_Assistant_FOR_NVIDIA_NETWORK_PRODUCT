@@ -40,7 +40,10 @@
       "Bash(curl -s -X POST http://localhost:8787/api/sn-to-topology -H \"Content-Type: application/json\" -d \"{\"\"sn\"\": \"\"GOG4X8312A0131\"\"}\")",
       "Bash(dir /b \"D:\\\\代码\\\\IB网络基于UFM端口信息 生成CLOS拓扑\")",
       "Bash(dir /b \"D:\\\\代码\\\\以太网netq拓扑还原工具\")",
-      "Bash(mkdir -p \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\plugins\\\\topology-restore\")"
+      "Bash(mkdir -p \"D:\\\\Github Code HUB\\\\AI_Knowledge_Assistant\\\\src\\\\plugins\\\\topology-restore\")",
+      "Bash(cd /d/Github Code HUB/AI_Knowledge_Assistant)",
+      "Bash(git add src/plugins/topology-restore/index.tsx)",
+      "Bash(git commit -m \"fix: 添加坐标计算和详细诊断日志到拓扑还原组件\n\n问题修复：\n- 前端计算节点位置：解决所有节点都在\\(0,0\\)重叠的问题\n- 按层级计算Y坐标：core=100, spine=300, leaf=500\n- 按设备索引计算X坐标：间距根据层级调整\\(core 150px, spine 130px, leaf 120px\\)\n- 修复nodesByLayer的获取：从Object.keys\\(data.nodesByLayer\\)而非data.layers\n- 修复POD数据的获取：从data.metadata.pods而非data.pods\n- 添加详细的console.log日志用于调试\n\n诊断日志包括：\n- nodesByLayer的完整结构\n- 每层节点数量统计\n- 最终渲染的节点和边数量\n- 位置计算细节\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\")"
     ]
   }
 }
