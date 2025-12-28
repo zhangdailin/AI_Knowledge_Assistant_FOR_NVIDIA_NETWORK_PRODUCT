@@ -10,7 +10,9 @@ import ReactFlow, {
   MiniMap
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Search, Copy, Check } from 'lucide-react';
+import { Search, Copy, Check, Filter } from 'lucide-react';
+
+type NetworkFilter = 'all' | 'ib' | 'roce';
 
 interface Connection {
   layer: string;
@@ -78,6 +80,11 @@ const SnTopologyTool: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [networkFilter, setNetworkFilter] = useState<NetworkFilter>('all');
+  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({
+    iblf: true, ibsp: true, ibcr: true,
+    asw: true, ssw: true, csw: true, lsw: true, soob: true, oob: true
+  });
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -107,10 +114,29 @@ const SnTopologyTool: React.FC = () => {
     }
   };
 
-  const buildTopology = useCallback((data: TopologyResult) => {
+  const buildTopology = useCallback((data: TopologyResult, filter: NetworkFilter = networkFilter, visibility: Record<string, boolean> = layerVisibility) => {
+    // Stringify data for easy debugging via copy-paste
+    console.log('=== Topology API Debug Info ===');
+    console.log('API Version:', (data as any)._version || 'UNKNOWN (Old Code)');
+    console.log('API Debug Data:', (data as any)._debug);
+    console.log('Raw API Response:', JSON.stringify(data, null, 2));
+
+    console.log('buildTopology config:', {
+      deviceCount: data.devices ? Object.values(data.devices).flat().length : 0,
+      filter,
+      visibility
+    });
+
+    if (!data.devices) {
+      console.error('buildTopology: data.devices is missing!', data);
+      return;
+    }
+
     const newNodes: Node[] = [];
     const newEdges: Edge[] = [];
     const { devices } = data;
+    const showIB = filter === 'all' || filter === 'ib';
+    const showRoCE = filter === 'all' || filter === 'roce';
 
     // 布局：左侧 IB 网络，右侧 RoCE 网络
     const ibX = 200;  // IB 网络 X 基准
@@ -143,108 +169,37 @@ const SnTopologyTool: React.FC = () => {
     });
 
     // ========== IB 网络节点 ==========
-    // IBLF
-    devices.iblf.forEach((dev, idx) => {
-      newNodes.push({
-        id: `iblf-${dev}`,
-        type: 'default',
-        position: { x: ibX - 100 + idx * 150, y: layerY.iblf },
-        data: { label: <div style={getNodeStyle('iblf')}><div>IBLF</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
+    if (showIB && visibility.iblf) {
+      console.log('[DEBUG] Creating IBLF nodes:', devices.iblf);
+      devices.iblf.forEach((dev, idx) => {
+        newNodes.push({
+          id: `iblf-${dev}`,
+          type: 'default',
+          position: { x: ibX - 100 + idx * 150, y: layerY.iblf },
+          data: { label: <div style={getNodeStyle('iblf')}><div>IBLF</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
+          style: { background: 'transparent', border: 'none', padding: 0 }
+        });
       });
-    });
+    }
 
-    // IBSP (Spine)
-    devices.spine.forEach((dev, idx) => {
-      newNodes.push({
-        id: `ibsp-${dev}`,
-        type: 'default',
-        position: { x: ibX - 50 + idx * 120, y: layerY.ibsp },
-        data: { label: <div style={getNodeStyle('ibsp')}><div>IBSP</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
+    // RoCE 网络只显示ASW
+    if (showRoCE && visibility.asw) {
+      console.log('[DEBUG] Creating ASW nodes:', devices.asw);
+      devices.asw.forEach((dev, idx) => {
+        newNodes.push({
+          id: `asw-${dev}`,
+          type: 'default',
+          position: { x: roceX - 100 + idx * 150, y: layerY.asw },
+          data: { label: <div style={getNodeStyle('asw')}><div>ASW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
+          style: { background: 'transparent', border: 'none', padding: 0 }
+        });
       });
-    });
-
-    // IBCR (Core)
-    devices.core.forEach((dev, idx) => {
-      newNodes.push({
-        id: `ibcr-${dev}`,
-        type: 'default',
-        position: { x: ibX + idx * 100, y: layerY.ibcr },
-        data: { label: <div style={getNodeStyle('ibcr')}><div>IBCR</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // ========== RoCE 网络节点 ==========
-    // ASW
-    devices.asw.forEach((dev, idx) => {
-      newNodes.push({
-        id: `asw-${dev}`,
-        type: 'default',
-        position: { x: roceX - 100 + idx * 150, y: layerY.asw },
-        data: { label: <div style={getNodeStyle('asw')}><div>ASW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // SSW
-    devices.ssw.forEach((dev, idx) => {
-      newNodes.push({
-        id: `ssw-${dev}`,
-        type: 'default',
-        position: { x: roceX - 50 + idx * 120, y: layerY.ssw },
-        data: { label: <div style={getNodeStyle('ssw')}><div>SSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // CSW
-    devices.csw.forEach((dev, idx) => {
-      newNodes.push({
-        id: `csw-${dev}`,
-        type: 'default',
-        position: { x: roceX + idx * 100, y: layerY.csw },
-        data: { label: <div style={getNodeStyle('csw')}><div>CSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // LSW
-    devices.lsw.forEach((dev, idx) => {
-      newNodes.push({
-        id: `lsw-${dev}`,
-        type: 'default',
-        position: { x: roceX + 200 + idx * 100, y: layerY.lsw },
-        data: { label: <div style={getNodeStyle('lsw')}><div>LSW</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // OOB
-    devices.oob.forEach((dev, idx) => {
-      newNodes.push({
-        id: `oob-${dev}`,
-        type: 'default',
-        position: { x: serverX - 100 + idx * 120, y: layerY.oob },
-        data: { label: <div style={getNodeStyle('oob')}><div>OOB</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
-
-    // SOOB
-    devices.soob.forEach((dev, idx) => {
-      newNodes.push({
-        id: `soob-${dev}`,
-        type: 'default',
-        position: { x: serverX + 150 + idx * 120, y: layerY.soob },
-        data: { label: <div style={getNodeStyle('soob')}><div>SOOB</div><div style={{ fontSize: '7px' }}>{dev.split('-').slice(-3).join('-')}</div></div> },
-        style: { background: 'transparent', border: 'none', padding: 0 }
-      });
-    });
+    }
 
     // ========== 构建边 ==========
     const nodeIds = new Set(newNodes.map(n => n.id));
+    console.log('[DEBUG] Created nodes:', Array.from(nodeIds));
+
     const edgeColors: Record<string, string> = {
       'gpu-iblf': '#27ae60', 'iblf-ibsp': '#3498db', 'ibsp-ibcr': '#e74c3c',
       'gpu-asw': '#2ca02c', 'asw-ssw': '#1f77b4', 'ssw-csw': '#d62728',
@@ -268,12 +223,22 @@ const SnTopologyTool: React.FC = () => {
       return 'server';
     };
 
+    const failedEdges: any[] = [];
     data.connections.forEach((conn, idx) => {
       const sourceId = getNodeId(conn.sourceDevice);
       const targetId = getNodeId(conn.destDevice);
       const color = edgeColors[conn.layer] || '#999';
 
-      if (nodeIds.has(sourceId) && nodeIds.has(targetId) && sourceId !== targetId) {
+      // 临时修复：检查设备是否在后端返回的devices中
+      const allDevicesInList = [
+        ...devices.iblf, ...devices.spine, ...devices.core,
+        ...devices.asw, ...devices.ssw, ...devices.csw, ...devices.lsw,
+        ...devices.soob, ...devices.oob
+      ];
+      const sourceExists = allDevicesInList.includes(conn.sourceDevice) || conn.sourceDevice === data.server.hostname;
+      const targetExists = allDevicesInList.includes(conn.destDevice) || conn.destDevice === data.server.hostname;
+
+      if (nodeIds.has(sourceId) && nodeIds.has(targetId) && sourceId !== targetId && sourceExists && targetExists) {
         newEdges.push({
           id: `edge-${idx}`,
           source: sourceId,
@@ -283,12 +248,53 @@ const SnTopologyTool: React.FC = () => {
           style: { stroke: color, strokeWidth: 1.5 },
           markerEnd: { type: MarkerType.ArrowClosed, color }
         });
+      } else {
+        // 记录失败的边，用于调试
+        failedEdges.push({
+          layer: conn.layer,
+          sourceDevice: conn.sourceDevice,
+          destDevice: conn.destDevice,
+          sourceId,
+          targetId,
+          sourceExists: nodeIds.has(sourceId) && sourceExists,
+          targetExists: nodeIds.has(targetId) && targetExists,
+          sameNode: sourceId === targetId,
+          reason: !sourceExists ? 'sourceNotInDevices' : !targetExists ? 'targetNotInDevices' : 'nodeNotInGraph'
+        });
       }
     });
 
+    if (failedEdges.length > 0) {
+      console.warn('[DEBUG] 以下连接无法映射到节点（拓扑渲染问题的根本原因）:', failedEdges);
+
+      // 详细分析失败原因
+      const failureAnalysis = {
+        sourceNotFound: failedEdges.filter(e => !e.sourceExists).length,
+        targetNotFound: failedEdges.filter(e => !e.targetExists).length,
+        sameNode: failedEdges.filter(e => e.sameNode).length,
+        examples: failedEdges.slice(0, 5)  // 前5个例子
+      };
+      console.warn('[DEBUG] 失败原因统计:', failureAnalysis);
+
+      // 打印失败的设备名，找出规律
+      const failedSourceDevices = new Set(failedEdges.map(e => e.sourceDevice));
+      const failedTargetDevices = new Set(failedEdges.map(e => e.destDevice));
+      console.warn('[DEBUG] 失败的源设备:', Array.from(failedSourceDevices).slice(0, 10));
+      console.warn('[DEBUG] 失败的目标设备:', Array.from(failedTargetDevices).slice(0, 10));
+
+      // 对比devices中有什么
+      const allDevicesInList = [
+        ...devices.iblf, ...devices.spine, ...devices.core,
+        ...devices.asw, ...devices.ssw, ...devices.csw, ...devices.lsw
+      ];
+      console.warn('[DEBUG] devices列表中的设备总数:', allDevicesInList.length);
+      console.warn('[DEBUG] devices列表样本:', allDevicesInList.slice(0, 10));
+    }
+
+    console.log('Topology built:', { nodes: newNodes.length, edges: newEdges.length, failedEdges: failedEdges.length });
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, networkFilter, layerVisibility]);
 
   const copyResult = () => {
     if (!result) return;
@@ -347,24 +353,81 @@ const SnTopologyTool: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            {/* IB 网络统计 */}
-            <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-              <h3 className="font-bold text-green-800 mb-2">IB 网络 (InfiniBand)</h3>
-              <div className="flex flex-wrap gap-2 text-sm">
-                <span className="px-2 py-1 bg-green-100 text-green-800 rounded">IBLF: {result.devices.iblf.length}</span>
-                <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded">IBSP: {result.devices.spine.length}</span>
-                <span className="px-2 py-1 bg-red-100 text-red-800 rounded">IBCR: {result.devices.core.length}</span>
+          {/* 视图控制面板 */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <div className="flex flex-col gap-4">
+              {/* 网络过滤 */}
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-semibold text-gray-700">网络视图:</span>
+                <div className="flex bg-gray-100 p-1 rounded-lg">
+                  <button
+                    onClick={() => { setNetworkFilter('all'); buildTopology(result, 'all', layerVisibility); }}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${networkFilter === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    全部显示
+                  </button>
+                  <button
+                    onClick={() => { setNetworkFilter('ib'); buildTopology(result, 'ib', layerVisibility); }}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${networkFilter === 'ib' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    IB 网络 Only
+                  </button>
+                  <button
+                    onClick={() => { setNetworkFilter('roce'); buildTopology(result, 'roce', layerVisibility); }}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${networkFilter === 'roce' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    RoCE 网络 Only
+                  </button>
+                </div>
               </div>
-            </div>
-            {/* RoCE 网络统计 */}
-            <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
-              <h3 className="font-bold text-purple-800 mb-2">RoCE 网络 (以太网)</h3>
-              <div className="flex flex-wrap gap-2 text-sm">
-                <span className="px-2 py-1 bg-green-100 text-green-800 rounded">ASW: {result.devices.asw.length}</span>
-                <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded">SSW: {result.devices.ssw.length}</span>
-                <span className="px-2 py-1 bg-red-100 text-red-800 rounded">CSW: {result.devices.csw.length}</span>
-                {result.devices.oob.length > 0 && <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded">OOB: {result.devices.oob.length}</span>}
+
+              {/* 层级控制 */}
+              <div className="flex flex-wrap gap-y-2 gap-x-6">
+                <span className="text-sm font-semibold text-gray-700 w-full sm:w-auto">层级显示:</span>
+
+                {/* IB 层级 */}
+                {(networkFilter === 'all' || networkFilter === 'ib') && (
+                  <div className="flex gap-3 items-center border-r border-gray-200 pr-6">
+                    <span className="text-xs text-gray-500 font-medium">IB:</span>
+                    {['iblf', 'ibsp', 'ibcr'].map(layer => (
+                      <label key={layer} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 px-1.5 py-0.5 rounded">
+                        <input
+                          type="checkbox"
+                          checked={layerVisibility[layer]}
+                          onChange={(e) => {
+                            const newVisibility = { ...layerVisibility, [layer]: e.target.checked };
+                            setLayerVisibility(newVisibility);
+                            buildTopology(result, networkFilter, newVisibility);
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="uppercase">{layer.replace('ib', '')}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {/* RoCE 层级 */}
+                {(networkFilter === 'all' || networkFilter === 'roce') && (
+                  <div className="flex gap-3 items-center flex-wrap">
+                    <span className="text-xs text-gray-500 font-medium">RoCE:</span>
+                    {['asw', 'ssw', 'csw', 'lsw', 'oob', 'soob'].map(layer => (
+                      <label key={layer} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 px-1.5 py-0.5 rounded">
+                        <input
+                          type="checkbox"
+                          checked={layerVisibility[layer]}
+                          onChange={(e) => {
+                            const newVisibility = { ...layerVisibility, [layer]: e.target.checked };
+                            setLayerVisibility(newVisibility);
+                            buildTopology(result, networkFilter, newVisibility);
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="uppercase">{layer}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

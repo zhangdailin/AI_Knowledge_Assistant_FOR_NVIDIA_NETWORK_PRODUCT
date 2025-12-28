@@ -42,6 +42,23 @@ const getNodeStyle = (layer: string) => {
   };
 };
 
+type LayerDetectionMethod = 'auto' | 'manual';
+type PodExtractionMethod = 'regex' | 'prefix' | 'none';
+
+interface TopologyConfig {
+  layerDetection: LayerDetectionMethod;
+  manualLayers?: {
+    corePattern?: string;
+    spinePattern?: string;
+    leafPattern?: string;
+  };
+  podExtraction: {
+    method: PodExtractionMethod;
+    pattern?: string;
+    prefixLength?: number;
+  };
+}
+
 const TopologyRestoreTool: React.FC = () => {
   const [networkType, setNetworkType] = useState<NetworkType>('ib');
   const [file, setFile] = useState<File | null>(null);
@@ -50,6 +67,13 @@ const TopologyRestoreTool: React.FC = () => {
   const [selectedPod, setSelectedPod] = useState('ALL');
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Configuration state
+  const [config, setConfig] = useState<TopologyConfig>({
+    layerDetection: 'auto',
+    podExtraction: { method: 'regex', pattern: 'POD\\d+' }
+  });
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -69,6 +93,33 @@ const TopologyRestoreTool: React.FC = () => {
     }
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile) {
+      const ext = droppedFile.name.toLowerCase().split('.').pop();
+      const validExts = networkType === 'ib' ? ['csv'] : ['xlsx', 'xls'];
+      if (validExts.includes(ext || '')) {
+        setFile(droppedFile);
+        setError('');
+        setMessage('');
+      } else {
+        setError(`请上传 ${validExts.join('/')} 格式的文件`);
+      }
+    }
+  };
+
   const handleRestore = async () => {
     if (!file) {
       setError('请先选择文件');
@@ -83,6 +134,9 @@ const TopologyRestoreTool: React.FC = () => {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('networkType', networkType);
+      formData.append('config', JSON.stringify(config));
+
+      console.log('[TopologyRestore] Config:', config);
 
       const res = await fetch(`${getApiServerUrl()}/api/topology-restore`, {
         method: 'POST',
@@ -92,6 +146,7 @@ const TopologyRestoreTool: React.FC = () => {
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || '拓扑还原失败');
 
+      console.log('[TopologyRestore] Result:', data);
       setRestoreResult(data);
       setMessage(`成功解析 ${data.nodeCount} 个节点, ${data.edgeCount} 条连接`);
 
@@ -213,6 +268,198 @@ const TopologyRestoreTool: React.FC = () => {
         </p>
       </div>
 
+      {/* 高级配置 - 层级检测 */}
+      <div className="mb-4 p-4 bg-white border border-gray-200 rounded-lg">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-gray-800 text-sm">拓扑检测配置</h3>
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded"
+          >
+            {showAdvanced ? '隐藏' : '显示'} 高级选项
+          </button>
+        </div>
+
+        {/* 层级检测方式 */}
+        <div className="mb-4 pb-4 border-b border-gray-200">
+          <label className="block text-sm font-medium text-gray-700 mb-2">层级检测方式</label>
+          <div className="flex gap-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="layerDetection"
+                value="auto"
+                checked={config.layerDetection === 'auto'}
+                onChange={() => setConfig({ ...config, layerDetection: 'auto' })}
+                className="w-4 h-4 text-blue-600"
+              />
+              <span className="text-sm">自动识别 (推荐)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="layerDetection"
+                value="manual"
+                checked={config.layerDetection === 'manual'}
+                onChange={() => setConfig({ ...config, layerDetection: 'manual' })}
+                className="w-4 h-4 text-blue-600"
+              />
+              <span className="text-sm">手动配置</span>
+            </label>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            自动方式通过拓扑度数分析识别Core/Spine/Leaf层级，对绝大多数数据中心有效
+          </p>
+
+          {/* 手动配置 - 隐藏在高级选项中 */}
+          {config.layerDetection === 'manual' && showAdvanced && (
+            <div className="mt-3 p-3 bg-gray-50 rounded border border-gray-200">
+              <p className="text-xs font-medium text-gray-600 mb-2">设备识别模式 (正则表达式)</p>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-gray-600">Core 设备</label>
+                  <input
+                    type="text"
+                    placeholder="如: IBCR|CORE"
+                    value={config.manualLayers?.corePattern || ''}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        manualLayers: { ...config.manualLayers, corePattern: e.target.value }
+                      })
+                    }
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-600">Spine 设备</label>
+                  <input
+                    type="text"
+                    placeholder="如: IBSP|SPINE"
+                    value={config.manualLayers?.spinePattern || ''}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        manualLayers: { ...config.manualLayers, spinePattern: e.target.value }
+                      })
+                    }
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-600">Leaf 设备</label>
+                  <input
+                    type="text"
+                    placeholder="如: IBLF|LEAF"
+                    value={config.manualLayers?.leafPattern || ''}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        manualLayers: { ...config.manualLayers, leafPattern: e.target.value }
+                      })
+                    }
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* POD 分组方式 */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">POD 分组方式</label>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="podExtraction"
+                value="regex"
+                checked={config.podExtraction.method === 'regex'}
+                onChange={() =>
+                  setConfig({
+                    ...config,
+                    podExtraction: { method: 'regex', pattern: config.podExtraction.pattern || 'POD\\d+' }
+                  })
+                }
+                className="w-4 h-4 text-blue-600"
+              />
+              <label className="text-sm text-gray-700">正则表达式匹配</label>
+              {config.podExtraction.method === 'regex' && (
+                <input
+                  type="text"
+                  placeholder="如: POD\\d+"
+                  value={config.podExtraction.pattern || ''}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      podExtraction: { ...config.podExtraction, pattern: e.target.value }
+                    })
+                  }
+                  className="ml-2 px-2 py-1 text-xs border border-gray-300 rounded flex-1"
+                />
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="podExtraction"
+                value="prefix"
+                checked={config.podExtraction.method === 'prefix'}
+                onChange={() =>
+                  setConfig({
+                    ...config,
+                    podExtraction: { method: 'prefix', prefixLength: config.podExtraction.prefixLength || 2 }
+                  })
+                }
+                className="w-4 h-4 text-blue-600"
+              />
+              <label className="text-sm text-gray-700">前缀匹配 (分隔符: -)</label>
+              {config.podExtraction.method === 'prefix' && (
+                <input
+                  type="number"
+                  min="1"
+                  max="5"
+                  placeholder="2"
+                  value={config.podExtraction.prefixLength || 2}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      podExtraction: {
+                        ...config.podExtraction,
+                        prefixLength: parseInt(e.target.value) || 2
+                      }
+                    })
+                  }
+                  className="ml-2 px-2 py-1 text-xs border border-gray-300 rounded w-16"
+                />
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="podExtraction"
+                value="none"
+                checked={config.podExtraction.method === 'none'}
+                onChange={() =>
+                  setConfig({
+                    ...config,
+                    podExtraction: { method: 'none' }
+                  })
+                }
+                className="w-4 h-4 text-blue-600"
+              />
+              <label className="text-sm text-gray-700">无分组 (显示全部设备)</label>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            正则表达式：按照指定模式匹配 POD 标识 | 前缀匹配：按分隔符分割后取前 N 段
+          </p>
+        </div>
+      </div>
+
       {/* 文件上传 */}
       <div className="mb-4">
         <label className="block text-sm font-medium text-gray-700 mb-2">上传数据文件</label>
@@ -287,9 +534,17 @@ const TopologyRestoreTool: React.FC = () => {
           </ReactFlow>
         </div>
       ) : (
-        <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-12 text-center">
-          <Upload className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <p className="text-gray-500">请上传 {networkType === 'ib' ? 'UFM端口信息CSV' : 'NetQ接口信息Excel'} 文件</p>
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${isDragging ? 'border-blue-500 bg-blue-50' : 'bg-gray-50 border-gray-300'}`}
+        >
+          <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-blue-500' : 'text-gray-400'}`} />
+          <p className={isDragging ? 'text-blue-600' : 'text-gray-500'}>
+            {isDragging ? '释放文件以上传' : `请上传 ${networkType === 'ib' ? 'UFM端口信息CSV' : 'NetQ接口信息Excel'} 文件`}
+          </p>
+          <p className="text-xs text-gray-400 mt-2">支持拖拽上传</p>
         </div>
       )}
     </div>
