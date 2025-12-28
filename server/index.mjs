@@ -22,9 +22,10 @@ try {
 
 import mammoth from 'mammoth';
 import { setTimeout as sleep } from 'node:timers/promises';
-
 import * as chunking from './chunking.mjs';
 import * as topology from './topology.mjs';
+import { analyzeRoCETopology } from './roce-topology.mjs';
+import { inferLayersFromTopology } from './topology-inference.mjs';
 
 // 简单的 LRU 缓存实现
 class SimpleLRUCache {
@@ -1730,48 +1731,83 @@ app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => 
     const config = configStr ? JSON.parse(configStr) : {};
     const fileBuffer = req.file.buffer;
     const fileName = req.file.originalname;
-    const isLazy = req.query.mode === 'lazy' || req.body.mode === 'lazy';
+    // 使用 let 以便根据规模自动调整
+    let isLazy = req.query.mode === 'lazy' || req.body.mode === 'lazy';
 
-    console.log(`[TopologyV2] 开始流式解析 ${networkType} 拓扑: ${fileName} (Lazy: ${isLazy})`);
+    console.log(`[TopologyV2] 开始流式解析 ${networkType} 拓扑: ${fileName} (Request Lazy: ${isLazy})`);
 
     // 1. 解析原始数据
     let portMap;
+    let isFromKnowledgeBase = false;
+
     if (networkType === 'ib') {
       const csvContent = fileBuffer.toString('utf-8');
-      portMap = parseCSVPortMap(csvContent);
+      try {
+        portMap = parseCSVPortMap(csvContent);
+      } catch (e) {
+        // 尝试解析为 SN 清单
+        console.log('[TopologyV2] 标准解析失败，尝试作为 SN 清单解析:', e.message);
+        const snList = parseSNListCSV(csvContent);
+        if (snList && snList.length > 0) {
+          console.log(`[TopologyV2] 识别为 SN 清单 (${snList.length} 个条目)，尝试从知识库重建拓扑...`);
+          portMap = await buildPortMapFromKnowledgeBase(snList, networkType);
+          isFromKnowledgeBase = true;
+          if (portMap.size === 0) {
+            throw new Error('知识库中未找到相关连接信息');
+          }
+        } else {
+          throw e; // 抛出原始错误
+        }
+      }
     } else if (networkType === 'roce') {
       const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       const data = XLSX.utils.sheet_to_json(worksheet);
-      portMap = parseExcelPortMap(data);
+      // 直接使用 Python-Ported 解析器
+      // portMap = parseExcelPortMap(data); // Bypass old parser
     } else {
       return res.status(400).json({ ok: false, error: '不支持的网络类型' });
     }
 
     // 2. 构建拓扑结构
-    const result = topology.buildTopologyStructure(portMap, {
-      layerDetection: config.layerDetection || 'auto',
-      manualLayers: config.manualLayers || null,
-      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-      networkType: networkType
-    });
+    let result;
+    if (networkType === 'roce') {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+      result = analyzeRoCETopology(data);
+    } else {
+      result = topology.buildTopologyStructure(portMap, {
+        layerDetection: config.layerDetection || 'auto',
+        manualLayers: config.manualLayers || null,
+        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+        networkType: networkType
+      });
+    }
 
     if (!result || !result.success) {
       throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
     }
 
-    // 3. 决定渲染模式
+    // 3. 决定渲染模式 和 Lazy 策略
     const totalNodes = result.nodeCount;
     let renderMode = 'reactflow';
     if (totalNodes > 2000) {
       renderMode = 'cytoscape';
-    } else if (totalNodes > 500) {
+    } else if (totalNodes > 1000) {
       // 这里的阈值可以根据实际性能测试调整
       renderMode = 'virtual-reactflow';
     }
 
-    console.log(`[TopologyV2] 节点数: ${totalNodes}, 模式: ${renderMode}`);
+    // 自动调整 Lazy 模式：如果节点少于 1500，强制关闭 Lazy，一次性发送所有数据
+    if (isLazy && totalNodes < 1500) {
+      console.log(`[TopologyV2] 节点数 (${totalNodes}) 较少，自动关闭 Lazy 模式，直接全量发送。`);
+      isLazy = false;
+    }
+
+    console.log(`[TopologyV2] 节点数: ${totalNodes}, 模式: ${renderMode}, Final Lazy: ${isLazy}`);
 
     // 4. 开启流式响应 (NDJSON)
     res.setHeader('Content-Type', 'application/x-ndjson');
@@ -1789,40 +1825,34 @@ app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => 
         pods: result.metadata.pods,
         stats: result.metadata.stats,
         networkType: result.metadata.layerDetection,
-        isLazy
+        isLazy,
+        layerY: result.layerY
       }
     }) + '\n');
 
-    // (b) 发送 Core 层节点 (通常数量少，一次发送)
-    if (result.nodesByLayer.core && result.nodesByLayer.core.length > 0) {
-      res.write(JSON.stringify({
-        type: 'chunk',
-        layer: 'core',
-        nodes: result.nodesByLayer.core
-      }) + '\n');
-    }
+    // (b) 发送所有层级节点 (动态层级)
+    // 支持 Core/Spine/Leaf 以及 RoCE 的 CSW/SSW/ASW 等所有层级
+    const allLayers = Object.keys(result.nodesByLayer);
 
-    // (c) 发送 Spine 层节点
-    if (result.nodesByLayer.spine && result.nodesByLayer.spine.length > 0) {
-      res.write(JSON.stringify({
-        type: 'chunk',
-        layer: 'spine',
-        nodes: result.nodesByLayer.spine
-      }) + '\n');
-    }
+    for (const layer of allLayers) {
+      const nodes = result.nodesByLayer[layer];
+      if (!nodes || nodes.length === 0) continue;
 
-    // (d) 发送 Leaf 层节点 (Lazy 模式下跳过)
-    if (!isLazy && result.nodesByLayer.leaf && result.nodesByLayer.leaf.length > 0) {
-      const leafNodes = result.nodesByLayer.leaf;
+      // 如果是 Leaf 层 (或 RoCE 的 ASW/SSW) 在 Lazy 模式下是否需要跳过？
+      // 当前逻辑：只有 'leaf' 且 Lazy 模式才跳过？
+      // 为了安全，我们保留原逻辑：Lazy 模式下跳过 'leaf' 层的节点（改为按需加载）。
+      // 对于 RoCE，通常节点数少，isLazy=false，所以全发。
+      if (isLazy && layer === 'leaf') continue;
+
+      // 分块发送
       const chunkSize = 500;
-      for (let i = 0; i < leafNodes.length; i += chunkSize) {
-        const chunk = leafNodes.slice(i, i + chunkSize);
+      for (let i = 0; i < nodes.length; i += chunkSize) {
+        const chunk = nodes.slice(i, i + chunkSize);
         res.write(JSON.stringify({
           type: 'chunk',
-          layer: 'leaf',
+          layer: layer,
           nodes: chunk
         }) + '\n');
-        // 极短延迟让IO有机会flush (可选)
         await new Promise(r => setImmediate(r));
       }
     }
@@ -2008,7 +2038,8 @@ function parseCSVPortMap(csvContent) {
 
   const portMap = new Map();
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',').map(c => c.trim());
+    // 简单的 CSV 解析 (不支持包含逗号的 Quoted 字段，但对于 UFM 导出通常足够)
+    const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
     const sys = cols[systemIdx];
     const port = portIdx >= 0 ? cols[portIdx] : '';
     const peer = cols[peerNodeIdx];
@@ -2018,7 +2049,125 @@ function parseCSVPortMap(csvContent) {
     portMap.set(`${sys}|${port}`, { peer, peerPort });
   }
 
-  console.log(`[TopologyRestore] CSV解析完成: ${portMap.size} 条端口映射`);
+  console.log(`[TopologyRestore] CSV解析完成: ${portMap.size} 条端口映射. Sample: ${Array.from(portMap.keys())[0]}`);
+  return portMap;
+}
+
+/**
+ * 解析 SN 清单 CSV
+ * 格式：cmdb数据库SN,主机名,带外地址...
+ */
+function parseSNListCSV(content) {
+  const lines = content.split('\n').filter(l => l.trim());
+  if (lines.length < 2) return null;
+
+  const header = lines[0].toLowerCase();
+  // 检查是否包含关键列
+  if ((header.includes('sn') || header.includes('序列号')) &&
+    (header.includes('主机名') || header.includes('hostname') || header.includes('ip'))) {
+
+    // 提取可能的 SN
+    const snList = [];
+    const snIdx = lines[0].split(',').findIndex(c => c.toLowerCase().includes('sn') || c.includes('序列号'));
+    if (snIdx === -1) return null;
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',');
+      if (cols[snIdx] && cols[snIdx].trim()) {
+        snList.push(cols[snIdx].trim());
+      }
+    }
+    return snList;
+  }
+  return null;
+}
+
+/**
+ * 从知识库扫描并构建 PortMap
+ */
+async function buildPortMapFromKnowledgeBase(snList, networkType) {
+  const portMap = new Map();
+  const relevantDevices = new Set();
+
+  // 优化：如果提供了 SN 列表，我们可以尝试只保留相关的子图?
+  // 目前策略：构建全局图，因为连接可能跨越多跳
+
+  console.log('[KB-Topology] 开始扫描知识库构建拓扑...');
+
+  await storage.scanChunks((chunk) => {
+    const content = chunk.content;
+    const lines = content.split('\n');
+    let headerIdx = { system: -1, port: -1, peer: -1, peerPort: -1 };
+
+    for (const line of lines) {
+      // 1. 检测表头
+      const lowerLine = line.toLowerCase();
+      if (lowerLine.includes('system') || lowerLine.includes('hostname')) {
+        const cols = line.split(',').map(c => c.trim());
+        cols.forEach((col, idx) => {
+          const lc = col.toLowerCase();
+          if (lc === 'system' || lc === 'hostname') headerIdx.system = idx;
+          else if (lc === 'port' || lc === 'ifname') headerIdx.port = idx;
+          else if (lc.includes('peer') && lc.includes('node')) headerIdx.peer = idx;
+          else if (lc.includes('peer') && lc.includes('port')) headerIdx.peerPort = idx;
+        });
+        continue;
+      }
+
+      // 2. 解析行
+      const cols = line.split(',').map(c => c.trim());
+      let sys, port, peer, peerPort;
+
+      if (headerIdx.system >= 0 && headerIdx.peer >= 0 && cols.length > headerIdx.peer) {
+        // 有表头匹配
+        sys = cols[headerIdx.system];
+        port = headerIdx.port >= 0 ? cols[headerIdx.port] : '';
+        peer = cols[headerIdx.peer];
+        peerPort = headerIdx.peerPort >= 0 ? cols[headerIdx.peerPort] : '';
+      } else if (cols.length >= 4) {
+        // 启发式：寻找网络设备名对 (GPU, IBLF, ASW...)
+        // 简单逻辑：如果一行包含两个看似设备名的字串
+        const devicePattern = /[a-z0-9]+-(gpu|ib|asw|sw)/i;
+        for (let i = 0; i < cols.length - 1; i++) {
+          if (devicePattern.test(cols[i])) {
+            for (let j = i + 1; j < cols.length; j++) {
+              if (devicePattern.test(cols[j])) {
+                sys = cols[i];
+                peer = cols[j];
+                port = cols[i + 1] || ''; // 假设紧跟的是端口
+                peerPort = cols[j + 1] || '';
+                break;
+              }
+            }
+          }
+          if (sys) break;
+        }
+      }
+
+      // 3. 验证并添加到 Map
+      if (sys && peer && sys.length > 3 && peer.length > 3 && sys !== peer) {
+        // 过滤掉非设备 (简单的长度和格式检查)
+        // 规范化
+        sys = sys.toUpperCase();
+        peer = peer.toUpperCase();
+
+        if (networkType === 'ib') {
+          // IB 过滤: 必须包含 IB, GPU
+          if (!sys.includes('IB') && !sys.includes('GPU') && !sys.includes('MDC')) continue;
+        }
+
+        const key = `${sys}|${port}`;
+
+        // 避免重复和自环
+        if (!portMap.has(key)) {
+          portMap.set(key, { peer, peerPort });
+        }
+      }
+    }
+    return true; // 继续扫描
+  });
+
+  console.log(`[KB-Topology] 扫描完成，构建了 ${portMap.size} 条连接`);
   return portMap;
 }
 
@@ -2050,14 +2199,17 @@ function parseExcelPortMap(data) {
   };
 
   for (const row of data) {
-    // 尝试多种字段名组合
-    const sys = findField(row, 'hostname', 'device', 'system', 'node', 'name');
-    const port = findField(row, 'interface', 'port', 'eth');
-    const peer = findField(row, 'peer hostname', 'peer device', 'peer node', 'peer name', 'remote hostname', 'remote device');
-    const peerPort = findField(row, 'peer interface', 'peer port', 'peer eth', 'remote interface', 'remote port');
+    // 优先精确匹配常见列名,后备模糊匹配
+    const sys = findField(row, 'Hostname', 'hostname', 'device', 'system', 'node');
+    const port = findField(row, 'Ifname', 'ifname', 'interface', 'port', 'eth');
+    const peer = findField(row, 'Peer Node', 'peer node', 'peer hostname', 'peer device', 'peer name', 'remote hostname');
+    const peerPort = findField(row, 'Peer Port', 'peer port', 'peer interface', 'peer eth', 'remote interface');
 
     if (!sys || !peer) {
-      console.log(`[ParseExcel] 跳过行：sys=${sys}, peer=${peer}`);
+      // 增强日志:显示原始数据帮助调试
+      if (data.indexOf(row) < 3) {  // 只记录前3条
+        console.log(`[ParseExcel] 跳过行 #${data.indexOf(row)}: sys=${sys || 'NULL'}, peer=${peer || 'NULL'}`);
+      }
       continue;
     }
 
@@ -2065,17 +2217,17 @@ function parseExcelPortMap(data) {
   }
 
   console.log(`[ParseExcel] 解析完成: ${portMap.size} 条端口映射`);
+
+  // 验证: 如果没提取到任何数据,输出警告
+  if (portMap.size === 0) {
+    console.error(`[ParseExcel] 警告: 未提取到任何连接! Excel字段名: ${fieldNames.join(', ')}`);
+    console.error('[ParseExcel] 请检查Excel文件是否包含: Hostname/Peer Node 列');
+  }
+
   return portMap;
 }
 
-// IB网络设备层级识别
 
-function getIBDeviceLayer(deviceName) {
-  if (deviceName.includes('IBCR')) return 'core';
-  if (deviceName.includes('IBSP')) return 'spine';
-  if (deviceName.includes('IBLF')) return 'leaf';
-  return 'unknown';
-}
 
 // 解析IB网络拓扑 (UFM CSV格式) - 严格参考 generate_topology.py
 function parseIBTopology(csvContent) {
@@ -2289,9 +2441,16 @@ function getRoCEDeviceType(deviceName) {
   if (upper.includes('SOOB')) return 'soob';
   if (upper.includes('OOB')) return 'oob';
   if (upper.includes('LSW')) return 'lsw';
-  if (upper.includes('CSW')) return 'csw';
-  if (upper.includes('SSW')) return 'ssw';
-  if (upper.includes('ASW')) return 'asw';
+
+  // Core synonyms
+  if (upper.match(/CSW|CORE|ROUTER|BORDER|GATEWAY|-CR-/)) return 'csw';
+
+  // Spine synonyms
+  if (upper.match(/SSW|SPINE|AGG|-SP-/)) return 'ssw';
+
+  // Leaf synonyms
+  if (upper.match(/ASW|LEAF|ACCESS|TOR|-LF-/)) return 'asw';
+
   return 'other';
 }
 
@@ -2324,8 +2483,9 @@ function parseRoCETopology(data) {
 
     // 跳过空值或无效数据
     if (!hostname || !peerNode || hostname === 'nan' || peerNode === 'nan') continue;
-    // 排除GPU设备（参考 Python: export_html_topology 中的过滤）
-    if (hostname.toUpperCase().includes('GPU') || peerNode.toUpperCase().includes('GPU')) continue;
+    // 排除GPU设备
+    if (hostname.toUpperCase().match(/GPU|COMPUTE|WORKER|NODE|HOST|SERVER|DGX|H100|A100|H800|A800|SRV|-N\d+|PSNODE/)) continue;
+    if (peerNode.toUpperCase().match(/GPU|COMPUTE|WORKER|NODE|HOST|SERVER|DGX|H100|A100|H800|A800|SRV|-N\d+|PSNODE/)) continue;
 
     allDevices.add(hostname);
     allDevices.add(peerNode);

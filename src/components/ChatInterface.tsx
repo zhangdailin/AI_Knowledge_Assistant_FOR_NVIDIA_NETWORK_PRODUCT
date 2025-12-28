@@ -4,7 +4,7 @@ import { Send, Bot, User, Trash2, History, Brain, Square, BookOpen, Settings, Pl
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import MessageContent from './MessageContent';
-import SnIblfResultCard from './SnIblfResultCard';
+import SnIblfResultCard from '../plugins/sn-iblf/SnIblfResultCard';
 import { localStorageManager } from '../lib/localStorage';
 
 const ChatInterface: React.FC = () => {
@@ -12,13 +12,13 @@ const ChatInterface: React.FC = () => {
   const [isSending, setIsSending] = useState(false); // 新增：发送状态
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  
+
   const { user } = useAuthStore();
-  const { 
-    currentConversation, 
-    messages, 
-    isLoading, 
-    sendMessage, 
+  const {
+    currentConversation,
+    messages,
+    isLoading,
+    sendMessage,
     createConversation,
     deepThinking,
     setDeepThinking,
@@ -34,7 +34,7 @@ const ChatInterface: React.FC = () => {
     if (user) {
       // 立即加载
       loadConversations(user.id);
-      
+
       // 双重保险：确保数据已加载（解决某些极端情况下的时序问题）
       const timer = setTimeout(() => {
         const currentConvs = useChatStore.getState().conversations;
@@ -72,9 +72,9 @@ const ChatInterface: React.FC = () => {
   // 修改：优化发送处理
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!inputValue.trim() || isLoading || isSending) return; // 增加发送状态检查
-    
+
     if (!user) {
       console.error('没有用户');
       return;
@@ -83,14 +83,14 @@ const ChatInterface: React.FC = () => {
     const messageContent = inputValue.trim();
     setInputValue(''); // 立即清空输入框
     setIsSending(true); // 设置发送状态
-    
+
     try {
       // 如果没有当前对话，自动创建一个
       if (!currentConversation) {
         createConversation(user.id, '新对话');
         // createConversation 是同步更新 store 的，sendMessage 内部通过 get() 获取最新状态
       }
-      
+
       await sendMessage(messageContent);
     } catch (error) {
       console.error('发送消息失败:', error);
@@ -133,7 +133,7 @@ const ChatInterface: React.FC = () => {
 
   // 不再过滤空对话，直接显示所有对话，按更新时间倒序排列
   const sortedConversations = React.useMemo(() => {
-    return [...conversations].sort((a, b) => 
+    return [...conversations].sort((a, b) =>
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
   }, [conversations]);
@@ -141,14 +141,14 @@ const ChatInterface: React.FC = () => {
   const getConversationPreview = (conversation: any) => {
     const convMessages = localStorageManager.getMessages(conversation.id);
     if (convMessages.length === 0) return '';
-    
+
     const lastMessage = convMessages[convMessages.length - 1];
     return lastMessage.content.substring(0, 50) + (lastMessage.content.length > 50 ? '...' : '');
   };
 
   const handleDeleteConversation = async (e: React.MouseEvent, conversationId: string) => {
     e.stopPropagation();
-    
+
     if (window.confirm('确定要删除这个对话吗？')) {
       await deleteConversation(conversationId);
     }
@@ -195,11 +195,10 @@ const ChatInterface: React.FC = () => {
                 return (
                   <div
                     key={conversation.id}
-                    className={`group relative flex items-center rounded-xl transition-all duration-200 ${
-                      isActive
+                    className={`group relative flex items-center rounded-xl transition-all duration-200 ${isActive
                         ? 'bg-indigo-500/20 text-indigo-300'
                         : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                    }`}
+                      }`}
                   >
                     <button
                       onClick={() => selectConversation(conversation)}
@@ -313,26 +312,23 @@ const ChatInterface: React.FC = () => {
           ) : (
             <div className="space-y-6 max-w-4xl mx-auto">
               {messages.map((message) => (
-                <div key={message.id} className={`flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 ${
-                  message.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}>
+                <div key={message.id} className={`flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 ${message.role === 'user' ? 'justify-end' : 'justify-start'
+                  }`}>
                   {message.role === 'assistant' && (
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-indigo-500/20 mt-1">
                       <Bot className="w-5 h-5 text-white" />
                     </div>
                   )}
 
-                  <div className={`max-w-[85%] relative group ${
-                    message.role === 'user'
+                  <div className={`max-w-[85%] relative group ${message.role === 'user'
                       ? 'order-1'
                       : 'order-2'
-                  }`}>
+                    }`}>
                     {/* 消息气泡 */}
-                    <div className={`px-5 py-4 shadow-sm ${
-                      message.role === 'user'
+                    <div className={`px-5 py-4 shadow-sm ${message.role === 'user'
                         ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl rounded-tr-md'
                         : 'bg-white border border-gray-100 rounded-2xl rounded-tl-md shadow-md'
-                    }`}>
+                      }`}>
                       <MessageContent content={message.content} role={message.role} />
                     </div>
 
@@ -345,13 +341,12 @@ const ChatInterface: React.FC = () => {
                     )}
 
                     {/* 底部元数据 */}
-                    <div className={`flex items-center gap-2 mt-1.5 text-xs text-gray-400 ${
-                       message.role === 'user' ? 'justify-end' : 'justify-start'
-                    }`}>
+                    <div className={`flex items-center gap-2 mt-1.5 text-xs text-gray-400 ${message.role === 'user' ? 'justify-end' : 'justify-start'
+                      }`}>
                       {message.role === 'assistant' && message.metadata?.model && (
                         <span className="flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded-full border border-gray-100">
-                           <Bot className="w-3 h-3" />
-                           {message.metadata.model}
+                          <Bot className="w-3 h-3" />
+                          {message.metadata.model}
                         </span>
                       )}
 
@@ -363,7 +358,7 @@ const ChatInterface: React.FC = () => {
                       )}
 
                       <span className="opacity-0 group-hover:opacity-100 transition-opacity">
-                        {new Date(message.createdAt || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        {new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
                   </div>
@@ -398,10 +393,10 @@ const ChatInterface: React.FC = () => {
                         <span className="text-xs font-medium">停止</span>
                       </button>
                     </div>
-                    
+
                     {/* 占位气泡 */}
                     <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm p-6 shadow-sm min-h-[80px] flex items-center">
-                       <div className="flex space-x-2">
+                      <div className="flex space-x-2">
                         <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
                         <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                         <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
@@ -442,11 +437,10 @@ const ChatInterface: React.FC = () => {
               <button
                 type="submit"
                 disabled={!inputValue.trim() || isSending || isLoading}
-                className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 ${
-                  !inputValue.trim() || isSending || isLoading
+                className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 ${!inputValue.trim() || isSending || isLoading
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                     : 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:from-indigo-600 hover:to-purple-700 shadow-lg shadow-indigo-500/25 transform hover:-translate-y-0.5'
-                }`}
+                  }`}
                 title={isSending ? '发送中...' : '发送消息'}
               >
                 {isSending || isLoading ? (

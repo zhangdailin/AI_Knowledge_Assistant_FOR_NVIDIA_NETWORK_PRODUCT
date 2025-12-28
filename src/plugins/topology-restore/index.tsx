@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import ReactFlow, {
   Node,
   Edge,
@@ -12,7 +12,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
 import { bundleEdges, collapseBundle, expandBundle } from '../../utils/edge-bundling';
-import CytoscapeTopology from '../../components/CytoscapeTopology';
+import CytoscapeTopology from './CytoscapeTopology';
 import useVirtualViewport from '../../hooks/useVirtualViewport';
 
 type NetworkType = 'ib' | 'roce';
@@ -62,12 +62,29 @@ interface TopologyConfig {
   };
 }
 
+// 层级标签本地化: RoCE显示CSW/SSW/ASW, IB显示Core/Spine/Leaf
+const getLayerLabel = (layer: string, networkType: NetworkType = 'ib'): string => {
+  if (networkType === 'roce') {
+    const roceLabels: Record<string, string> = {
+      core: 'CSW',
+      spine: 'SSW',
+      leaf: 'ASW',
+      podAggregate: 'POD'
+    };
+    return roceLabels[layer] || layer.toUpperCase();
+  }
+  // IB或其他网络类型
+  return layer.charAt(0).toUpperCase() + layer.slice(1);
+};
+
 const TopologyRestoreTool: React.FC = () => {
   const [networkType, setNetworkType] = useState<NetworkType>('ib');
   const [file, setFile] = useState<File | null>(null);
   const [restoreResult, setRestoreResult] = useState<any>(null);
-  const [pods, setPods] = useState<string[]>(['ALL']);
-  const [selectedPod, setSelectedPod] = useState('ALL');
+  const [pods, setPods] = useState<string[]>([]);
+  const [selectedPod, setSelectedPod] = useState<string>('');
+  const [rails, setRails] = useState<string[]>([]);
+  const [selectedRail, setSelectedRail] = useState<string>('');
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [renderMode, setRenderMode] = useState<'reactflow' | 'cytoscape' | 'virtual-reactflow'>('reactflow');
@@ -94,10 +111,47 @@ const TopologyRestoreTool: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<any>(null);
   const [selectedEdgeInfo, setSelectedEdgeInfo] = useState<any>(null);
+  const [activeCoreFilter, setActiveCoreFilter] = useState<string[] | null>(null); // Core 节点过滤器
+
+  // Phase 2: LOD System State
+  const [collapsedPods, setCollapsedPods] = useState<Set<string>>(new Set());
+  const [focusedPod, setFocusedPod] = useState<string | null>(null);
+  const [viewLevel, setViewLevel] = useState<'overview' | 'group' | 'detail'>('group'); // Default to 'group' for backward compat
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+  // 缓存节点 ID 到 Layer 的映射，用于快速查找对端设备层级
+  const nodeLayerMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (restoreResult?.nodesByLayer) {
+      Object.entries(restoreResult.nodesByLayer).forEach(([layer, nodes]: [string, any[]]) => {
+        nodes.forEach(n => map.set(n.id, layer));
+      });
+    }
+    return map;
+  }, [restoreResult]);
+
+  // Phase 2 V2: Auto-collapse large topologies (POD >= 5)
+  useEffect(() => {
+    if (pods.length >= 5 && collapsedPods.size === 0) {
+      console.log(`[LOD] Auto-collapsing ${pods.length} PODs for better overview`);
+      setCollapsedPods(new Set(pods));
+      setMessage(`已自动折叠 ${pods.length} 个POD以优化显示 - 点击POD可展开查看详情`);
+    }
+  }, [pods]);
+
+  // Phase 2 V3: Global LOD control functions
+  const collapseAllPods = useCallback(() => {
+    setCollapsedPods(new Set(pods));
+    setMessage(`已折叠所有 ${pods.length} 个POD - 点击POD可展开`);
+  }, [pods]);
+
+  const expandAllPods = useCallback(() => {
+    setCollapsedPods(new Set());
+    setMessage(`已展开所有POD`);
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -205,12 +259,29 @@ const TopologyRestoreTool: React.FC = () => {
 
                 // 初始化 POD 和 可见性
                 if (metaData.pods?.length > 0) {
-                  const uniquePods = ['ALL', ...metaData.pods.filter((p: string) => p !== 'ALL')];
+                  // 不再添加 ALL，强制选择
+                  const uniquePods = metaData.pods.filter((p: string) => p !== 'ALL');
                   setPods(uniquePods);
-                  setSelectedPod('ALL');
+                  // 如果只有一个 POD，自动选中
+                  if (uniquePods.length === 1) setSelectedPod(uniquePods[0]);
+                  else setSelectedPod(''); // 强制用户选择
                 }
 
-                const initialVisibility: Record<string, boolean> = { core: true, spine: true, leaf: true };
+                // 提取 Rails
+                // 从 metaData stats 或 accumulatedNodes 中提取？
+                // 注意：这里 accumulatedNodes 还是空的，因为流才刚开始。
+                // Rails extraction should happen AFTER all data is loaded or progressively?
+                // Let's do it at the end (Step 248) to be safe, or progressively if we want.
+                // For now, simpler to do it at the end.
+
+                // 初始化层级可见性: 所有层默认可见(支持RoCE等多种网络类型)
+                const initialVisibility: Record<string, boolean> = {};
+                if (metaData.layers) {
+                  const layers = Array.isArray(metaData.layers) ? metaData.layers : Object.keys(metaData.layers);
+                  layers.forEach((layer: string) => {
+                    initialVisibility[layer] = true;  // 所有层默认显示
+                  });
+                }
                 setLayerVisibility(initialVisibility);
 
               } else if (chunk.type === 'chunk') {
@@ -218,6 +289,7 @@ const TopologyRestoreTool: React.FC = () => {
                   accumulatedEdges.push(...chunk.items);
                 } else if (chunk.layer) {
                   const newNodes = chunk.nodes;
+                  if (!accumulatedNodes[chunk.layer]) accumulatedNodes[chunk.layer] = [];
                   accumulatedNodes[chunk.layer].push(...newNodes);
                   totalNodesReceived += newNodes.length;
                 }
@@ -249,11 +321,25 @@ const TopologyRestoreTool: React.FC = () => {
 
       console.log('[TopologyStream] 完成:', finalData);
       setRestoreResult(finalData);
-      setMessage(`加载完成: ${totalNodesReceived} 节点 (Lazy Mode: ${!!metaData?.isLazy})`);
+
+      // 提取所有 Rails
+      const allNodes = [
+        ...(accumulatedNodes.core || []),
+        ...(accumulatedNodes.spine || []),
+        ...(accumulatedNodes.leaf || [])
+      ];
+      const extractedRails = extractRails(allNodes);
+      setRails(extractedRails);
+
+      // 如果只有一个 Rail，自动选中；否则强制选择
+      if (extractedRails.length === 1) setSelectedRail(extractedRails[0]);
+      else setSelectedRail('');
+
+      setMessage(`加载完成: ${totalNodesReceived} 节点。请选择 POD 和 Rail 以查看拓扑。`);
       setLoadingProgress(100);
 
-      // 初次渲染
-      buildTopology(finalData, 'ALL', { core: true, spine: true, leaf: true });
+      // 不再自动 buildTopology('ALL')，因为需要用户选择
+      // buildTopology(finalData, 'ALL', { core: true, spine: true, leaf: true });
 
     } catch (err: any) {
       console.error('[TopologyRestore] Error:', err);
@@ -269,24 +355,14 @@ const TopologyRestoreTool: React.FC = () => {
 
     if (!data?.nodesByLayer) return;
 
-    const { nodesByLayer, connections } = data;
+    const { nodesByLayer, connections, layerY } = data;
 
     // 构建节点信息映射
     const nodeInfoMap = new Map<string, any>();
 
     // 获取每层的所有设备，用于计算坐标
-    const allLayers = {
-      core: (nodesByLayer.core || []).map((n: any) => n.id),
-      spine: (nodesByLayer.spine || []).map((n: any) => n.id),
-      leaf: (nodesByLayer.leaf || []).map((n: any) => n.id)
-    };
-
-    // 计算最大设备数，用于居中计算
-    const maxCount = Math.max(
-      allLayers.core.length || 0,
-      allLayers.spine.length || 0,
-      allLayers.leaf.length || 0
-    );
+    const allLayers = Object.values(nodesByLayer).map((nodes: any) => nodes.length);
+    const maxCount = Math.max(...allLayers, 0);
 
     // 布局参数（参考参考项目的优化方案）
     const layerGap = 200; // 层级间距
@@ -297,7 +373,7 @@ const TopologyRestoreTool: React.FC = () => {
     // 动态计算中心 X 坐标（用于水平居中）
     const centerX = maxCount > 0 ? ((maxCount - 1) * nodeGap) / 2 : 0;
 
-    const layerYPositions: Record<string, number> = {
+    const layerYPositions: Record<string, number> = data.layerY || {
       core: 0,
       spine: layerGap,
       leaf: layerGap * 2
@@ -316,12 +392,12 @@ const TopologyRestoreTool: React.FC = () => {
       }
 
       // 为该层的节点计算坐标
-      const yPos = layerYPositions[layer];
+      const yPos = layerYPositions[layer] ?? (Object.keys(nodesByLayer).indexOf(layer) * layerGap);
       let xGap = nodeGap; // 默认使用 Core 间距
 
-      if (layer === 'spine') {
+      if (layer === 'spine' || layer.includes('ssw')) {
         xGap = spineNodeGap;
-      } else if (layer === 'leaf') {
+      } else if (layer === 'leaf' || layer.includes('asw')) {
         xGap = leafNodeGap;
       }
 
@@ -689,7 +765,35 @@ const TopologyRestoreTool: React.FC = () => {
             性能优化
           </label>
 
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <div className="mb-3 pb-3 border-b border-gray-100">
+              <label className="text-xs font-semibold text-gray-600 block mb-2">渲染引擎</label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="renderEngine"
+                    value="reactflow"
+                    checked={renderMode === 'reactflow'}
+                    onChange={() => setRenderMode('reactflow')}
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm">标准 (ReactFlow)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="renderEngine"
+                    value="cytoscape"
+                    checked={renderMode === 'cytoscape' || renderMode === 'virtual-reactflow'}
+                    onChange={() => setRenderMode('cytoscape')}
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-bold text-blue-600">高性能 (Cytoscape) <span className="text-xs font-normal text-gray-500 ml-1">- 推荐 500+ 节点</span></span>
+                </label>
+              </div>
+            </div>
+
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -927,8 +1031,21 @@ const TopologyRestoreTool: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-gray-500" />
                 <label className="text-sm font-medium text-gray-700">POD:</label>
-                <select value={selectedPod} onChange={(e) => handlePodChange(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm">
+                <select value={selectedPod} onChange={(e) => handlePodChange(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500">
+                  <option value="" disabled>请选择 POD</option>
                   {pods.map(pod => <option key={pod} value={pod}>{pod}</option>)}
+                </select>
+              </div>
+            )}
+
+            {/* Rail 选择器 (仅IB网络) */}
+            {networkType === 'ib' && rails.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-gray-500" />
+                <label className="text-sm font-medium text-gray-700">Rail:</label>
+                <select value={selectedRail} onChange={(e) => setSelectedRail(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500">
+                  <option value="" disabled>请选择 Rail</option>
+                  {rails.map(rail => <option key={rail} value={rail}>{rail === 'ALL' ? '全部' : `Rail ${rail}`}</option>)}
                 </select>
               </div>
             )}
@@ -973,7 +1090,80 @@ const TopologyRestoreTool: React.FC = () => {
         <div className="flex gap-4">
           <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden relative" style={{ height: '600px' }}>
 
+            {/* 强制选择提示 */}
+            {!loading && (!selectedPod || !selectedRail) && (
+              <div className="absolute inset-0 z-40 bg-gray-50/50 backdrop-blur-sm flex flex-col items-center justify-center">
+                <div className="bg-white p-8 rounded-xl shadow-lg border border-gray-200 text-center max-w-md">
+                  <Layers className="w-16 h-16 text-blue-500 mx-auto mb-4" />
+                  <h3 className="text-xl font-bold text-gray-800 mb-2">请选择视图范围</h3>
+                  <p className="text-gray-500 mb-6">
+                    检测到大规模网络拓扑。为了获得最佳性能和清晰度，请先在上方工具栏选择目标
+                    <span className="font-bold text-gray-700 mx-1">POD</span> 和
+                    <span className="font-bold text-gray-700 mx-1">Rail</span>。
+                  </p>
+                  <div className="flex gap-3 justify-center">
+                    <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
+                      POD: {selectedPod || '未选择'}
+                    </div>
+                    <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
+                      Rail: {selectedRail || '未选择'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* 加载进度条悬浮层 */}
+            {/* Phase 2 V3: LOD Toolbar */}
+            {renderMode === 'cytoscape' && restoreResult && pods.length > 0 && (
+              <div className="mb-3 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-lg flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={collapseAllPods}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 transition-colors"
+                    title="折叠所有POD,显示概览"
+                  >
+                    <span>📦</span>
+                    <span>概览视图</span>
+                  </button>
+                  <button
+                    onClick={expandAllPods}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors"
+                    title="展开所有POD,显示详细设备"
+                  >
+                    <span>📂</span>
+                    <span>展开全部</span>
+                  </button>
+                </div>
+
+                <div className="flex-1 flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">快速聚焦:</label>
+                  <select
+                    className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        // Expand only selected POD, collapse others
+                        const otherPods = pods.filter(p => p !== e.target.value);
+                        setCollapsedPods(new Set(otherPods));
+                        setFocusedPod(e.target.value);
+                        setMessage(`已聚焦到 ${e.target.value}`);
+                      }
+                    }}
+                  >
+                    <option value="">选择POD...</option>
+                    {pods.map(pod => (
+                      <option key={pod} value={pod}>{pod}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="text-sm text-gray-600">
+                  <span className="font-medium">{collapsedPods.size}</span> / {pods.length} PODs 已折叠
+                </div>
+              </div>
+            )}
+
             {loading && (
               <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center backdrop-blur-sm">
                 <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -986,14 +1176,65 @@ const TopologyRestoreTool: React.FC = () => {
               </div>
             )}
 
-            {renderMode === 'cytoscape' ? (
+            {renderMode === 'cytoscape' || renderMode === 'virtual-reactflow' ? (
               <CytoscapeTopology
                 data={restoreResult}
                 selectedPod={selectedPod}
+                selectedRail={selectedRail}
                 layerVisibility={layerVisibility}
+                activeCoreFilter={activeCoreFilter}
+                collapsedPods={collapsedPods}
+                networkType={networkType}  // RoCE网络跳过Rail过滤
+                height="800px" // Increased height for better visibility
                 onNodeClick={(node) => {
                   setSelectedNodeInfo(node);
                   setHighlightedNodeId(node.id);
+
+                  // Phase 2: Toggle collapse for POD aggregate nodes
+                  if (node.layer === 'podAggregate') {
+                    const originalPod = (node as any).data?.originalPod || node.id.replace('-aggregate', '');
+                    setCollapsedPods(prev => {
+                      const next = new Set(prev);
+                      if (next.has(originalPod)) {
+                        next.delete(originalPod); // Expand
+                        setMessage(`展开 ${originalPod}`);
+                      } else {
+                        next.add(originalPod); // Collapse (shouldn't happen from aggregate click)
+                      }
+                      return next;
+                    });
+                    return; // Skip other logic for aggregate nodes
+                  }
+
+                  // 交互优化: 点击 Spine 节点时，自动显示 Core 层，并只显示连接的 Core 设备
+                  if (node.layer === 'spine') {
+                    // 1. 自动开启 Core 层
+                    if (!layerVisibility.core) {
+                      setLayerVisibility(prev => ({ ...prev, core: true }));
+                      setMessage(`已显示连接到 ${node.id} 的 Core 设备`);
+                    }
+
+                    // 2. 计算连接的 Core 节点
+                    if (restoreResult && restoreResult.connections) {
+                      const connectedCoreIds = restoreResult.connections
+                        .filter((edge: any) => {
+                          // 找到与当前 Spine 连接的边
+                          const isConnected = edge.source === node.id || edge.target === node.id;
+                          if (!isConnected) return false;
+
+                          // 确认对端是 Core 节点
+                          const peerId = edge.source === node.id ? edge.target : edge.source;
+                          const isPeerCore = peerId.includes('IBCR') || peerId.includes('CORE'); // 简单判定
+                          return isPeerCore;
+                        })
+                        .map((edge: any) => edge.source === node.id ? edge.target : edge.source);
+
+                      setActiveCoreFilter(connectedCoreIds);
+                    }
+                  } else {
+                    // 点击其他节点 (如 Leaf 或 Core)，清除 Core 过滤器
+                    setActiveCoreFilter(null);
+                  }
                 }}
                 onEdgeClick={(edge) => setSelectedEdgeInfo({ ...edge, label: `${edge.srcPort}-${edge.dstPort}` })}
                 highlightedNodeId={highlightedNodeId}
@@ -1073,25 +1314,84 @@ const TopologyRestoreTool: React.FC = () => {
                           ? (restoreResult?.connections || []).filter((e: any) => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id)
                           : edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id);
 
-                        return relatedEdges.length > 0 ? (
-                          relatedEdges.slice(0, 50).map((edge: any, idx: number) => (
-                            <div key={idx} className="p-1.5 bg-gray-50 rounded border border-gray-200">
-                              <div className="font-mono text-gray-700">
+                        if (relatedEdges.length === 0) {
+                          return <p className="text-gray-500 italic">无连接</p>;
+                        }
+
+                        // 分类连接：上行 (Uplink) 和 下行 (Downlink)
+                        // 假设：对于 Spine 来说，Core 是上行 (Target/Peer is IBCR)，Leaf 是下行
+                        // 层级定义 (数值越小越核心)
+                        const LAYER_RANK: Record<string, number> = {
+                          'core': 0,
+                          'spine': 1,
+                          'leaf': 2,
+                          'oob': 99,
+                          'unknown': 100
+                        };
+
+                        const uplinks: any[] = [];
+                        const downlinks: any[] = [];
+
+                        relatedEdges.forEach((edge: any) => {
+                          const peerId = edge.source === selectedNodeInfo.id ? edge.target : edge.source;
+
+                          // 动态查找对端层级 (不依赖 ID 硬编码)
+                          const peerLayer = (nodeLayerMap.get(peerId) || 'unknown').toLowerCase();
+                          const peerRank = LAYER_RANK[peerLayer] ?? 100;
+
+                          // Legacy vars removed
+
+
+                          // 定义当前层级 (临时修复作用域问题)
+                          const currentLayer = (nodeLayerMap.get(selectedNodeInfo.id) || selectedNodeInfo.layer || 'unknown').toLowerCase();
+                          const currentRank = LAYER_RANK[currentLayer] ?? 100;
+
+                          // 逻辑: 如果对端层级 比 当前层级 "高" (Rank数值小)，则是 Uplink
+                          if (peerRank < currentRank) {
+                            uplinks.push(edge);
+                          } else {
+                            // 否则视为直连或下行
+                            downlinks.push(edge);
+                          }
+                        });
+
+                        // 渲染函数
+                        const renderEdgeItem = (edge: any, idx: number, isUplink: boolean) => (
+                          <div key={`${isUplink ? 'up' : 'down'}-${idx}`} className={`p-1.5 rounded border mb-1 ${isUplink ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'}`}>
+                            <div className="font-mono text-gray-700 flex justify-between">
+                              <span>
                                 {edge.source === selectedNodeInfo.id ? (
                                   <>→ {edge.target}</>
                                 ) : (
                                   <>← {edge.source}</>
                                 )}
-                              </div>
-                              {(edge.label || (edge.srcPort && edge.dstPort)) && (
-                                <div className="text-gray-600 mt-0.5">
-                                  端口: {edge.label || `${edge.srcPort}-${edge.dstPort}`}
-                                </div>
-                              )}
+                              </span>
+                              {isUplink && <span className="text-[10px] bg-blue-100 text-blue-600 px-1 rounded">UPLINK</span>}
                             </div>
-                          ))
-                        ) : (
-                          <p className="text-gray-500 italic">无连接</p>
+                            {(edge.label || (edge.srcPort && edge.dstPort)) && (
+                              <div className="text-gray-600 mt-0.5 text-[10px]">
+                                端口: {edge.label || `${edge.srcPort}-${edge.dstPort}`}
+                              </div>
+                            )}
+                          </div>
+                        );
+
+                        return (
+                          <div className="space-y-4">
+                            {uplinks.length > 0 && (
+                              <div>
+                                <p className="text-[10px] font-bold text-blue-600 uppercase mb-1">上行连接 (Uplinks)</p>
+                                {uplinks.map((e, i) => renderEdgeItem(e, i, true))}
+                              </div>
+                            )}
+                            {downlinks.length > 0 && (
+                              <div>
+                                <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">下行连接 (Downlinks)</p>
+                                {downlinks.slice(0, 40).map((e, i) => renderEdgeItem(e, i, false))}
+                                {downlinks.length > 40 && <p className="text-[10px] text-gray-400 text-center">... 还有 {downlinks.length - 40} 条连接</p>}
+                              </div>
+                            )}
+                          </div>
                         );
                       })()}
                     </div>
@@ -1140,6 +1440,34 @@ const TopologyRestoreTool: React.FC = () => {
     </div>
   );
 };
+
+// 辅助函数：从节点列表提取 Rails
+function extractRails(nodes: any[]): string[] {
+  const railSet = new Set<string>();
+  // railSet.add('ALL'); // 移除 ALL，强制选择具体 Rail
+  nodes.forEach(node => {
+    // 尝试多种 Rail 命名模式
+    // 1. Pattern: ...-RAIL1-...
+    // 2. Pattern: ...-R1-...
+    // 3. Pattern: ...-Plane1-...
+    const match = node.id.match(/[-_](?:RAIL|R|Plane|P)(\d+)[-_]/i) ||
+      node.id.match(/^(?:RAIL|R|Plane|P)(\d+)[-_]/i);
+
+    if (match) {
+      railSet.add(match[1]);
+    }
+  });
+
+  // 如果没提取到，给默认值? 不，返回空，让 UI 处理
+  if (railSet.size === 0) return ['1']; // 假设至少有 Rail 1? 或者返回空
+
+  // sort numeric
+  return Array.from(railSet).sort((a, b) => {
+    if (a === 'ALL') return -1;
+    if (b === 'ALL') return 1;
+    return parseInt(a) - parseInt(b);
+  });
+}
 
 export const pluginMeta = {
   id: 'topology-restore',

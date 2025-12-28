@@ -3,24 +3,28 @@
  * 用于超大规模拓扑（2000+ 节点）的高性能渲染
  */
 
-import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
+import React, { useEffect, useRef, useState, useCallback, memo, useMemo } from 'react';
 import Cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { Layers, Zap, Maximize, Move } from 'lucide-react';
 
 Cytoscape.use(coseBilkent);
 
-// 层级颜色
+// Import Premium Styles
+import { getPremiumStyles, NEON_PALETTE } from './TopologyStyles';
+
+// 兼容旧的 layerColors 导出（映射到新主题）
 const layerColors: Record<string, string> = {
-    core: '#e74c3c',
-    spine: '#3498db',
-    leaf: '#27ae60',
+    core: NEON_PALETTE.core,
+    spine: NEON_PALETTE.spine,
+    leaf: NEON_PALETTE.leaf,
+    oob: '#fbbf24',
+    unknown: '#64748b',
+    other: '#7f7f7f',
     csw: '#d62728',
     ssw: '#1f77b4',
     asw: '#2ca02c',
-    oob: '#ffcc00',
-    other: '#7f7f7f',
-    unknown: '#95a5a6'
+    podGroup: NEON_PALETTE.pod
 };
 
 interface TopologyNode {
@@ -51,6 +55,8 @@ interface CytoscapeTopologyProps {
     data: TopologyData;
     /** 选中的 POD */
     selectedPod?: string;
+    /** 选中的 Rail */
+    selectedRail?: string;
     /** 层级可见性 */
     layerVisibility?: Record<string, boolean>;
     /** 节点点击回调 */
@@ -63,33 +69,147 @@ interface CytoscapeTopologyProps {
     animate?: boolean;
     /** 高亮节点 ID */
     highlightedNodeId?: string | null;
+    /** 激活的 Core 节点过滤器 (仅显示列表中的 Core 节点) */
+    activeCoreFilter?: string[] | null;
+    /** Phase 2: POD 折叠状态集合 */
+    collapsedPods?: Set<string>;
+    /** 网络类型 (用于条件过滤) */
+    networkType?: 'ib' | 'roce';
 }
 
 /**
- * 将拓扑数据转换为 Cytoscape 格式
+ * 获取网络设备的显示标签 (RoCE vs IB)
+ */
+function getLayerLabel(layer: string, networkType: 'ib' | 'roce' = 'ib'): string {
+    if (networkType === 'roce') {
+        const labels: Record<string, string> = {
+            core: 'CSW',
+            spine: 'SSW',
+            leaf: 'ASW',
+            podAggregate: 'POD'
+        };
+        return labels[layer] || layer.toUpperCase();
+    }
+    // IB
+    return layer.charAt(0).toUpperCase() + layer.slice(1);
+}
+
+/**
+ * 计算节点位置 (分层布局)
+ */
+function calculateNodePosition(node: any, nodesByLayer: any, layerY?: Record<string, number>): { x: number; y: number } {
+    // 兼容 Cytoscape 节点对象 (function) 和 原始数据对象 (initial load)
+    const data = typeof node.data === 'function' ? node.data() : (node.data || node);
+
+    const layer = data.layer;
+    if (Math.random() < 0.01) {
+        console.log(`[LayoutDebug] Node=${data.id}, Layer=${layer}, LayerNodes=${nodesByLayer?.[layer]?.length}`);
+    }
+
+    if (!layer || !nodesByLayer || !nodesByLayer[layer]) {
+        console.warn(`[LayoutDebug] MISSING LAYER DATA for Node=${data.id}, Layer=${layer}`);
+        return { x: 0, y: 0 };
+    }
+
+    // Y 轴位置 (优先使用后端提供的 layerY)
+    let y = 800;
+    if (layerY && typeof layerY[layer] === 'number') {
+        y = layerY[layer];
+    } else {
+        const yMap: Record<string, number> = {
+            core: 0,
+            spine: 300,
+            leaf: 600,
+            csw: 0,
+            ssw: 300,
+            asw: 600,
+            lsw: 450,
+            oob: 150,
+            soob: 250,
+            podAggregate: 450
+        };
+        y = yMap[layer] ?? 800;
+    }
+
+    // X 轴位置 (均匀分布)
+    const layerNodes = nodesByLayer[layer];
+    const index = layerNodes.findIndex((n: any) => n.id === data.id);
+    const count = layerNodes.length;
+
+    // 宽度分布
+    const width = Math.max(1000, count * 100);
+    const x = (index + 1) * (width / (count + 1));
+
+    return { x, y };
+}
+
+/**
+ * 将拓扑数据转换为 Cytoscape 格式 (支持 Compound Nodes)
  */
 function convertToCytoscapeFormat(
     data: TopologyData,
     selectedPod: string = 'ALL',
-    layerVisibility: Record<string, boolean> = {}
+    // layerVisibility removed - 显示所有层级
+    selectedRail: string = 'ALL',
+    activeCoreFilter: string[] | null = null,
+    collapsedPods: Set<string> = new Set(),
+    networkType: 'ib' | 'roce' = 'ib'
 ): { nodes: any[]; edges: any[] } {
     const nodes: any[] = [];
     const edges: any[] = [];
     const nodeIds = new Set<string>();
+    const createdPods = new Set<string>(); // Phase 1: 追踪已创建POD节点
+
+    // Phase 2 V2: Pre-scan to collect POD statistics for aggregate nodes
+    const podStats = new Map<string, { spineCount: number; leafCount: number }>();
+
+    Object.entries(data.nodesByLayer || {}).forEach(([layer, layerNodes]) => {
+        // 不再过滤层级,显示所有设备
+        const nodeList = Array.isArray(layerNodes) ? layerNodes : [];
+
+        nodeList.forEach((node: TopologyNode) => {
+            if ((layer === 'spine' || layer === 'leaf') && node.pod) {
+                const podName = node.pod;
+                if (!podStats.has(podName)) {
+                    podStats.set(podName, { spineCount: 0, leafCount: 0 });
+                }
+                const stats = podStats.get(podName)!;
+                if (layer === 'spine') stats.spineCount++;
+                if (layer === 'leaf') stats.leafCount++;
+            }
+        });
+    });
 
     // 处理节点
     Object.entries(data.nodesByLayer || {}).forEach(([layer, layerNodes]) => {
-        // 检查层级可见性
-        if (layerVisibility[layer] === false) return;
+        // 不再过滤层级,显示所有设备
 
         const nodeList = Array.isArray(layerNodes) ? layerNodes : [];
 
         nodeList.forEach((node: TopologyNode) => {
-            // POD 过滤
-            if (selectedPod !== 'ALL') {
-                if (node.pod && node.pod !== selectedPod && !node.id?.includes(selectedPod)) {
-                    return;
+            // 所有过滤已禁用 - 显示全部设备
+
+
+            // POD折叠功能已禁用
+
+
+
+            // Phase 1: Compound Nodes - 创建POD父节点
+            let parentId = undefined;
+            if ((layer === 'spine' || layer === 'leaf') && node.pod) {
+                const podName = node.pod;
+                if (!createdPods.has(podName)) {
+                    nodes.push({
+                        data: {
+                            id: podName,
+                            label: podName,
+                            backgroundColor: NEON_PALETTE.background  // Phase 1: Dark ModepodGroup'
+                        },
+                        classes: 'podGroup'
+                    });
+                    createdPods.add(podName);
                 }
+                parentId = podName;
             }
 
             nodeIds.add(node.id);
@@ -98,7 +218,9 @@ function convertToCytoscapeFormat(
                     id: node.id,
                     label: node.label || node.id,
                     layer,
-                    pod: node.pod
+                    displayLayer: getLayerLabel(layer, networkType),
+                    pod: node.pod,
+                    parent: parentId  // Phase 1: 指定父节点
                 },
                 classes: layer
             });
@@ -124,109 +246,13 @@ function convertToCytoscapeFormat(
     return { nodes, edges };
 }
 
-/**
- * 获取 Cytoscape 样式配置
- */
-function getCytoscapeStyles(): any[] {
-    return [
-        // 节点基础样式
-        {
-            selector: 'node',
-            style: {
-                'label': 'data(label)',
-                'text-valign': 'center',
-                'text-halign': 'center',
-                'font-size': '10px',
-                'color': '#fff',
-                'text-wrap': 'wrap',
-                'text-max-width': '90px',
-                'width': '100px',
-                'height': '36px',
-                'shape': 'roundrectangle',
-                'background-color': '#95a5a6',
-                'border-width': '2px',
-                'border-color': 'data(color)', // Use data attribute if available, or fallback
-                'border-opacity': 0.8
-            }
-        },
-        // Core 层样式
-        {
-            selector: 'node.core',
-            style: {
-                'background-color': layerColors.core,
-                'border-color': layerColors.core,
-                'width': '110px',
-                'height': '40px',
-                'font-weight': 'bold'
-            }
-        },
-        // Spine 层样式
-        {
-            selector: 'node.spine',
-            style: {
-                'background-color': layerColors.spine,
-                'border-color': layerColors.spine
-            }
-        },
-        // Leaf 层样式
-        {
-            selector: 'node.leaf',
-            style: {
-                'background-color': layerColors.leaf,
-                'border-color': layerColors.leaf
-            }
-        },
-        // OOB 样式 (文字颜色深色)
-        {
-            selector: 'node[layer="oob"]',
-            style: {
-                'color': '#333',
-                'background-color': layerColors.oob || '#ffcc00',
-                'border-color': layerColors.oob || '#ffcc00'
-            }
-        },
-        // 边样式
-        {
-            selector: 'edge',
-            style: {
-                'width': 1.5,
-                'line-color': '#bdc3c7',
-                'target-arrow-color': '#bdc3c7',
-                'target-arrow-shape': 'triangle',
-                'curve-style': 'bezier',
-                'opacity': 0.7
-            }
-        },
-        // 选中节点样式
-        {
-            selector: 'node:selected',
-            style: {
-                'border-width': '4px',
-                'border-color': '#3b82f6',
-                'box-shadow': '0 0 10px #3b82f6'
-            }
-        },
-        // 选中边样式
-        {
-            selector: 'edge:selected',
-            style: {
-                'line-color': '#3b82f6',
-                'target-arrow-color': '#3b82f6',
-                'width': 3,
-                'opacity': 1
-            }
-        },
-        // 高亮节点样式
-        {
-            selector: 'node.highlighted',
-            style: {
-                'border-width': '4px',
-                'border-color': '#ff0000',
-                'background-color': '#ff6b6b'
-            }
-        }
-    ];
+// Phase 1: 辅助函数 - 从 ID 提取 Rail (数字)
+function getRailFromId(id: string): number {
+    const match = id.match(/[-_](?:RAIL|R|Plane|P)(\d+)[-_]/i);
+    if (match) return parseInt(match[1], 10);
+    return 999; // 默认值，表示不匹配
 }
+
 
 /**
  * Cytoscape 拓扑可视化组件
@@ -236,15 +262,22 @@ function getCytoscapeStyles(): any[] {
 const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
     data,
     selectedPod = 'ALL',
+    selectedRail = 'ALL',
     layerVisibility = {},
     onNodeClick,
     onEdgeClick,
     height = '600px',
-    highlightedNodeId
+    highlightedNodeId,
+    activeCoreFilter = null,
+    collapsedPods = new Set(),
+    networkType = 'ib'
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<cytoscape.Core | null>(null);
     const [stats, setStats] = useState({ nodes: 0, edges: 0, renderTime: 0 });
+
+    // Phase 1: 使用 useMemo 获取样式，避免重复计算
+    const styles = useMemo(() => getPremiumStyles(), []);
 
     /**
      * 监听高亮变化
@@ -271,8 +304,15 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
 
         const startTime = performance.now();
 
-        // 转换数据
-        const { nodes, edges } = convertToCytoscapeFormat(data, selectedPod, layerVisibility);
+        // 转换数据 (不再过滤层级,显示所有设备)
+        const { nodes, edges } = convertToCytoscapeFormat(
+            data,
+            selectedPod,
+            // layerVisibility removed
+            selectedRail,
+            activeCoreFilter,
+            collapsedPods as Set<string>
+        );
 
         // 如果已有实例，更新数据
         if (cyRef.current) {
@@ -283,7 +323,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             cyRef.current.layout({
                 name: 'preset',
                 positions: (node: any) => {
-                    return calculateNodePosition(node, data.nodesByLayer);
+                    return calculateNodePosition(node, data.nodesByLayer, (data as any).layerY);
                 }
             }).run();
         } else {
@@ -291,14 +331,14 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             const cy = Cytoscape({
                 container: containerRef.current,
                 elements: [...nodes, ...edges],
-                style: getCytoscapeStyles(),
+                style: styles,  // Phase 1: 使用 Premium Styles
                 layout: {
                     name: 'preset',
-                    positions: (node: any) => {
-                        return calculateNodePosition(node, data.nodesByLayer);
-                    }
+                    positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY),
+                    fit: true,
+                    padding: 50,
+                    animate: false
                 },
-                // 性能优化设置
                 wheelSensitivity: 0.3,
                 minZoom: 0.1,
                 maxZoom: 3,
@@ -314,7 +354,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
                     onNodeClick({
                         id: node.id(),
                         label: node.data('label'),
-                        layer: node.data('layer'),
+                        layer: node.data('displayLayer') || node.data('layer'), // Use localized layer name
                         pod: node.data('pod')
                     });
                 }
@@ -365,44 +405,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
         };
     }, []);
 
-    /**
-     * 计算节点位置（分层布局）
-     */
-    function calculateNodePosition(
-        node: any,
-        nodesByLayer: Record<string, TopologyNode[]>
-    ): { x: number; y: number } {
-        const nodeId = typeof node === 'string' ? node : node.id();
-        const layer = typeof node === 'string' ? '' : node.data('layer');
 
-        // 层级 Y 坐标
-        const layerYPositions: Record<string, number> = {
-            core: 100,
-            spine: 300,
-            leaf: 500
-        };
-
-        // 层级节点间距
-        const layerXGaps: Record<string, number> = {
-            core: 180,
-            spine: 150,
-            leaf: 120
-        };
-
-        const yPos = layerYPositions[layer] || 300;
-        const xGap = layerXGaps[layer] || 150;
-
-        // 找到该节点在其层级中的索引
-        const layerNodes = nodesByLayer[layer] || [];
-        const nodeIndex = layerNodes.findIndex((n: TopologyNode) => n.id === nodeId);
-        const totalInLayer = layerNodes.length;
-
-        // 计算 X 坐标（居中对齐）
-        const startX = -(totalInLayer - 1) * xGap / 2;
-        const xPos = startX + nodeIndex * xGap;
-
-        return { x: xPos, y: yPos };
-    }
 
     /**
      * 公开方法：高亮节点
@@ -431,19 +434,20 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
     }, []);
 
     /**
-     * 运行预设布局
+     * 运行预设布局 (手动触发)
      */
     const runPresetLayout = useCallback(() => {
-        if (!cyRef.current) return;
+        if (!cyRef.current || !data?.nodesByLayer) return;
+
         cyRef.current.layout({
             name: 'preset',
-            positions: (node: any) => calculateNodePosition(node, data.nodesByLayer),
+            positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY),
             animate: true,
             animationDuration: 500,
             fit: true,
             padding: 50
         } as any).run();
-    }, [data.nodesByLayer]);
+    }, [data]);
 
     /**
      * 运行智能布局 (CoSE Bilkent)
@@ -541,4 +545,4 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
 export default CytoscapeTopology;
 
 // 导出辅助函数
-export { convertToCytoscapeFormat, getCytoscapeStyles, layerColors };
+export { convertToCytoscapeFormat, layerColors };

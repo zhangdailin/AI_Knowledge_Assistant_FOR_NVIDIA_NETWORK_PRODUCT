@@ -1,18 +1,15 @@
-/**
- * 通用CLOS拓扑解析框架
- * 支持多种命名规则和网络类型
- */
+import { inferLayersFromTopology } from './topology-inference.mjs';
 
 /**
- * 自动识别设备层级（基于设备名称匹配）
- * 支持多种网络类型：
+ * 自动识别设备层级 (优先拓扑推断,降级命名检测)
+ * 支持多种网络类型:
  *
- * IB 网络（InfiniBand）：
+ * IB 网络（InfiniBand）:
  * - IBCR → Core
  * - IBSP → Spine
  * - IBLF → Leaf
  *
- * RoCE 网络（以太网）：
+ * RoCE 网络（以太网）:
  * - CSW/CORE → Core
  * - SSW/SPINE → Spine
  * - ASW/ACCESS/LEAF → Leaf
@@ -20,6 +17,37 @@
  * 支持自定义模式识别
  */
 export function autoDetectLayers(portMap, manualPatterns = null, networkType = 'auto') {
+  // 优先级1: 用户手动配置
+  if (manualPatterns) {
+    console.log('[AutoDetectLayers] 使用用户自定义规则');
+    return applyManualPatterns(portMap, manualPatterns);
+  }
+
+  // 优先级2: 拓扑推断 (最可靠,命名无关)
+  try {
+    const topoResult = inferLayersFromTopology(portMap);
+    if (topoResult.confidence >= 0.6) {
+      console.log(`[AutoDetectLayers] ✅ 拓扑推断成功 (置信度: ${(topoResult.confidence * 100).toFixed(1)}%)`);
+      return {
+        layers: topoResult.layers,
+        detection: topoResult.method,
+        stats: {
+          totalDevices: topoResult.stats.totalDevices,
+          coreCount: topoResult.layers.core.length,
+          spineCount: topoResult.layers.spine.length,
+          leafCount: topoResult.layers.leaf.length,
+          confidence: topoResult.confidence
+        }
+      };
+    } else {
+      console.log(`[AutoDetectLayers] ⚠️  拓扑推断置信度较低 (${(topoResult.confidence * 100).toFixed(1)}%), 降级使用命名检测`);
+    }
+  } catch (error) {
+    console.log('[AutoDetectLayers] 拓扑推断失败:', error.message);
+  }
+
+  // 优先级3: 命名规则检测 (降级方案)
+  console.log('[AutoDetectLayers] 使用命名规则检测');
   const deviceSet = new Set();
 
   // 收集所有设备
@@ -30,7 +58,13 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
     deviceSet.add(peer);
   }
 
-  const devices = Array.from(deviceSet);
+  // 过滤掉 GPU/Compute 节点，只保留网络设备
+  const allDevices = Array.from(deviceSet);
+  // 使用宽泛的正则匹配计算节点: GPU, Compute, Worker, Node, Host
+  // 增加 DGX, H100, A100, SRV 以覆盖更多情况
+  const gpuRegex = /GPU|compute|worker|node|host|server|dgx|h100|a100|h800|a800|srv|-n\d+|psnode/i;
+  const devices = allDevices.filter(d => !gpuRegex.test(d));
+
   const layers = { core: [], spine: [], leaf: [] };
 
   // 如果提供了自定义模式，使用自定义模式
@@ -53,7 +87,7 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
     let detectedType = networkType;
     if (detectedType === 'auto') {
       const hasIBDevices = devices.some(d => d.includes('IB'));
-      const hasRoCEDevices = devices.some(d => /^(CSW|SSW|ASW)/i.test(d));
+      const hasRoCEDevices = devices.some(d => /(CSW|SSW|ASW)/i.test(d)); // 修复: 允许CSW/SSW/ASW在任意位置
 
       detectedType = hasIBDevices ? 'ib' : hasRoCEDevices ? 'roce' : 'roce';
     }
@@ -65,23 +99,23 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
       // RoCE 网络命名规则
       console.log('[AutoDetectLayers] 应用 RoCE 命名规则匹配');
 
-      // 策略1：标准 RoCE 命名（CSW/SSW/ASW）
-      const roceCoreDevices = devices.filter(d => /^CSW|CORE/i.test(d));
-      const roceSpineDevices = devices.filter(d => /^SSW|SPINE/i.test(d));
-      const roceLeafDevices = devices.filter(d => /^ASW|ACCESS|LEAF/i.test(d));
+      // 策略1: 标准 RoCE 命名 (CSW/SSW/ASW可能在名称中间,如: MDC-DH1E-POD1-ASW-002)
+      const roceCoreDevices = devices.filter(d => /CSW|CORE/i.test(d));
+      const roceSpineDevices = devices.filter(d => /SSW|SPINE/i.test(d));
+      const roceLeafDevices = devices.filter(d => /ASW|ACCESS|LEAF/i.test(d));
 
-      // 策略2：基于关键词识别（用于复杂命名）
-      const oobDevices = devices.filter(d => /OOB|management|ctrl|control/i.test(d));
+      // 策略2: 基于关键词识别 (用于复杂命名,优先级更低)
+      const oobDevices = devices.filter(d => /\bOOB\b|management|ctrl|control/i.test(d));
+      const soobDevices = devices.filter(d => /\bSOOB\b|secondary|inter/i.test(d));
       const gpuComputeDevices = devices.filter(d => /GPU|compute|worker|node/i.test(d));
-      const soobDevices = devices.filter(d => /SOOB|secondary|inter/i.test(d));
 
       // 选择更匹配的分类
       if (roceCoreDevices.length > 0 || roceSpineDevices.length > 0 || roceLeafDevices.length > 0) {
-        // 标准命名规则
+        // 标准命名规则优先
         layers.core.push(...roceCoreDevices);
         layers.spine.push(...roceSpineDevices);
         layers.leaf.push(...roceLeafDevices);
-        console.log('[AutoDetectLayers] 使用标准 RoCE 命名规则');
+        console.log(`[AutoDetectLayers] 使用标准 RoCE 命名: CSW(Core)=${roceCoreDevices.length}, SSW(Spine)=${roceSpineDevices.length}, ASW(Leaf)=${roceLeafDevices.length}`);
       } else if (oobDevices.length > 0) {
         // 基于关键词的规则
         // OOB 通常是管理设备（Core）
@@ -123,17 +157,94 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
         }
       }
     } else {
-      // IB 网络命名规则（默认）
-      console.log('[AutoDetectLayers] 应用 IB 命名规则: IBCR/CORE→Core, IBSP/SPINE→Spine, IBLF/LEAF→Leaf');
+      // 增强的命名规则检测 (Phase 1: 自适应改进)
+      console.log('[AutoDetectLayers] 应用增强命名规则: 支持多种命名模式');
+
+      // 定义多层级关键字模式 (优先级从高到低)
+      const patterns = {
+        core: [
+          /IBCR/i,           // IB Core
+          /CORE/i,           // 通用Core
+          /CSW/i,            // RoCE Core Switch
+          /ROUTER/i,         // 路由器
+          /BORDER/i,         // 边界设备
+          /GATEWAY/i,        // 网关
+          /-CR-/i,           // 命名中包含CR
+          /-CORE-/i          // 命名中包含CORE
+        ],
+        spine: [
+          /IBSP/i,           // IB Spine
+          /SPINE/i,          // 通用Spine
+          /SSW/i,            // RoCE Spine Switch
+          /AGG/i,            // 聚合层
+          /DIST/i,           // 分布层
+          /DISTRIBUTION/i,   // 分布层全称
+          /-SP-/i,           // 命名中包含SP
+          /-SPINE-/i         // 命名中包含SPINE
+        ],
+        leaf: [
+          /IBLF/i,           // IB Leaf
+          /LEAF/i,           // 通用Leaf
+          /ASW/i,            // RoCE Access Switch
+          /ACCESS/i,         // 接入层
+          /TOR/i,            // Top of Rack
+          /EDGE/i,           // 边缘设备
+          /-LF-/i,           // 命名中包含LF
+          /-LEAF-/i          // 命名中包含LEAF
+        ]
+      };
+
+      // 分类设备
+      const unclassified = [];
       for (const device of devices) {
-        if (device.includes('IBCR') || device.includes('CORE')) {
+        let classified = false;
+
+        // 尝试Core模式
+        if (patterns.core.some(pattern => pattern.test(device))) {
           layers.core.push(device);
-        } else if (device.includes('IBSP') || device.includes('SPINE')) {
+          classified = true;
+        }
+        // 尝试Spine模式
+        else if (patterns.spine.some(pattern => pattern.test(device))) {
           layers.spine.push(device);
-        } else if (device.includes('IBLF') || device.includes('LEAF')) {
+          classified = true;
+        }
+        // 尝试Leaf模式
+        else if (patterns.leaf.some(pattern => pattern.test(device))) {
           layers.leaf.push(device);
+          classified = true;
+        }
+
+        if (!classified) {
+          unclassified.push(device);
         }
       }
+
+      // 处理未分类设备 (fallback: 基于数量比例推断)
+      if (unclassified.length > 0) {
+        console.log(`[AutoDetectLayers] 发现 ${unclassified.length} 个未分类设备，应用启发式分配`);
+
+        // 如果有明确的Spine/Leaf,未分类设备倾向于Leaf
+        if (layers.spine.length > 0 || layers.leaf.length > 0) {
+          layers.leaf.push(...unclassified);
+          console.log(`[AutoDetectLayers] 未分类设备归为Leaf (${unclassified.length}个)`);
+        } else {
+          // 全部未分类: 按比例分配
+          const totalUnclass = unclassified.length;
+          if (totalUnclass <= 5) {
+            layers.leaf.push(...unclassified);
+          } else {
+            const coreCount = Math.max(1, Math.ceil(totalUnclass / 6));
+            const spineCount = Math.max(1, Math.ceil(totalUnclass / 3));
+            layers.core.push(...unclassified.slice(0, coreCount));
+            layers.spine.push(...unclassified.slice(coreCount, coreCount + spineCount));
+            layers.leaf.push(...unclassified.slice(coreCount + spineCount));
+            console.log(`[AutoDetectLayers] 按比例分配未分类设备: Core=${coreCount}, Spine=${spineCount}, Leaf=${totalUnclass - coreCount - spineCount}`);
+          }
+        }
+      }
+
+      console.log(`[AutoDetectLayers] 检测完成: Core=${layers.core.length}, Spine=${layers.spine.length}, Leaf=${layers.leaf.length}`);
     }
 
     console.log(`[AutoDetectLayers] 检测结果: Core=${layers.core.length}, Spine=${layers.spine.length}, Leaf=${layers.leaf.length}`);
@@ -329,6 +440,12 @@ export function buildTopologyStructure(portMap, config = {}) {
   const nodesByLayer = {};
   const allNodesList = [];
 
+  // 确保 'unknown' 层的设备也被收集，默认归类为 'leaf' 以防止丢失
+  if (layers.unknown && layers.unknown.length > 0) {
+    console.log(`[BuildTopology] Found ${layers.unknown.length} unknown devices, merging to Leaf layer.`);
+    layers.leaf.push(...layers.unknown);
+  }
+
   // 组织节点：按层级分组，但保留POD信息
   // 仅包括存在的层级
   for (const layer of ['core', 'spine', 'leaf']) {
@@ -339,6 +456,10 @@ export function buildTopologyStructure(portMap, config = {}) {
     for (const device of layers[layer]) {
       const podSet = deviceToPod.get(device) || new Set();
       const pod = podSet.size > 0 ? Array.from(podSet)[0] : 'ALL';
+
+      // 如果设备未被分配层级，但在 chains 中出现，它可能已经在 layers 中了？
+      // autoDetectLayers 必须填充 layers。
+      // 如果它没在 layers 中，我们需要补救。
 
       const node = {
         id: device,

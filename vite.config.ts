@@ -17,18 +17,21 @@ export default defineConfig({
   },
   build: {
     sourcemap: 'hidden',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            return 'vendor';
+          }
+        },
+      },
+    },
   },
   optimizeDeps: {
     include: ['react-markdown', 'remark-gfm', 'rehype-highlight'],
   },
   plugins: [
-    react({
-      babel: {
-        plugins: [
-          'react-dev-locator',
-        ],
-      },
-    }),
+    react(),
     traeBadgePlugin({
       variant: 'dark',
       position: 'bottom-right',
@@ -37,7 +40,7 @@ export default defineConfig({
       clickUrl: 'https://www.trae.ai/solo?showJoin=1',
       autoTheme: true,
       autoThemeTarget: '#root'
-    }), 
+    }),
     tsconfigPaths()
   ],
 })
