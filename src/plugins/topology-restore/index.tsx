@@ -10,7 +10,8 @@ import ReactFlow, {
   MiniMap
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Search, Upload, RefreshCw, Layers } from 'lucide-react';
+import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
+import { bundleEdges, collapseBundle, expandBundle } from '../../utils/edge-bundling';
 
 type NetworkType = 'ib' | 'roce';
 
@@ -67,6 +68,12 @@ const TopologyRestoreTool: React.FC = () => {
   const [selectedPod, setSelectedPod] = useState('ALL');
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
+
+  // 边聚合配置
+  const [enableEdgeBundling, setEnableEdgeBundling] = useState(true);
+  const [edgeBundlingThreshold, setEdgeBundlingThreshold] = useState(5);
+  const bundleMapRef = useRef<Map<string, any>>(new Map());
+  const expandedBundlesRef = useRef<Set<string>>(new Set());
 
   // Configuration state
   const [config, setConfig] = useState<TopologyConfig>({
@@ -191,7 +198,9 @@ const TopologyRestoreTool: React.FC = () => {
       });
 
       if (data.metadata?.pods?.length > 0) {
-        setPods(['ALL', ...data.metadata.pods]);
+        // 去重 POD 列表（防止重复的 'ALL'）
+        const uniquePods = ['ALL', ...data.metadata.pods.filter((p: string) => p !== 'ALL')];
+        setPods(uniquePods);
         setSelectedPod('ALL');
       }
 
@@ -341,6 +350,21 @@ const TopologyRestoreTool: React.FC = () => {
       }
     });
 
+    // 应用边聚合优化
+    let finalEdges = newEdges;
+    if (enableEdgeBundling && newEdges.length > edgeBundlingThreshold * 2) {
+      const { bundledEdges, bundleMap, stats } = bundleEdges(newEdges, {
+        threshold: edgeBundlingThreshold,
+        keepOriginal: true,
+        hideOriginal: true
+      });
+      finalEdges = bundledEdges;
+      bundleMapRef.current = bundleMap;
+
+      console.log('[TopologyRestore] 边聚合结果:', stats);
+      setMessage(`拓扑已优化：${stats.bundleCount} 个聚合边，减少 ${stats.reduction} 的渲染压力`);
+    }
+
     if (newNodes.length === 0) {
       console.warn('[TopologyRestore] 警告：没有生成任何节点！', {
         nodesByLayer: Object.keys(nodesByLayer),
@@ -350,13 +374,13 @@ const TopologyRestoreTool: React.FC = () => {
     }
 
     setNodes(newNodes);
-    setEdges(newEdges);
+    setEdges(finalEdges);
 
     console.log('[TopologyRestore] 拓扑渲染完成:', {
       nodeCount: newNodes.length,
-      edgeCount: newEdges.length,
+      edgeCount: finalEdges.length,
       sampleNodes: newNodes.slice(0, 3),
-      sampleEdges: newEdges.slice(0, 3),
+      sampleEdges: finalEdges.slice(0, 3),
       nodesByLayerKeys: Object.keys(nodesByLayer),
       visibility,
       layoutInfo: {
@@ -404,6 +428,29 @@ const TopologyRestoreTool: React.FC = () => {
   };
 
   const handleEdgeClick = (event: any, edge: Edge) => {
+    // 处理聚合边的展开/收起
+    if (edge.data?.type === 'bundle') {
+      const bundleId = edge.id;
+      const isExpanded = expandedBundlesRef.current.has(bundleId);
+
+      let newEdges = edges;
+      if (isExpanded) {
+        // 收起
+        newEdges = collapseBundle(bundleId, edges, bundleMapRef.current);
+        expandedBundlesRef.current.delete(bundleId);
+        setMessage(`收起了 ${edge.data?.originalCount} 条连接`);
+      } else {
+        // 展开
+        newEdges = expandBundle(bundleId, edges, bundleMapRef.current);
+        expandedBundlesRef.current.add(bundleId);
+        setMessage(`展开了 ${edge.data?.originalCount} 条连接`);
+      }
+
+      setEdges(newEdges);
+      return;
+    }
+
+    // 常规边的选择
     const sourceNode = nodes.find(n => n.id === edge.source);
     const targetNode = nodes.find(n => n.id === edge.target);
     setSelectedEdgeInfo({
@@ -454,7 +501,48 @@ const TopologyRestoreTool: React.FC = () => {
           </button>
         </div>
 
-        {/* 层级检测方式 */}
+        {/* 性能优化选项 */}
+        <div className="mb-4 pb-4 border-b border-gray-200">
+          <label className="block text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-yellow-500" />
+            性能优化
+          </label>
+
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="edgeBundling"
+                checked={enableEdgeBundling}
+                onChange={(e) => setEnableEdgeBundling(e.target.checked)}
+                className="w-4 h-4 text-blue-600"
+              />
+              <label htmlFor="edgeBundling" className="text-sm text-gray-700">
+                启用边聚合（减少连接线混乱）
+              </label>
+            </div>
+
+            {enableEdgeBundling && (
+              <div className="ml-6 p-3 bg-gray-50 rounded border border-gray-200">
+                <label className="text-xs font-medium text-gray-600 mb-2 block">
+                  聚合阈值：至少 <span className="text-blue-600 font-bold">{edgeBundlingThreshold}</span> 条边触发聚合
+                </label>
+                <input
+                  type="range"
+                  min="2"
+                  max="20"
+                  step="1"
+                  value={edgeBundlingThreshold}
+                  onChange={(e) => setEdgeBundlingThreshold(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  ℹ️ 值越低，聚合越激进（减少更多边），但可能隐藏细节。推荐值：5-10
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
         <div className="mb-4 pb-4 border-b border-gray-200">
           <label className="block text-sm font-medium text-gray-700 mb-2">层级检测方式</label>
           <div className="flex gap-4">
@@ -712,6 +800,10 @@ const TopologyRestoreTool: React.FC = () => {
               onPaneClick={handleCanvasClick}
               fitView
               attributionPosition="bottom-left"
+              onlyRenderVisibleElements={true}
+              selectNodesOnDrag={false}
+              edgesFocusable={false}
+              elementsSelectable={true}
             >
               <Controls />
               <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />

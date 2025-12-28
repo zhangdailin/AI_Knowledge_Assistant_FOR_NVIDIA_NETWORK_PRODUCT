@@ -1681,7 +1681,16 @@ app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       const data = XLSX.utils.sheet_to_json(worksheet);
+
+      console.log(`[TopologyRestore] Excel 原始数据行数: ${data.length}`);
+      console.log(`[TopologyRestore] 样本行数据: ${JSON.stringify(data[0])}`);
+
       portMap = parseExcelPortMap(data);
+
+      console.log(`[TopologyRestore] Excel 解析完成: ${portMap.size} 条端口映射`);
+      if (portMap.size === 0) {
+        console.warn('[TopologyRestore] 警告：Excel 解析结果为空！检查字段名称和数据格式');
+      }
     } else {
       return res.status(400).json({ ok: false, error: '不支持的网络类型' });
     }
@@ -1690,7 +1699,8 @@ app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
     const result = topology.buildTopologyStructure(portMap, {
       layerDetection: config.layerDetection || 'auto',
       manualLayers: config.manualLayers || null,
-      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' }
+      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+      networkType: networkType  // 传递网络类型
     });
 
     if (!result || !result.success) {
@@ -1751,18 +1761,43 @@ function parseCSVPortMap(csvContent) {
 function parseExcelPortMap(data) {
   const portMap = new Map();
 
-  for (const row of data) {
-    // 根据NetQ格式调整字段名
-    const sys = row['Hostname'] || row['Device'] || row['System'];
-    const port = row['Interface'] || row['Port'];
-    const peer = row['Peer Hostname'] || row['Peer Device'] || row['Peer Node'];
-    const peerPort = row['Peer Interface'] || row['Peer Port'];
-
-    if (!sys || !peer) continue;
-    portMap.set(`${sys}|${port}`, { peer, peerPort: peerPort || '' });
+  if (!data || data.length === 0) {
+    console.warn('[ParseExcel] 数据为空');
+    return portMap;
   }
 
-  console.log(`[TopologyRestore] Excel解析完成: ${portMap.size} 条端口映射`);
+  // 获取第一行的字段名
+  const firstRow = data[0];
+  const fieldNames = Object.keys(firstRow);
+  console.log(`[ParseExcel] Excel 字段名: ${fieldNames.join(', ')}`);
+
+  // 灵活匹配字段名（支持多种格式）
+  const findField = (row, ...patterns) => {
+    for (const pattern of patterns) {
+      const key = fieldNames.find(f => f.toLowerCase().includes(pattern.toLowerCase()));
+      if (key && row[key]) {
+        return row[key];
+      }
+    }
+    return null;
+  };
+
+  for (const row of data) {
+    // 尝试多种字段名组合
+    const sys = findField(row, 'hostname', 'device', 'system', 'node', 'name');
+    const port = findField(row, 'interface', 'port', 'eth');
+    const peer = findField(row, 'peer hostname', 'peer device', 'peer node', 'peer name', 'remote hostname', 'remote device');
+    const peerPort = findField(row, 'peer interface', 'peer port', 'peer eth', 'remote interface', 'remote port');
+
+    if (!sys || !peer) {
+      console.log(`[ParseExcel] 跳过行：sys=${sys}, peer=${peer}`);
+      continue;
+    }
+
+    portMap.set(`${sys}|${port || ''}`, { peer, peerPort: peerPort || '' });
+  }
+
+  console.log(`[ParseExcel] 解析完成: ${portMap.size} 条端口映射`);
   return portMap;
 }
 
