@@ -8,7 +8,7 @@ import ConversationHistory from './components/ConversationHistory';
 import UserSettings from './components/UserSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import AdminLayout from './components/AdminLayout';
-import AITools from './components/AITools';
+import AITools from './plugins/ai-tools';
 import Dashboard from './components/Dashboard';
 import ModelSettings from './components/ModelSettings';
 import RetrievalSettings from './components/RetrievalSettings';

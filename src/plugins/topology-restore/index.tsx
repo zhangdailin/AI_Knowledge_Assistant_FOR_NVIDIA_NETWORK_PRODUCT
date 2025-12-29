@@ -772,47 +772,77 @@ const TopologyRestoreTool: React.FC = () => {
   };
 
   return (
-    <div className="p-6">
+    <div
+      className="min-h-screen p-6"
+      style={{
+        ['--ink' as any]: '#0f172a',
+        ['--muted' as any]: '#5b6472',
+        ['--line' as any]: 'rgba(15,23,42,0.12)',
+        ['--panel' as any]: '#ffffff',
+        ['--panelMuted' as any]: '#f5f7fb',
+        ['--accent' as any]: '#0f766e',
+        ['--accentSoft' as any]: '#e7f5f3',
+        ['--warning' as any]: '#b45309',
+        fontFamily: '"IBM Plex Sans","Source Sans 3","Noto Sans",sans-serif',
+        background:
+          'radial-gradient(1200px circle at 10% -10%, #e6f3ff 0%, rgba(230,243,255,0) 60%), radial-gradient(900px circle at 90% 0%, #eefbf5 0%, rgba(238,251,245,0) 55%), #f6f7fb'
+      }}
+    >
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">Topology Restore</p>
+          <h1 className="text-2xl font-semibold text-[var(--ink)]">网络拓扑还原</h1>
+          <p className="mt-1 text-sm text-[var(--muted)]">面向生产环境的网络拓扑复原、过滤与分析视图</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 py-1 text-xs text-[var(--muted)]">
+            引擎: {renderMode === 'cytoscape' ? 'Cytoscape' : renderMode === 'virtual-reactflow' ? 'Virtual RF' : 'ReactFlow'}
+          </span>
+          <span className="rounded-full bg-[var(--accentSoft)] px-3 py-1 text-xs text-[var(--accent)]">
+            网络: {networkType.toUpperCase()}
+          </span>
+        </div>
+      </div>
       {/* 网络类型选择 */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">选择网络类型</label>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" value="ib" checked={networkType === 'ib'} onChange={() => setNetworkType('ib')} className="w-4 h-4 text-blue-600" />
-            <span className="text-sm font-medium">IB 网络 (InfiniBand)</span>
+      <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
+        <label className="block text-sm font-semibold text-[var(--ink)] mb-3">网络类型</label>
+        <div className="flex flex-wrap gap-3">
+          <label className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--panelMuted)] px-3 py-2 text-sm text-[var(--ink)]">
+            <input type="radio" value="ib" checked={networkType === 'ib'} onChange={() => setNetworkType('ib')} className="w-4 h-4 text-[var(--accent)]" />
+            IB 网络 (InfiniBand)
           </label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" value="roce" checked={networkType === 'roce'} onChange={() => setNetworkType('roce')} className="w-4 h-4 text-blue-600" />
-            <span className="text-sm font-medium">RoCE 网络 (以太网)</span>
+          <label className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--panelMuted)] px-3 py-2 text-sm text-[var(--ink)]">
+            <input type="radio" value="roce" checked={networkType === 'roce'} onChange={() => setNetworkType('roce')} className="w-4 h-4 text-[var(--accent)]" />
+            RoCE 网络 (以太网)
           </label>
         </div>
-        <p className="text-xs text-gray-500 mt-1">
-          {networkType === 'ib' ? '解析UFM端口信息CSV，自动识别CLOS三层架构' : '解析NetQ接口信息Excel，自动识别网络层级'}
+        <p className="mt-2 text-xs text-[var(--muted)]">
+          {networkType === 'ib' ? '解析 UFM 端口信息 CSV，自动识别 CLOS 三层架构' : '解析 NetQ 接口信息 Excel，自动识别网络层级'}
         </p>
       </div>
 
       {/* 高级配置 - 层级检测 */}
-      <div className="mb-4 p-4 bg-white border border-gray-200 rounded-lg">
+      <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-800 text-sm">拓扑检测配置</h3>
+          <h3 className="text-sm font-semibold text-[var(--ink)]">拓扑检测配置</h3>
           <button
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded"
+            className="rounded-md border border-[var(--line)] bg-[var(--panelMuted)] px-3 py-1 text-xs text-[var(--muted)] hover:bg-white"
           >
             {showAdvanced ? '隐藏' : '显示'} 高级选项
           </button>
         </div>
 
         {/* 性能优化选项 */}
-        <div className="mb-4 pb-4 border-b border-gray-200">
-          <label className="block text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
-            <Zap className="w-4 h-4 text-yellow-500" />
+        <div className="mb-4 pb-4 border-b border-[var(--line)]">
+          <label className="block text-sm font-semibold text-[var(--ink)] mb-3 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-[var(--warning)]" />
             性能优化
           </label>
 
           <div className="space-y-4">
-            <div className="mb-3 pb-3 border-b border-gray-100">
-              <label className="text-xs font-semibold text-gray-600 block mb-2">渲染引擎</label>
+            <div className="mb-3 pb-3 border-b border-[var(--line)]">
+              <label className="text-xs font-semibold text-[var(--muted)] block mb-2">渲染引擎</label>
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -821,9 +851,9 @@ const TopologyRestoreTool: React.FC = () => {
                     value="reactflow"
                     checked={renderMode === 'reactflow'}
                     onChange={() => setRenderMode('reactflow')}
-                    className="w-4 h-4 text-blue-600"
+                    className="w-4 h-4 text-[var(--accent)]"
                   />
-                  <span className="text-sm">标准 (ReactFlow)</span>
+                  <span className="text-sm text-[var(--ink)]">标准 (ReactFlow)</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -832,9 +862,9 @@ const TopologyRestoreTool: React.FC = () => {
                     value="cytoscape"
                     checked={renderMode === 'cytoscape' || renderMode === 'virtual-reactflow'}
                     onChange={() => setRenderMode('cytoscape')}
-                    className="w-4 h-4 text-blue-600"
+                    className="w-4 h-4 text-[var(--accent)]"
                   />
-                  <span className="text-sm font-bold text-blue-600">高性能 (Cytoscape) <span className="text-xs font-normal text-gray-500 ml-1">- 推荐 500+ 节点</span></span>
+                  <span className="text-sm font-semibold text-[var(--accent)]">高性能 (Cytoscape) <span className="ml-2 text-xs font-normal text-[var(--muted)]">推荐 500+ 节点</span></span>
                 </label>
               </div>
             </div>
@@ -845,17 +875,17 @@ const TopologyRestoreTool: React.FC = () => {
                 id="edgeBundling"
                 checked={enableEdgeBundling}
                 onChange={(e) => setEnableEdgeBundling(e.target.checked)}
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
-              <label htmlFor="edgeBundling" className="text-sm text-gray-700">
+              <label htmlFor="edgeBundling" className="text-sm text-[var(--ink)]">
                 启用边聚合（减少连接线混乱）
               </label>
             </div>
 
             {enableEdgeBundling && (
-              <div className="ml-6 p-3 bg-gray-50 rounded border border-gray-200">
-                <label className="text-xs font-medium text-gray-600 mb-2 block">
-                  聚合阈值：至少 <span className="text-blue-600 font-bold">{edgeBundlingThreshold}</span> 条边触发聚合
+              <div className="ml-6 rounded-lg border border-[var(--line)] bg-[var(--panelMuted)] p-3">
+                <label className="text-xs font-medium text-[var(--muted)] mb-2 block">
+                  聚合阈值：至少 <span className="font-bold text-[var(--accent)]">{edgeBundlingThreshold}</span> 条边触发聚合
                 </label>
                 <input
                   type="range"
@@ -866,15 +896,15 @@ const TopologyRestoreTool: React.FC = () => {
                   onChange={(e) => setEdgeBundlingThreshold(parseInt(e.target.value))}
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                 />
-                <div className="text-xs text-gray-500 mt-1">
+                <div className="text-xs text-[var(--muted)] mt-1">
                   ℹ️ 值越低，聚合越激进（减少更多边），但可能隐藏细节。推荐值：5-10
                 </div>
               </div>
             )}
           </div>
         </div>
-        <div className="mb-4 pb-4 border-b border-gray-200">
-          <label className="block text-sm font-medium text-gray-700 mb-2">层级检测方式</label>
+        <div className="mb-4 pb-4 border-b border-[var(--line)]">
+          <label className="block text-sm font-medium text-[var(--ink)] mb-2">层级检测方式</label>
           <div className="flex gap-4">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -883,7 +913,7 @@ const TopologyRestoreTool: React.FC = () => {
                 value="auto"
                 checked={config.layerDetection === 'auto'}
                 onChange={() => setConfig({ ...config, layerDetection: 'auto' })}
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
               <span className="text-sm">自动识别 (推荐)</span>
             </label>
@@ -894,22 +924,22 @@ const TopologyRestoreTool: React.FC = () => {
                 value="manual"
                 checked={config.layerDetection === 'manual'}
                 onChange={() => setConfig({ ...config, layerDetection: 'manual' })}
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
               <span className="text-sm">手动配置</span>
             </label>
           </div>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-[var(--muted)] mt-1">
             自动方式通过拓扑度数分析识别Core/Spine/Leaf层级，对绝大多数数据中心有效
           </p>
 
           {/* 手动配置 - 隐藏在高级选项中 */}
           {config.layerDetection === 'manual' && showAdvanced && (
-            <div className="mt-3 p-3 bg-gray-50 rounded border border-gray-200">
-              <p className="text-xs font-medium text-gray-600 mb-2">设备识别模式 (正则表达式)</p>
+            <div className="mt-3 p-3 bg-[var(--panelMuted)] rounded border border-[var(--line)]">
+              <p className="text-xs font-medium text-[var(--muted)] mb-2">设备识别模式 (正则表达式)</p>
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="text-xs text-gray-600">Core 设备</label>
+                  <label className="text-xs text-[var(--muted)]">Core 设备</label>
                   <input
                     type="text"
                     placeholder="如: IBCR|CORE"
@@ -924,7 +954,7 @@ const TopologyRestoreTool: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-600">Spine 设备</label>
+                  <label className="text-xs text-[var(--muted)]">Spine 设备</label>
                   <input
                     type="text"
                     placeholder="如: IBSP|SPINE"
@@ -939,7 +969,7 @@ const TopologyRestoreTool: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-600">Leaf 设备</label>
+                  <label className="text-xs text-[var(--muted)]">Leaf 设备</label>
                   <input
                     type="text"
                     placeholder="如: IBLF|LEAF"
@@ -960,7 +990,7 @@ const TopologyRestoreTool: React.FC = () => {
 
         {/* POD 分组方式 */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">POD 分组方式</label>
+          <label className="block text-sm font-medium text-[var(--ink)] mb-2">POD 分组方式</label>
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <input
@@ -974,9 +1004,9 @@ const TopologyRestoreTool: React.FC = () => {
                     podExtraction: { method: 'regex', pattern: config.podExtraction.pattern || 'POD\\d+' }
                   })
                 }
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
-              <label className="text-sm text-gray-700">正则表达式匹配</label>
+              <label className="text-sm text-[var(--ink)]">正则表达式匹配</label>
               {config.podExtraction.method === 'regex' && (
                 <input
                   type="text"
@@ -1005,9 +1035,9 @@ const TopologyRestoreTool: React.FC = () => {
                     podExtraction: { method: 'prefix', prefixLength: config.podExtraction.prefixLength || 2 }
                   })
                 }
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
-              <label className="text-sm text-gray-700">前缀匹配 (分隔符: -)</label>
+              <label className="text-sm text-[var(--ink)]">前缀匹配 (分隔符: -)</label>
               {config.podExtraction.method === 'prefix' && (
                 <input
                   type="number"
@@ -1041,42 +1071,42 @@ const TopologyRestoreTool: React.FC = () => {
                     podExtraction: { method: 'none' }
                   })
                 }
-                className="w-4 h-4 text-blue-600"
+                className="w-4 h-4 text-[var(--accent)]"
               />
-              <label className="text-sm text-gray-700">无分组 (显示全部设备)</label>
+              <label className="text-sm text-[var(--ink)]">无分组 (显示全部设备)</label>
             </div>
           </div>
-          <p className="text-xs text-gray-500 mt-2">
+          <p className="text-xs text-[var(--muted)] mt-2">
             正则表达式：按照指定模式匹配 POD 标识 | 前缀匹配：按分隔符分割后取前 N 段
           </p>
         </div>
       </div>
 
       {/* 文件上传 */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">上传数据文件</label>
+      <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
+        <label className="block text-sm font-semibold text-[var(--ink)] mb-3">上传数据文件</label>
         <div className="flex gap-3">
-          <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileChange} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg" />
-          <button onClick={handleRestore} disabled={loading || !file} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+          <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileChange} className="flex-1 rounded-lg border border-[var(--line)] bg-white px-4 py-2 text-sm" />
+          <button onClick={handleRestore} disabled={loading || !file} className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-white hover:brightness-110 disabled:opacity-50">
             <Upload className="w-4 h-4" />
             {loading ? '解析中...' : '还原拓扑'}
           </button>
-          <button onClick={() => restoreResult && buildTopology(restoreResult, selectedPod, layerVisibility, selectedRail)} disabled={!restoreResult} className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50">
+          <button onClick={() => restoreResult && buildTopology(restoreResult, selectedPod, layerVisibility, selectedRail)} disabled={!restoreResult} className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--panelMuted)] px-4 py-2 text-[var(--ink)] hover:bg-white disabled:opacity-50">
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
-        {file && <p className="text-xs text-gray-500 mt-1">已选择: {file.name}</p>}
+        {file && <p className="mt-2 text-xs text-[var(--muted)]">已选择: {file.name}</p>}
       </div>
 
       {/* 控制面板 */}
       {restoreResult && (
-        <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+        <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
           <div className="flex flex-wrap items-center gap-4">
             {pods.length > 0 && (
               <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-gray-500" />
-                <label className="text-sm font-medium text-gray-700">POD:</label>
-                <select value={selectedPod} onChange={(e) => handlePodChange(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500">
+                <Layers className="w-4 h-4 text-[var(--muted)]" />
+                <label className="text-sm font-semibold text-[var(--ink)]">POD:</label>
+                <select value={selectedPod} onChange={(e) => handlePodChange(e.target.value)} className="rounded-lg border border-[var(--line)] bg-white px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)]">
                   <option value="" disabled>请选择 POD</option>
                   {pods.map(pod => <option key={pod} value={pod}>{pod}</option>)}
                 </select>
@@ -1086,26 +1116,26 @@ const TopologyRestoreTool: React.FC = () => {
             {/* Rail 选择器 (仅IB网络) */}
             {railRequired && (
               <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-gray-500" />
-                <label className="text-sm font-medium text-gray-700">Rail:</label>
-                <select value={selectedRail} onChange={(e) => handleRailChange(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500">
+                <Layers className="w-4 h-4 text-[var(--muted)]" />
+                <label className="text-sm font-semibold text-[var(--ink)]">Rail:</label>
+                <select value={selectedRail} onChange={(e) => handleRailChange(e.target.value)} className="rounded-lg border border-[var(--line)] bg-white px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)]">
                   <option value="" disabled>请选择 Rail</option>
                   {rails.map(rail => <option key={rail} value={rail}>{rail === 'ALL' ? '全部' : `Rail ${rail}`}</option>)}
                 </select>
               </div>
             )}
             <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-sm font-medium text-gray-700">显示:</span>
+              <span className="text-sm font-semibold text-[var(--ink)]">显示:</span>
               {Object.keys(layerVisibility).map(layer => (
                 <label key={layer} className="flex items-center gap-1 cursor-pointer">
-                  <input type="checkbox" checked={layerVisibility[layer]} onChange={() => toggleLayerVisibility(layer)} className="w-4 h-4" />
-                  <span className="text-xs font-medium text-gray-600">{layer.toUpperCase()}</span>
+                  <input type="checkbox" checked={layerVisibility[layer]} onChange={() => toggleLayerVisibility(layer)} className="w-4 h-4 text-[var(--accent)]" />
+                  <span className="text-xs font-medium text-[var(--muted)]">{layer.toUpperCase()}</span>
                 </label>
               ))}
             </div>
             <div className="flex items-center gap-2 ml-auto">
-              <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} placeholder="搜索设备..." className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm w-48" />
-              <button onClick={handleSearch} className="p-2 bg-blue-600 text-white rounded-lg"><Search className="w-4 h-4" /></button>
+              <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} placeholder="搜索设备..." className="w-52 rounded-lg border border-[var(--line)] bg-white px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)]" />
+              <button onClick={handleSearch} className="rounded-lg bg-[var(--accent)] p-2 text-white"><Search className="w-4 h-4" /></button>
             </div>
           </div>
         </div>
@@ -1113,10 +1143,10 @@ const TopologyRestoreTool: React.FC = () => {
 
       {/* 图例 */}
       {restoreResult && (
-        <div className="mb-4 p-3 bg-white border border-gray-200 rounded-lg">
+        <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3">
           <div className="flex flex-wrap gap-4 text-xs">
             {Object.keys(layerVisibility).map(layer => (
-              <div key={layer} className="flex items-center gap-2">
+              <div key={layer} className="flex items-center gap-2 text-[var(--muted)]">
                 <div className="w-4 h-4 rounded" style={{ background: layerColors[layer] || layerColors.unknown }}></div>
                 <span>{layer.toUpperCase()}</span>
               </div>
@@ -1126,33 +1156,33 @@ const TopologyRestoreTool: React.FC = () => {
       )}
 
       {/* 错误/消息提示 */}
-      {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">{error}</div>}
-      {message && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm mb-4">{message}</div>}
+      {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {message && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{message}</div>}
 
       {/* 拓扑图 */}
       {/* 拓扑图区域 */}
       {restoreResult || loading ? (
         <div className="flex gap-4">
-          <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden relative" style={{ height: '600px' }}>
+          <div className="flex-1 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_10px_28px_rgba(15,23,42,0.06)] relative" style={{ height: '640px' }}>
 
             {/* 强制选择提示 */}
             {!loading && ((podRequired && !selectedPod) || (railRequired && !selectedRail)) && (
-              <div className="absolute inset-0 z-40 bg-gray-50/50 backdrop-blur-sm flex flex-col items-center justify-center">
-                <div className="bg-white p-8 rounded-xl shadow-lg border border-gray-200 text-center max-w-md">
-                  <Layers className="w-16 h-16 text-blue-500 mx-auto mb-4" />
-                  <h3 className="text-xl font-bold text-gray-800 mb-2">请选择视图范围</h3>
-                  <p className="text-gray-500 mb-6">
+              <div className="absolute inset-0 z-40 bg-[rgba(15,23,42,0.06)] backdrop-blur-sm flex flex-col items-center justify-center">
+                <div className="bg-white p-8 rounded-xl shadow-lg border border-[var(--line)] text-center max-w-md">
+                  <Layers className="w-16 h-16 text-[var(--accent)] mx-auto mb-4" />
+                  <h3 className="text-xl font-bold text-[var(--ink)] mb-2">请选择视图范围</h3>
+                  <p className="text-[var(--muted)] mb-6">
                     检测到大规模网络拓扑。为了获得最佳性能和清晰度，请先在上方工具栏选择目标
-                    <span className="font-bold text-gray-700 mx-1">{selectionTargets}</span>。
+                    <span className="font-bold text-[var(--ink)] mx-1">{selectionTargets}</span>。
                   </p>
                   <div className="flex gap-3 justify-center">
                     {podRequired && (
-                      <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
+                      <div className="text-xs text-[var(--muted)] bg-[var(--panelMuted)] px-3 py-1 rounded-full">
                         POD: {selectedPod || '未选择'}
                       </div>
                     )}
                     {railRequired && (
-                      <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
+                      <div className="text-xs text-[var(--muted)] bg-[var(--panelMuted)] px-3 py-1 rounded-full">
                         Rail: {selectedRail || '未选择'}
                       </div>
                     )}
@@ -1164,27 +1194,27 @@ const TopologyRestoreTool: React.FC = () => {
             {/* 加载进度条悬浮层 */}
             {/* Phase 2 V3: LOD Toolbar */}
             {renderMode === 'cytoscape' && restoreResult && pods.length > 0 && (
-              <div className="mb-3 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-lg flex flex-wrap items-center gap-3">
+              <div className="mb-3 p-3 bg-[var(--panelMuted)] border border-[var(--line)] rounded-lg flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-gray-700">LOD:</span>
+                  <span className="text-sm font-medium text-[var(--ink)]">LOD:</span>
                   <div className="inline-flex rounded-md border border-indigo-200 bg-white overflow-hidden">
                     <button
                       onClick={() => applyViewLevel('overview')}
-                      className={`px-3 py-1.5 text-sm ${viewLevel === 'overview' ? 'bg-indigo-600 text-white' : 'text-indigo-700 hover:bg-indigo-50'}`}
+                      className={`px-3 py-1.5 text-sm ${viewLevel === 'overview' ? 'bg-[var(--accent)] text-white' : 'text-[var(--accent)] hover:bg-white'}`}
                       title="POD 聚合概览"
                     >
                       概览
                     </button>
                     <button
                       onClick={() => applyViewLevel('group')}
-                      className={`px-3 py-1.5 text-sm ${viewLevel === 'group' ? 'bg-indigo-600 text-white' : 'text-indigo-700 hover:bg-indigo-50'}`}
+                      className={`px-3 py-1.5 text-sm ${viewLevel === 'group' ? 'bg-[var(--accent)] text-white' : 'text-[var(--accent)] hover:bg-white'}`}
                       title="按 POD 分组显示"
                     >
                       分组
                     </button>
                     <button
                       onClick={() => applyViewLevel('detail')}
-                      className={`px-3 py-1.5 text-sm ${viewLevel === 'detail' ? 'bg-indigo-600 text-white' : 'text-indigo-700 hover:bg-indigo-50'}`}
+                      className={`px-3 py-1.5 text-sm ${viewLevel === 'detail' ? 'bg-[var(--accent)] text-white' : 'text-[var(--accent)] hover:bg-white'}`}
                       title="显示所有设备与连接"
                     >
                       细节
@@ -1193,9 +1223,9 @@ const TopologyRestoreTool: React.FC = () => {
                 </div>
 
                 <div className="flex-1 flex items-center gap-2 min-w-[220px]">
-                  <label className="text-sm font-medium text-gray-700">快速聚焦:</label>
+                  <label className="text-sm font-medium text-[var(--ink)]">快速聚焦:</label>
                   <select
-                    className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-[var(--accent)] focus:border-[var(--accent)]"
                     value=""
                     onChange={(e) => {
                       if (e.target.value) {
@@ -1214,7 +1244,7 @@ const TopologyRestoreTool: React.FC = () => {
                   </select>
                 </div>
 
-                <div className="text-sm text-gray-600">
+                <div className="text-sm text-[var(--muted)]">
                   视图: <span className="font-medium">{viewLevel === 'overview' ? '概览' : viewLevel === 'group' ? '分组' : '细节'}</span>
                 </div>
               </div>
@@ -1223,10 +1253,10 @@ const TopologyRestoreTool: React.FC = () => {
             {loading && (
               <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center backdrop-blur-sm">
                 <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 transition-all duration-300 ease-out" style={{ width: `${loadingProgress}%` }} />
+                  <div className="h-full bg-[var(--accent)] transition-all duration-300 ease-out" style={{ width: `${loadingProgress}%` }} />
                 </div>
-                <p className="mt-3 text-sm font-medium text-gray-700">正在构建拓扑... {loadingProgress}%</p>
-                <p className="mt-1 text-xs text-gray-400">
+                <p className="mt-3 text-sm font-medium text-[var(--ink)]">正在构建拓扑... {loadingProgress}%</p>
+                <p className="mt-1 text-xs text-[var(--muted)]">
                   {renderMode === 'cytoscape' ? '检测到大规模拓扑，已切换至高性能引擎' : '正在加载节点和连接数据'}
                 </p>
               </div>
@@ -1326,13 +1356,13 @@ const TopologyRestoreTool: React.FC = () => {
           </div>
 
           {/* 右侧信息面板 */}
-          <div className="w-64 bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col">
-            <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h4 className="font-semibold text-gray-800 text-sm">详细信息</h4>
+          <div className="w-72 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_10px_28px_rgba(15,23,42,0.06)] flex flex-col">
+            <div className="px-4 py-3 bg-[var(--panelMuted)] border-b border-[var(--line)] flex justify-between items-center">
+              <h4 className="text-sm font-semibold text-[var(--ink)]">详细信息</h4>
               {(selectedNodeInfo || selectedEdgeInfo) && (
                 <button
                   onClick={handleCanvasClick}
-                  className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-200 rounded"
+                  className="rounded-md border border-[var(--line)] bg-white px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--panelMuted)]"
                 >
                   ✕
                 </button>
@@ -1343,11 +1373,11 @@ const TopologyRestoreTool: React.FC = () => {
               {selectedNodeInfo ? (
                 <div className="space-y-3">
                   <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">设备ID</p>
+                    <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">设备ID</p>
                     <p className="text-sm font-mono text-gray-900 break-all">{selectedNodeInfo.id}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">层级</p>
+                    <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">层级</p>
                     <p className="text-sm">
                       <span className="inline-block px-2 py-1 rounded text-white text-xs font-medium" style={{ background: layerColors[selectedNodeInfo.id.split('-')[0]?.toLowerCase()] || layerColors.unknown }}>
                         {(selectedNodeInfo.layer || selectedNodeInfo.id.split('-')[0]).toUpperCase()}
@@ -1356,7 +1386,7 @@ const TopologyRestoreTool: React.FC = () => {
                   </div>
                   {selectedNodeInfo.data?.label && (
                     <div>
-                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">标签</p>
+                      <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">标签</p>
                       {typeof selectedNodeInfo.data.label === 'string' ? (
                         <p className="text-sm text-gray-900">{selectedNodeInfo.data.label}</p>
                       ) : (
@@ -1366,14 +1396,14 @@ const TopologyRestoreTool: React.FC = () => {
                   )}
                   {renderMode !== 'cytoscape' && (
                     <div>
-                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">位置</p>
-                      <p className="text-xs text-gray-600">X: {selectedNodeInfo.position?.x.toFixed(0)} | Y: {selectedNodeInfo.position?.y.toFixed(0)}</p>
+                      <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">位置</p>
+                      <p className="text-xs text-[var(--muted)]">X: {selectedNodeInfo.position?.x.toFixed(0)} | Y: {selectedNodeInfo.position?.y.toFixed(0)}</p>
                     </div>
                   )}
 
                   {/* 连接到此节点的边 */}
                   <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-2">连接关系</p>
+                    <p className="text-xs font-medium text-[var(--muted)] uppercase mb-2">连接关系</p>
                     <div className="space-y-1 text-xs">
                       {(() => {
                         const relatedEdges = renderMode === 'cytoscape'
@@ -1381,7 +1411,7 @@ const TopologyRestoreTool: React.FC = () => {
                           : edges.filter(e => e.source === selectedNodeInfo.id || e.target === selectedNodeInfo.id);
 
                         if (relatedEdges.length === 0) {
-                          return <p className="text-gray-500 italic">无连接</p>;
+                          return <p className="text-[var(--muted)] italic">无连接</p>;
                         }
 
                         // 分类连接：上行 (Uplink) 和 下行 (Downlink)
@@ -1423,8 +1453,8 @@ const TopologyRestoreTool: React.FC = () => {
 
                         // 渲染函数
                         const renderEdgeItem = (edge: any, idx: number, isUplink: boolean) => (
-                          <div key={`${isUplink ? 'up' : 'down'}-${idx}`} className={`p-1.5 rounded border mb-1 ${isUplink ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'}`}>
-                            <div className="font-mono text-gray-700 flex justify-between">
+                          <div key={`${isUplink ? 'up' : 'down'}-${idx}`} className={`p-1.5 rounded border mb-1 ${isUplink ? 'bg-blue-50 border-blue-200' : 'bg-[var(--panelMuted)] border-[var(--line)]'}`}>
+                            <div className="font-mono text-[var(--ink)] flex justify-between">
                               <span>
                                 {edge.source === selectedNodeInfo.id ? (
                                   <>→ {edge.target}</>
@@ -1432,10 +1462,10 @@ const TopologyRestoreTool: React.FC = () => {
                                   <>← {edge.source}</>
                                 )}
                               </span>
-                              {isUplink && <span className="text-[10px] bg-blue-100 text-blue-600 px-1 rounded">UPLINK</span>}
+                              {isUplink && <span className="text-[10px] bg-blue-100 text-[var(--accent)] px-1 rounded">UPLINK</span>}
                             </div>
                             {(edge.label || (edge.srcPort && edge.dstPort)) && (
-                              <div className="text-gray-600 mt-0.5 text-[10px]">
+                              <div className="text-[var(--muted)] mt-0.5 text-[10px]">
                                 端口: {edge.label || `${edge.srcPort}-${edge.dstPort}`}
                               </div>
                             )}
@@ -1446,15 +1476,15 @@ const TopologyRestoreTool: React.FC = () => {
                           <div className="space-y-4">
                             {uplinks.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-bold text-blue-600 uppercase mb-1">上行连接 (Uplinks)</p>
+                                <p className="text-[10px] font-bold text-[var(--accent)] uppercase mb-1">上行连接 (Uplinks)</p>
                                 {uplinks.map((e, i) => renderEdgeItem(e, i, true))}
                               </div>
                             )}
                             {downlinks.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">下行连接 (Downlinks)</p>
+                                <p className="text-[10px] font-bold text-[var(--muted)] uppercase mb-1">下行连接 (Downlinks)</p>
                                 {downlinks.slice(0, 40).map((e, i) => renderEdgeItem(e, i, false))}
-                                {downlinks.length > 40 && <p className="text-[10px] text-gray-400 text-center">... 还有 {downlinks.length - 40} 条连接</p>}
+                                {downlinks.length > 40 && <p className="text-[10px] text-[var(--muted)] text-center">... 还有 {downlinks.length - 40} 条连接</p>}
                               </div>
                             )}
                           </div>
@@ -1466,22 +1496,22 @@ const TopologyRestoreTool: React.FC = () => {
               ) : selectedEdgeInfo ? (
                 <div className="space-y-3">
                   <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">源设备</p>
+                    <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">源设备</p>
                     <p className="text-sm font-mono text-gray-900 break-all">{selectedEdgeInfo.source}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase mb-1">目标设备</p>
+                    <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">目标设备</p>
                     <p className="text-sm font-mono text-gray-900 break-all">{selectedEdgeInfo.target}</p>
                   </div>
                   {(selectedEdgeInfo.label || (selectedEdgeInfo.srcPort && selectedEdgeInfo.dstPort)) && (
                     <div>
-                      <p className="text-xs font-medium text-gray-500 uppercase mb-1">端口信息</p>
+                      <p className="text-xs font-medium text-[var(--muted)] uppercase mb-1">端口信息</p>
                       <p className="text-sm font-mono text-gray-900">{selectedEdgeInfo.label || `${selectedEdgeInfo.srcPort}-${selectedEdgeInfo.dstPort}`}</p>
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="text-center text-gray-500 pt-8">
+                <div className="text-center text-[var(--muted)] pt-8">
                   <p className="text-sm">点击设备或连接线</p>
                   <p className="text-xs mt-2">查看详细信息</p>
                 </div>
@@ -1494,13 +1524,13 @@ const TopologyRestoreTool: React.FC = () => {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${isDragging ? 'border-blue-500 bg-blue-50' : 'bg-gray-50 border-gray-300'}`}
+          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${isDragging ? 'border-blue-500 bg-blue-50' : 'bg-[var(--panelMuted)] border-gray-300'}`}
         >
-          <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-blue-500' : 'text-gray-400'}`} />
-          <p className={isDragging ? 'text-blue-600' : 'text-gray-500'}>
+          <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-[var(--accent)]' : 'text-[var(--muted)]'}`} />
+          <p className={isDragging ? 'text-[var(--accent)]' : 'text-[var(--muted)]'}>
             {isDragging ? '释放文件以上传' : '请上传 CSV 或 Excel 格式文件'}
           </p>
-          <p className="text-xs text-gray-400 mt-2">支持拖拽上传</p>
+          <p className="text-xs text-[var(--muted)] mt-2">支持拖拽上传</p>
         </div>
       )}
     </div>
@@ -1526,14 +1556,5 @@ function extractRails(nodes: any[]): string[] {
     return parseInt(a) - parseInt(b);
   });
 }
-
-// eslint-disable-next-line react-refresh/only-export-components
-export const pluginMeta = {
-  id: 'topology-restore',
-  name: '拓扑还原',
-  description: '上传UFM/NetQ数据文件，还原IB/RoCE网络拓扑',
-  icon: 'Network',
-  version: '1.0.0'
-};
 
 export default TopologyRestoreTool;

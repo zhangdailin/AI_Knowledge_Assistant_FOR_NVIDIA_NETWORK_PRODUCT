@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { Search, Wrench, ChevronRight, X, Network, GitBranch } from 'lucide-react';
 
 // 导入插件
-import SnToIblfTool, { pluginMeta as snIblfMeta } from '../plugins/sn-iblf';
-import SnAddressTool, { pluginMeta as snAddressMeta } from '../plugins/sn-address';
-import SnTopologyTool, { pluginMeta as snTopologyMeta } from '../plugins/sn-topology';
-import TopologyRestoreTool, { pluginMeta as topologyRestoreMeta } from '../plugins/topology-restore';
+import SnToIblfTool, { pluginMeta as snIblfMeta } from '../sn-iblf';
+import SnAddressTool, { pluginMeta as snAddressMeta } from '../sn-address';
+import SnTopologyTool, { pluginMeta as snTopologyMeta } from '../sn-topology';
+import TopologyRestoreTool from '../topology-restore';
+import { pluginMeta as topologyRestoreMeta } from '../topology-restore/plugin-meta';
 
 // 插件注册表
 const plugins = [
