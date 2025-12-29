@@ -6,6 +6,7 @@ import * as storage from './storage.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText, rerankDocuments } from './embedding.mjs';
 import { validateFileType, getFileCategory } from './fileValidation.mjs';
+import { asyncHandler, SimpleLRUCache } from './utils.mjs';
 import XLSX from 'xlsx';
 
 // 直接使用 createRequire 加载 pdf-parse
@@ -27,26 +28,9 @@ import * as topology from './topology.mjs';
 import { analyzeRoCETopology } from './roce-topology.mjs';
 import { inferLayersFromTopology } from './topology-inference.mjs';
 
-// 简单的 LRU 缓存实现
-class SimpleLRUCache {
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-    this.cache = new Map();
-  }
-  get(key) {
-    if (!this.cache.has(key)) return null;
-    const val = this.cache.get(key);
-    this.cache.delete(key);
-    this.cache.set(key, val);
-    return val;
-  }
-  set(key, value) {
-    if (this.cache.has(key)) this.cache.delete(key);
-    else if (this.cache.size >= this.maxSize) this.cache.delete(this.cache.keys().next().value);
-    this.cache.set(key, value);
-  }
-}
+// 搜索结果缓存
 const searchCache = new SimpleLRUCache(200);
+
 
 // RRF 融合算法 (参数可配置)
 function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
@@ -417,173 +401,108 @@ app.post('/api/ocr', upload.single('file'), async (req, res) => {
 // ========== 知识库 API ==========
 
 // 获取所有文档
-app.get('/api/documents', async (req, res) => {
-  try {
-    const documents = await storage.getAllDocuments();
-    res.json({ ok: true, documents });
-  } catch (error) {
-    console.error('获取文档列表失败:', error);
-    res.status(500).json({ ok: false, error: '获取文档列表失败' });
-  }
-});
+app.get('/api/documents', asyncHandler(async (req, res) => {
+  const documents = await storage.getAllDocuments();
+  res.json({ ok: true, documents });
+}, '获取文档列表'));
 
 // 获取单个文档
-app.get('/api/documents/:id', async (req, res) => {
-  try {
-    const document = await storage.getDocument(req.params.id);
-    if (!document) {
-      return res.status(404).json({ ok: false, error: '文档不存在' });
-    }
-    res.json({ ok: true, document });
-  } catch (error) {
-    console.error('获取文档失败:', error);
-    res.status(500).json({ ok: false, error: '获取文档失败' });
+app.get('/api/documents/:id', asyncHandler(async (req, res) => {
+  const document = await storage.getDocument(req.params.id);
+  if (!document) {
+    return res.status(404).json({ ok: false, error: '文档不存在' });
   }
-});
+  res.json({ ok: true, document });
+}, '获取文档'));
 
 // 创建文档
-app.post('/api/documents', async (req, res) => {
-  try {
-    const document = await storage.createDocument(req.body);
-    res.json({ ok: true, document });
-  } catch (error) {
-    console.error('创建文档失败:', error);
-    res.status(500).json({ ok: false, error: '创建文档失败' });
-  }
-});
+app.post('/api/documents', asyncHandler(async (req, res) => {
+  const document = await storage.createDocument(req.body);
+  res.json({ ok: true, document });
+}, '创建文档'));
 
 // 更新文档
-app.put('/api/documents/:id', async (req, res) => {
-  try {
-    const document = await storage.updateDocument(req.params.id, req.body);
-    if (!document) {
-      return res.status(404).json({ ok: false, error: '文档不存在' });
-    }
-    res.json({ ok: true, document });
-  } catch (error) {
-    console.error('更新文档失败:', error);
-    res.status(500).json({ ok: false, error: '更新文档失败' });
+app.put('/api/documents/:id', asyncHandler(async (req, res) => {
+  const document = await storage.updateDocument(req.params.id, req.body);
+  if (!document) {
+    return res.status(404).json({ ok: false, error: '文档不存在' });
   }
-});
+  res.json({ ok: true, document });
+}, '更新文档'));
 
 // 移动文档到指定分类
-app.put('/api/documents/:id/category', async (req, res) => {
-  try {
-    const { categoryId } = req.body;
-    if (!categoryId) {
-      return res.status(400).json({ ok: false, error: '缺少 categoryId' });
-    }
-    const document = await storage.updateDocument(req.params.id, { categoryId });
-    if (!document) {
-      return res.status(404).json({ ok: false, error: '文档不存在' });
-    }
-    console.log(`[API] 文档 ${req.params.id} 移动到分类 ${categoryId}`);
-    res.json({ ok: true, document });
-  } catch (error) {
-    console.error('移动文档失败:', error);
-    res.status(500).json({ ok: false, error: '移动文档失败' });
+app.put('/api/documents/:id/category', asyncHandler(async (req, res) => {
+  const { categoryId } = req.body;
+  if (!categoryId) {
+    return res.status(400).json({ ok: false, error: '缺少 categoryId' });
   }
-});
+  const document = await storage.updateDocument(req.params.id, { categoryId });
+  if (!document) {
+    return res.status(404).json({ ok: false, error: '文档不存在' });
+  }
+  console.log(`[API] 文档 ${req.params.id} 移动到分类 ${categoryId}`);
+  res.json({ ok: true, document });
+}, '移动文档'));
 
 // 删除文档
-app.delete('/api/documents/:id', async (req, res) => {
-  try {
-    console.log(`[API] 删除文档请求: ${req.params.id}`);
-    const deleted = await storage.deleteDocument(req.params.id);
-    console.log(`[API] 删除文档成功: ${req.params.id}, deleted=${deleted}`);
-    res.json({ ok: true, deleted });
-  } catch (error) {
-    console.error('[API] 删除文档失败:', error);
-    console.error('[API] 错误堆栈:', error.stack);
-    // 如果是 JSON 解析错误，尝试返回更友好的错误信息
-    if (error instanceof SyntaxError || error.message.includes('JSON')) {
-      res.status(500).json({
-        ok: false,
-        error: '删除文档失败：数据文件可能已损坏，系统已尝试自动修复。请刷新页面后重试。',
-        detail: error.message
-      });
-    } else {
-      res.status(500).json({ ok: false, error: '删除文档失败', detail: error.message });
-    }
-  }
-});
+app.delete('/api/documents/:id', asyncHandler(async (req, res) => {
+  console.log(`[API] 删除文档请求: ${req.params.id}`);
+  const deleted = await storage.deleteDocument(req.params.id);
+  console.log(`[API] 删除文档成功: ${req.params.id}, deleted=${deleted}`);
+  res.json({ ok: true, deleted });
+}, '删除文档'));
 
 // 获取文档的 chunks
-app.get('/api/documents/:id/chunks', async (req, res) => {
-  try {
-    const chunks = await storage.getChunks(req.params.id);
-    res.json({ ok: true, chunks });
-  } catch (error) {
-    console.error('获取 chunks 失败:', error);
-    res.status(500).json({ ok: false, error: '获取 chunks 失败' });
-  }
-});
+app.get('/api/documents/:id/chunks', asyncHandler(async (req, res) => {
+  const chunks = await storage.getChunks(req.params.id);
+  res.json({ ok: true, chunks });
+}, '获取文档 chunks'));
 
 // 获取单个 chunk
-app.get('/api/documents/:docId/chunks/:chunkId', async (req, res) => {
-  try {
-    const chunk = await storage.getChunk(req.params.docId, req.params.chunkId);
-    if (!chunk) {
-      return res.status(404).json({ ok: false, error: 'chunk 不存在' });
-    }
-    res.json({ ok: true, chunk });
-  } catch (error) {
-    console.error('获取 chunk 失败:', error);
-    res.status(500).json({ ok: false, error: '获取 chunk 失败' });
+app.get('/api/documents/:docId/chunks/:chunkId', asyncHandler(async (req, res) => {
+  const chunk = await storage.getChunk(req.params.docId, req.params.chunkId);
+  if (!chunk) {
+    return res.status(404).json({ ok: false, error: 'chunk 不存在' });
   }
-});
+  res.json({ ok: true, chunk });
+}, '获取 chunk'));
 
 // 获取文档的 chunks 统计信息 (轻量级)
-app.get('/api/documents/:id/chunk-stats', async (req, res) => {
-  try {
-    const stats = await storage.getChunkStats(req.params.id);
-    res.json({ ok: true, stats });
-  } catch (error) {
-    console.error('获取 chunks 统计失败:', error);
-    res.status(500).json({ ok: false, error: '获取 chunks 统计失败' });
-  }
-});
+app.get('/api/documents/:id/chunk-stats', asyncHandler(async (req, res) => {
+  const stats = await storage.getChunkStats(req.params.id);
+  res.json({ ok: true, stats });
+}, '获取 chunks 统计'));
 
 // 创建 chunks
-app.post('/api/documents/:id/chunks', async (req, res) => {
-  try {
-    const { chunks: chunksData } = req.body;
-    if (!Array.isArray(chunksData)) {
-      return res.status(400).json({ ok: false, error: 'chunks 必须是数组' });
-    }
-
-    // 为每个 chunk 添加 documentId
-    const chunksWithDocId = chunksData.map(chunk => ({
-      ...chunk,
-      documentId: req.params.id
-    }));
-
-    const newChunks = await storage.createChunks(chunksWithDocId);
-    res.json({ ok: true, chunks: newChunks });
-  } catch (error) {
-    console.error('创建 chunks 失败:', error);
-    res.status(500).json({ ok: false, error: '创建 chunks 失败' });
+app.post('/api/documents/:id/chunks', asyncHandler(async (req, res) => {
+  const { chunks: chunksData } = req.body;
+  if (!Array.isArray(chunksData)) {
+    return res.status(400).json({ ok: false, error: 'chunks 必须是数组' });
   }
-});
+
+  // 为每个 chunk 添加 documentId
+  const chunksWithDocId = chunksData.map(chunk => ({
+    ...chunk,
+    documentId: req.params.id
+  }));
+
+  const newChunks = await storage.createChunks(chunksWithDocId);
+  res.json({ ok: true, chunks: newChunks });
+}, '创建 chunks'));
 
 // 更新 chunk 的 embedding
-app.put('/api/chunks/:id/embedding', async (req, res) => {
-  try {
-    const { embedding } = req.body;
-    if (!Array.isArray(embedding)) {
-      return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
-    }
-
-    const updated = await storage.updateChunkEmbedding(req.params.id, embedding);
-    if (!updated) {
-      return res.status(404).json({ ok: false, error: 'chunk 不存在' });
-    }
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('更新 embedding 失败:', error);
-    res.status(500).json({ ok: false, error: '更新 embedding 失败' });
+app.put('/api/chunks/:id/embedding', asyncHandler(async (req, res) => {
+  const { embedding } = req.body;
+  if (!Array.isArray(embedding)) {
+    return res.status(400).json({ ok: false, error: 'embedding 必须是数组' });
   }
-});
+
+  const updated = await storage.updateChunkEmbedding(req.params.id, embedding);
+  if (!updated) {
+    return res.status(404).json({ ok: false, error: 'chunk 不存在' });
+  }
+  res.json({ ok: true });
+}, '更新 embedding'));
 
 // 搜索 chunks (混合检索：关键词 + 向量)
 app.get('/api/chunks/search', async (req, res) => {
@@ -602,29 +521,9 @@ app.get('/api/chunks/search', async (req, res) => {
     if (categoryId) {
       const categoriesData = await storage.getCategories();
       const categoryTree = categoriesData.tree || [];
-
-      // 递归获取分类及其子分类 ID
-      const getCategoryAndChildrenIds = (catId, nodes) => {
-        const ids = [catId];
-        const findAndCollect = (nodeList) => {
-          for (const node of nodeList) {
-            if (node.id === catId) {
-              const collectIds = (n) => {
-                ids.push(n.id);
-                if (n.children) n.children.forEach(collectIds);
-              };
-              if (node.children) node.children.forEach(collectIds);
-              return;
-            }
-            if (node.children) findAndCollect(node.children);
-          }
-        };
-        findAndCollect(nodes);
-        return ids;
-      };
-
-      categoryIds = getCategoryAndChildrenIds(categoryId, categoryTree);
+      categoryIds = storage.getCategoryAndChildrenIds(categoryId, categoryTree);
     }
+
 
     const cacheKey = `${q}_${searchLimit}_${categoryId || 'all'}`;
     const cached = searchCache.get(cacheKey);
@@ -863,45 +762,24 @@ app.get('/api/settings/api-key/:provider', async (req, res) => {
 app.post('/api/documents/:id/generate-embeddings', async (req, res) => {
   try {
     const documentId = req.params.id;
-    // #region agent log
-    console.log(`[API] [DEBUG] 创建 embedding 任务，文档 ID: ${documentId}`);
-    // #endregion
     console.log(`[API] 创建 embedding 任务，文档 ID: ${documentId}`);
 
     const task = taskQueue.createTask('generate_embeddings', documentId);
-    // #region agent log
-    console.log(`[API] [DEBUG] 任务已创建: ${task.id}, status=${task.status}, type=${task.type}`);
-    // #endregion
     console.log(`[API] 任务已创建: ${task.id}, status=${task.status}`);
 
     // 异步处理任务（不阻塞响应）
-    // #region agent log
-    console.log(`[API] [DEBUG] 准备异步处理任务 ${task.id}`);
-    // #endregion
     taskQueue.processEmbeddingTask(task.id, documentId).catch(error => {
-      // #region agent log
-      console.error(`[API] [DEBUG] 处理 embedding 任务 ${task.id} 失败:`, error);
-      console.error(`[API] [DEBUG] 错误堆栈:`, error.stack);
-      // #endregion
       console.error(`[API] 处理 embedding 任务 ${task.id} 失败:`, error);
-      console.error(`[API] 错误堆栈:`, error.stack);
     });
 
-    // 添加日志以确认任务已启动
-    // #region agent log
-    console.log(`[API] [DEBUG] 任务 ${task.id} 已提交异步处理`);
-    // #endregion
     console.log(`[API] 任务 ${task.id} 已提交异步处理`);
-
     res.json({ ok: true, taskId: task.id, task });
   } catch (error) {
-    // #region agent log
-    console.error('[API] [DEBUG] 创建任务失败:', error);
-    // #endregion
     console.error('[API] 创建任务失败:', error);
     res.status(500).json({ ok: false, error: '创建任务失败', detail: error.message });
   }
 });
+
 
 // 获取任务状态
 app.get('/api/tasks/:taskId', async (req, res) => {

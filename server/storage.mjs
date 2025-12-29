@@ -827,3 +827,30 @@ export async function deleteCategory(categoryId) {
 
   return true;
 }
+
+/**
+ * 递归获取分类及其所有子分类的 ID
+ * @param {string} catId - 目标分类 ID
+ * @param {Array} nodes - 分类树节点数组
+ * @returns {string[]} - 包含目标分类及其所有子分类的 ID 数组
+ */
+export function getCategoryAndChildrenIds(catId, nodes) {
+  const ids = [catId];
+
+  const findAndCollect = (nodeList) => {
+    for (const node of nodeList) {
+      if (node.id === catId) {
+        const collectIds = (n) => {
+          ids.push(n.id);
+          if (n.children) n.children.forEach(collectIds);
+        };
+        if (node.children) node.children.forEach(collectIds);
+        return;
+      }
+      if (node.children) findAndCollect(node.children);
+    }
+  };
+
+  findAndCollect(nodes);
+  return ids;
+}
