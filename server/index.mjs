@@ -1666,43 +1666,39 @@ app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
     const configStr = req.body.config;
     const config = configStr ? JSON.parse(configStr) : {};
     const fileBuffer = req.file.buffer;
-    const fileName = req.file.originalname.toLowerCase();
+    const originalName = req.file.originalname;
+    const input = parseTopologyUpload(fileBuffer, originalName);
 
     console.log(`[TopologyRestore] 开始解析 ${networkType} 网络拓扑，文件: ${req.file.originalname}`);
     console.log(`[TopologyRestore] 配置: ${JSON.stringify(config)}`);
 
-    let portMap;
+    let result;
     if (networkType === 'ib') {
-      // IB网络：解析UFM CSV格式
-      const csvContent = fileBuffer.toString('utf-8');
-      portMap = parseCSVPortMap(csvContent);
+      const portMap = input.kind === 'csv'
+        ? parseCSVPortMap(input.csvContent)
+        : parseExcelPortMap(input.data);
+
+      result = topology.buildTopologyStructure(portMap, {
+        layerDetection: config.layerDetection || 'auto',
+        manualLayers: config.manualLayers || null,
+        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+        networkType: networkType  // 传递网络类型
+      });
     } else if (networkType === 'roce') {
-      // RoCE网络：解析NetQ Excel格式
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(worksheet);
-
-      console.log(`[TopologyRestore] Excel 原始数据行数: ${data.length}`);
-      console.log(`[TopologyRestore] 样本行数据: ${JSON.stringify(data[0])}`);
-
-      portMap = parseExcelPortMap(data);
-
-      console.log(`[TopologyRestore] Excel 解析完成: ${portMap.size} 条端口映射`);
-      if (portMap.size === 0) {
-        console.warn('[TopologyRestore] 警告：Excel 解析结果为空！检查字段名称和数据格式');
+      if (input.kind === 'excel') {
+        result = analyzeRoCETopology(input.data);
+      } else {
+        const portMap = parseCSVPortMap(input.csvContent);
+        result = topology.buildTopologyStructure(portMap, {
+          layerDetection: config.layerDetection || 'auto',
+          manualLayers: config.manualLayers || null,
+          podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+          networkType: networkType
+        });
       }
     } else {
       return res.status(400).json({ ok: false, error: '不支持的网络类型' });
     }
-
-    // 使用通用拓扑框架构建完整的拓扑数据
-    const result = topology.buildTopologyStructure(portMap, {
-      layerDetection: config.layerDetection || 'auto',
-      manualLayers: config.manualLayers || null,
-      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-      networkType: networkType  // 传递网络类型
-    });
 
     if (!result || !result.success) {
       throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
@@ -1737,48 +1733,45 @@ app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => 
     console.log(`[TopologyV2] 开始流式解析 ${networkType} 拓扑: ${fileName} (Request Lazy: ${isLazy})`);
 
     // 1. 解析原始数据
+    const input = parseTopologyUpload(fileBuffer, fileName);
     let portMap;
+    let result;
     let isFromKnowledgeBase = false;
 
     if (networkType === 'ib') {
-      const csvContent = fileBuffer.toString('utf-8');
-      try {
-        portMap = parseCSVPortMap(csvContent);
-      } catch (e) {
-        // 尝试解析为 SN 清单
-        console.log('[TopologyV2] 标准解析失败，尝试作为 SN 清单解析:', e.message);
-        const snList = parseSNListCSV(csvContent);
-        if (snList && snList.length > 0) {
-          console.log(`[TopologyV2] 识别为 SN 清单 (${snList.length} 个条目)，尝试从知识库重建拓扑...`);
-          portMap = await buildPortMapFromKnowledgeBase(snList, networkType);
-          isFromKnowledgeBase = true;
-          if (portMap.size === 0) {
-            throw new Error('知识库中未找到相关连接信息');
+      if (input.kind === 'csv') {
+        try {
+          portMap = parseCSVPortMap(input.csvContent);
+        } catch (e) {
+          // 尝试解析为 SN 清单
+          console.log('[TopologyV2] 标准解析失败，尝试作为 SN 清单解析:', e.message);
+          const snList = parseSNListCSV(input.csvContent);
+          if (snList && snList.length > 0) {
+            console.log(`[TopologyV2] 识别为 SN 清单 (${snList.length} 个条目)，尝试从知识库重建拓扑...`);
+            portMap = await buildPortMapFromKnowledgeBase(snList, networkType);
+            isFromKnowledgeBase = true;
+            if (portMap.size === 0) {
+              throw new Error('知识库中未找到相关连接信息');
+            }
+          } else {
+            throw e; // 抛出原始错误
           }
-        } else {
-          throw e; // 抛出原始错误
         }
+      } else {
+        portMap = parseExcelPortMap(input.data);
       }
     } else if (networkType === 'roce') {
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(worksheet);
-      // 直接使用 Python-Ported 解析器
-      // portMap = parseExcelPortMap(data); // Bypass old parser
+      if (input.kind === 'excel') {
+        result = analyzeRoCETopology(input.data);
+      } else {
+        portMap = parseCSVPortMap(input.csvContent);
+      }
     } else {
       return res.status(400).json({ ok: false, error: '不支持的网络类型' });
     }
 
     // 2. 构建拓扑结构
-    let result;
-    if (networkType === 'roce') {
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(worksheet);
-      result = analyzeRoCETopology(data);
-    } else {
+    if (!result) {
       result = topology.buildTopologyStructure(portMap, {
         layerDetection: config.layerDetection || 'auto',
         manualLayers: config.manualLayers || null,
@@ -1824,7 +1817,7 @@ app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => 
         layers: result.metadata.layers,
         pods: result.metadata.pods,
         stats: result.metadata.stats,
-        networkType: result.metadata.layerDetection,
+        networkType: result.networkType || networkType,
         isLazy,
         layerY: result.layerY
       }
@@ -1911,36 +1904,47 @@ app.post('/api/topology-pod-details', upload.single('file'), async (req, res) =>
     const fileBuffer = req.file.buffer;
 
     // 解析 (复用逻辑)
-    let portMap;
-    if (networkType === 'ib') {
-      portMap = parseCSVPortMap(fileBuffer.toString('utf-8'));
-    } else if (networkType === 'roce') {
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      portMap = parseExcelPortMap(XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]));
-    } else {
-      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
-    }
+    const input = parseTopologyUpload(fileBuffer, req.file.originalname);
 
-    const result = topology.buildTopologyStructure(portMap, {
-      layerDetection: config.layerDetection || 'auto',
-      manualLayers: config.manualLayers || null,
-      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-      networkType: networkType
-    });
+    let result;
+    if (networkType === 'roce' && input.kind === 'excel') {
+      result = analyzeRoCETopology(input.data);
+    } else {
+      const portMap = input.kind === 'csv'
+        ? parseCSVPortMap(input.csvContent)
+        : parseExcelPortMap(input.data);
+
+      result = topology.buildTopologyStructure(portMap, {
+        layerDetection: config.layerDetection || 'auto',
+        manualLayers: config.manualLayers || null,
+        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+        networkType: networkType
+      });
+    }
 
     if (!result || !result.success) throw new Error('Build failed');
 
-    // 过滤 POD 数据 (Leaf Nodes)
-    const leafNodes = (result.nodesByLayer.leaf || []).filter(n => n.pod === podName);
-    const leafIds = new Set(leafNodes.map(n => n.id));
+    let podNodes = [];
+    if (networkType === 'ib') {
+      podNodes = (result.nodesByLayer.leaf || [])
+        .filter(n => n.pod === podName)
+        .map(n => ({ ...n, layer: n.layer || 'leaf' }));
+    } else {
+      Object.entries(result.nodesByLayer || {}).forEach(([layer, nodes]) => {
+        if (Array.isArray(nodes)) {
+          podNodes.push(...nodes.filter(n => n.pod === podName).map(n => ({ ...n, layer })));
+        }
+      });
+    }
+    const podNodeIds = new Set(podNodes.map(n => n.id));
 
-    // 过滤边 (连接到该 POD Leaf 的边)
-    const edges = result.connections.filter(e => leafIds.has(e.source) || leafIds.has(e.target));
+    // 过滤边 (连接到该 POD 的边)
+    const edges = result.connections.filter(e => podNodeIds.has(e.source) || podNodeIds.has(e.target));
 
     res.json({
       ok: true,
       pod: podName,
-      nodes: leafNodes,
+      nodes: podNodes,
       edges: edges
     });
 
@@ -1963,21 +1967,24 @@ app.post('/api/topology-search', upload.single('file'), async (req, res) => {
     const config = configStr ? JSON.parse(configStr) : {};
     const fileBuffer = req.file.buffer;
 
-    let portMap;
-    if (networkType === 'ib') {
-      portMap = parseCSVPortMap(fileBuffer.toString('utf-8'));
-    } else if (networkType === 'roce') {
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      portMap = parseExcelPortMap(XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]));
-    }
+    const input = parseTopologyUpload(fileBuffer, req.file.originalname);
 
-    // 构建拓扑 (Server-side search requires full build to be accurate with layers/pods)
-    const result = topology.buildTopologyStructure(portMap, {
-      layerDetection: config.layerDetection || 'auto',
-      manualLayers: config.manualLayers || null,
-      podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-      networkType: networkType
-    });
+    let result;
+    if (networkType === 'roce' && input.kind === 'excel') {
+      result = analyzeRoCETopology(input.data);
+    } else {
+      const portMap = input.kind === 'csv'
+        ? parseCSVPortMap(input.csvContent)
+        : parseExcelPortMap(input.data);
+
+      // 构建拓扑 (Server-side search requires full build to be accurate with layers/pods)
+      result = topology.buildTopologyStructure(portMap, {
+        layerDetection: config.layerDetection || 'auto',
+        manualLayers: config.manualLayers || null,
+        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
+        networkType: networkType
+      });
+    }
 
     if (!result || !result.success) throw new Error('Build failed');
 
@@ -2017,6 +2024,28 @@ app.post('/api/topology-search', upload.single('file'), async (req, res) => {
 
 // ============== 拓扑解析辅助函数 ==============
 
+function getFileExtension(filename) {
+  if (!filename) return '';
+  const parts = filename.toLowerCase().split('.');
+  return parts.length > 1 ? parts.pop() : '';
+}
+
+function parseTopologyUpload(fileBuffer, filename) {
+  const ext = getFileExtension(filename);
+  if (ext === 'csv') {
+    return { kind: 'csv', csvContent: fileBuffer.toString('utf-8') };
+  }
+  if (ext === 'xlsx' || ext === 'xls') {
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    return { kind: 'excel', data };
+  }
+
+  throw new Error('不支持的文件类型，请上传 CSV 或 Excel');
+}
+
 /**
  * 解析CSV格式的端口映射（UFM格式）
  */
@@ -2027,10 +2056,22 @@ function parseCSVPortMap(csvContent) {
   const headerLine = lines[0].replace(/^\ufeff/, '');
   const headers = headerLine.split(',').map(h => h.trim());
 
-  const systemIdx = headers.findIndex(h => h.toLowerCase() === 'system');
-  const portIdx = headers.findIndex(h => h.toLowerCase() === 'port');
-  const peerNodeIdx = headers.findIndex(h => h.toLowerCase().includes('peer') && h.toLowerCase().includes('node'));
-  const peerPortIdx = headers.findIndex(h => h.toLowerCase().includes('peer') && h.toLowerCase().includes('port'));
+  const systemIdx = headers.findIndex(h => {
+    const lower = h.toLowerCase();
+    return lower === 'system' || lower === 'hostname';
+  });
+  const portIdx = headers.findIndex(h => {
+    const lower = h.toLowerCase();
+    return lower === 'port' || lower === 'ifname' || lower.includes('interface');
+  });
+  const peerNodeIdx = headers.findIndex(h => {
+    const lower = h.toLowerCase();
+    return lower.includes('peer') && (lower.includes('node') || lower.includes('device') || lower.includes('hostname') || lower.includes('name'));
+  });
+  const peerPortIdx = headers.findIndex(h => {
+    const lower = h.toLowerCase();
+    return lower.includes('peer') && (lower.includes('port') || lower.includes('interface'));
+  });
 
   if (systemIdx === -1 || peerNodeIdx === -1) {
     throw new Error('CSV格式错误：需要 System 和 Peer Node 列');

@@ -32,7 +32,14 @@ interface TopologyNode {
     id: string;
     label?: string;
     layer?: string;
+    rawLayer?: string;
     pod?: string;
+    x?: number;
+    y?: number;
+    position?: {
+        x: number;
+        y: number;
+    };
 }
 
 interface TopologyEdge {
@@ -72,8 +79,14 @@ interface CytoscapeTopologyProps {
     highlightedNodeId?: string | null;
     /** 激活的 Core 节点过滤器 (仅显示列表中的 Core 节点) */
     activeCoreFilter?: string[] | null;
+    /** 聚焦的 Spine 节点 ID (仅显示该 Spine 与相关 Core) */
+    focusedSpineId?: string | null;
     /** Phase 2: POD 折叠状态集合 */
     collapsedPods?: Set<string>;
+    /** 视图级别 */
+    viewLevel?: 'overview' | 'group' | 'detail';
+    /** 视图级别变更回调 */
+    onViewLevelChange?: (level: 'overview' | 'group' | 'detail') => void;
     /** 网络类型 (用于条件过滤) */
     networkType?: 'ib' | 'roce';
 }
@@ -98,7 +111,12 @@ function getLayerLabel(layer: string, networkType: 'ib' | 'roce' = 'ib'): string
 /**
  * 计算节点位置 (分层布局)
  */
-function calculateNodePosition(node: any, nodesByLayer: any, layerY?: Record<string, number>): { x: number; y: number } {
+function calculateNodePosition(
+    node: any,
+    nodesByLayer: any,
+    layerY?: Record<string, number>,
+    networkType: 'ib' | 'roce' = 'ib'
+): { x: number; y: number } {
     // 兼容 Cytoscape 节点对象 (function) 和 原始数据对象 (initial load)
     const data = typeof node.data === 'function' ? node.data() : (node.data || node);
 
@@ -114,38 +132,162 @@ function calculateNodePosition(node: any, nodesByLayer: any, layerY?: Record<str
         return { x: data.position.x, y: data.position.y };
     }
 
-    if (!layer || !nodesByLayer || !nodesByLayer[layer]) {
+    if (!layer || !nodesByLayer) {
+        console.warn(`[LayoutDebug] MISSING LAYER DATA for Node=${data.id}, Layer=${layer}`);
+        return { x: 0, y: 0 };
+    }
+
+    if (!nodesByLayer[layer]) {
+        if (layer === 'podAggregate' || layer === 'podGroup') {
+            const podName = data.originalPod || String(data.id || '').replace('-aggregate', '');
+            let sumX = 0;
+            let sumY = 0;
+            let count = 0;
+
+            Object.values(nodesByLayer).forEach((layerNodes: any) => {
+                if (!Array.isArray(layerNodes)) return;
+                layerNodes.forEach((n: any) => {
+                    if (n.pod !== podName) return;
+                    const x = typeof n.x === 'number' ? n.x : n.position?.x;
+                    const y = typeof n.y === 'number' ? n.y : n.position?.y;
+                    if (typeof x === 'number' && typeof y === 'number') {
+                        sumX += x;
+                        sumY += y;
+                        count += 1;
+                    }
+                });
+            });
+
+            if (count > 0) {
+                return { x: sumX / count, y: sumY / count };
+            }
+        }
+
         console.warn(`[LayoutDebug] MISSING LAYER DATA for Node=${data.id}, Layer=${layer}`);
         return { x: 0, y: 0 };
     }
 
     // Y 轴位置 (优先使用后端提供的 layerY)
-    let y = 800;
+    let y = 700;
     if (layerY && typeof layerY[layer] === 'number') {
         y = layerY[layer];
     } else {
         const yMap: Record<string, number> = {
             core: 0,
-            spine: 300,
-            leaf: 600,
+            spine: 240,
+            leaf: 480,
             csw: 0,
-            ssw: 300,
-            asw: 600,
-            lsw: 450,
-            oob: 150,
-            soob: 250,
-            podAggregate: 450
+            ssw: 240,
+            asw: 480,
+            lsw: 360,
+            oob: 120,
+            soob: 200,
+            podAggregate: 360
         };
         y = yMap[layer] ?? 800;
     }
 
-    // X 轴位置 (均匀分布)
+    // X 轴位置 (分 POD / Rail 列 + 均匀分布)
     const layerNodes = nodesByLayer[layer];
     const index = layerNodes.findIndex((n: any) => n.id === data.id);
     const count = layerNodes.length;
 
+    if (networkType === 'ib' && (layer === 'spine' || layer === 'leaf')) {
+        const gap = layer === 'spine' ? 90 : 80;
+        const podSpacing = gap * 1.2;
+        const railSpacing = gap * 2.2;
+        const rails = new Map<string, any[]>();
+        layerNodes.forEach((n: any) => {
+            const rail = getRailFromId(n.id) || 'core';
+            if (!rails.has(rail)) rails.set(rail, []);
+            rails.get(rail)!.push(n);
+        });
+
+        if (rails.size > 1) {
+            const railKeys = Array.from(rails.keys()).sort((a, b) => {
+                const numA = parseInt(String(a).replace(/\D/g, ''), 10);
+                const numB = parseInt(String(b).replace(/\D/g, ''), 10);
+                if (Number.isFinite(numA) && Number.isFinite(numB) && numA !== numB) return numA - numB;
+                return String(a).localeCompare(String(b));
+            });
+
+            const railWidths = railKeys.map((railKey) => {
+                const railNodes = rails.get(railKey)!;
+                const podGroups = new Map<string, any[]>();
+                railNodes.forEach((n: any) => {
+                    const pod = n.pod || 'UNKNOWN';
+                    if (!podGroups.has(pod)) podGroups.set(pod, []);
+                    podGroups.get(pod)!.push(n);
+                });
+                const podKeys = Array.from(podGroups.keys());
+                const maxPodSize = Math.max(1, ...podKeys.map(p => podGroups.get(p)!.length));
+                const podWidth = maxPodSize * gap;
+                const railWidth = podKeys.length * podWidth + (podKeys.length - 1) * podSpacing;
+                return { railKey, railNodes, podGroups, podKeys, podWidth, railWidth };
+            });
+
+            const totalWidth = railWidths.reduce((sum, entry) => sum + entry.railWidth, 0) + (railWidths.length - 1) * railSpacing;
+            const width = Math.max(900, totalWidth);
+            const startX = (width - totalWidth) / 2;
+
+            const currentRail = getRailFromId(data.id) || 'core';
+            const railIndex = railKeys.indexOf(currentRail);
+            if (railIndex >= 0) {
+                const railOffset = railWidths.slice(0, railIndex).reduce((sum, entry) => sum + entry.railWidth, 0) + railIndex * railSpacing;
+                const railEntry = railWidths[railIndex];
+                const podKey = data.pod || 'UNKNOWN';
+                const podIndex = railEntry.podKeys.indexOf(podKey);
+                const podWidth = railEntry.podWidth;
+                const podNodes = railEntry.podGroups.get(podKey) || [];
+                const localIndex = podNodes.findIndex((n: any) => n.id === data.id);
+                const localGap = podWidth / (podNodes.length + 1);
+                const podOffset = podIndex >= 0 ? podIndex * (podWidth + podSpacing) : 0;
+                const x = startX + railOffset + podOffset + localGap * (localIndex + 1);
+                return { x, y };
+            }
+        }
+    }
+
+    if (data.pod) {
+        const podGroups = new Map<string, any[]>();
+        layerNodes.forEach((n: any) => {
+            const pod = n.pod;
+            if (!pod) return;
+            if (!podGroups.has(pod)) podGroups.set(pod, []);
+            podGroups.get(pod)!.push(n);
+        });
+
+        if (podGroups.size > 1 && podGroups.has(data.pod)) {
+            const pods = Array.from(podGroups.keys()).sort((a, b) => {
+                const numA = parseInt(String(a).replace(/\D/g, ''), 10);
+                const numB = parseInt(String(b).replace(/\D/g, ''), 10);
+                if (Number.isFinite(numA) && Number.isFinite(numB) && numA !== numB) return numA - numB;
+                return String(a).localeCompare(String(b));
+            });
+            const maxPodSize = Math.max(...pods.map(p => podGroups.get(p)!.length));
+            const gap = layer === 'spine' || layer.includes('ssw')
+                ? 130
+                : layer === 'leaf' || layer.includes('asw')
+                    ? 120
+                    : 150;
+            const podSpacing = gap * 2;
+            const podWidth = Math.max(1, maxPodSize) * gap;
+            const totalWidth = pods.length * podWidth + (pods.length - 1) * podSpacing;
+            const width = Math.max(1000, totalWidth);
+            const startX = (width - totalWidth) / 2;
+
+            const podIndex = pods.indexOf(data.pod);
+            const podNodes = podGroups.get(data.pod)!;
+            const localIndex = podNodes.findIndex((n: any) => n.id === data.id);
+            const localGap = podWidth / (podNodes.length + 1);
+            const x = startX + podIndex * (podWidth + podSpacing) + localGap * (localIndex + 1);
+
+            return { x, y };
+        }
+    }
+
     // 宽度分布
-    const width = Math.max(1000, count * 100);
+    const width = Math.max(900, count * 80);
     const x = (index + 1) * (width / (count + 1));
 
     return { x, y };
@@ -157,16 +299,56 @@ function calculateNodePosition(node: any, nodesByLayer: any, layerY?: Record<str
 function convertToCytoscapeFormat(
     data: TopologyData,
     selectedPod: string = 'ALL',
-    // layerVisibility removed - 显示所有层级
+    layerVisibility: Record<string, boolean> = {},
     selectedRail: string = 'ALL',
     activeCoreFilter: string[] | null = null,
     collapsedPods: Set<string> = new Set(),
-    networkType: 'ib' | 'roce' = 'ib'
+    viewLevel: 'overview' | 'group' | 'detail' = 'group',
+    networkType: 'ib' | 'roce' = 'ib',
+    focusedSpineId: string | null = null
 ): { nodes: any[]; edges: any[] } {
     const nodes: any[] = [];
     const edges: any[] = [];
     const nodeIds = new Set<string>();
     const createdPods = new Set<string>(); // Phase 1: 追踪已创建POD节点
+    const aggregatedPods = new Set<string>();
+    const aggregateIdByNode = new Map<string, string>();
+
+    const isLayerVisible = (layer: string) => {
+        if (layer === 'podAggregate' || layer === 'podGroup') {
+            return layerVisibility.spine !== false && layerVisibility.leaf !== false;
+        }
+        return layerVisibility[layer] !== false;
+    };
+
+    const isPodMatch = (node: TopologyNode) => {
+        if (!selectedPod || selectedPod === 'ALL') return true;
+        if (node.pod === selectedPod) return true;
+        if (node.id?.includes(selectedPod)) return true;
+        return !node.pod;
+    };
+
+    const isRailMatch = (node: TopologyNode, layer: string) => {
+        if (networkType !== 'ib' || !selectedRail || selectedRail === 'ALL') return true;
+        const rail = getRailFromId(node.id);
+        if (rail !== null) return String(rail) === String(selectedRail);
+        return layer === 'core';
+    };
+
+    const isCoreFilterMatch = (node: TopologyNode, layer: string) => {
+        if (!activeCoreFilter || activeCoreFilter.length === 0) return true;
+        const isCoreLayer = layer === 'core' || layer === 'csw';
+        return !isCoreLayer || activeCoreFilter.includes(node.id);
+    };
+
+    const isSpineFocusMatch = (node: TopologyNode, layer: string) => {
+        if (!focusedSpineId) return true;
+        if (layer === 'spine' || layer === 'ssw') return node.id === focusedSpineId;
+        if (layer === 'core' || layer === 'csw') {
+            return !activeCoreFilter || activeCoreFilter.includes(node.id);
+        }
+        return false;
+    };
 
     // Phase 2 V2: Pre-scan to collect POD statistics for aggregate nodes
     const podStats = new Map<string, { spineCount: number; leafCount: number }>();
@@ -190,27 +372,57 @@ function convertToCytoscapeFormat(
 
     // 处理节点
     Object.entries(data.nodesByLayer || {}).forEach(([layer, layerNodes]) => {
-        // 不再过滤层级,显示所有设备
+        if (!isLayerVisible(layer)) return;
 
         const nodeList = Array.isArray(layerNodes) ? layerNodes : [];
 
         nodeList.forEach((node: TopologyNode) => {
-            // 所有过滤已禁用 - 显示全部设备
+            if (!isPodMatch(node)) return;
+            if (!isRailMatch(node, layer)) return;
+            if (!isCoreFilterMatch(node, layer)) return;
+            if (!isSpineFocusMatch(node, layer)) return;
 
+            const podName = node.pod;
+            const isCollapsedPod = !!podName && collapsedPods.has(podName);
 
-            // POD折叠功能已禁用
-
-
+            if (isCollapsedPod) {
+                const aggregateId = `${podName}-aggregate`;
+                aggregateIdByNode.set(node.id, aggregateId);
+                if (!aggregatedPods.has(podName)) {
+                    const stats = podStats.get(podName);
+                    const showCounts = viewLevel === 'overview';
+                    nodes.push({
+                        data: {
+                            id: aggregateId,
+                            label: stats
+                                ? (showCounts ? `${podName}\nS:${stats.spineCount} L:${stats.leafCount}` : podName)
+                                : podName,
+                            layer: 'podAggregate',
+                            displayLayer: 'POD',
+                            displayLabel: stats
+                                ? (showCounts ? `POD\n${podName}\nS:${stats.spineCount} L:${stats.leafCount}` : `POD\n${podName}`)
+                                : `POD\n${podName}`,
+                            originalPod: podName
+                        },
+                        classes: 'podAggregate'
+                    });
+                    nodeIds.add(aggregateId);
+                    aggregatedPods.add(podName);
+                }
+                return;
+            }
 
             // Phase 1: Compound Nodes - 创建POD父节点
             let parentId = undefined;
-            if ((layer === 'spine' || layer === 'leaf') && node.pod) {
-                const podName = node.pod;
+            if ((layer === 'spine' || layer === 'leaf') && podName) {
                 if (!createdPods.has(podName)) {
                     nodes.push({
                         data: {
                             id: podName,
                             label: podName,
+                            layer: 'podGroup',
+                            displayLayer: 'POD',
+                            displayLabel: `POD\n${podName}`,
                             backgroundColor: NEON_PALETTE.background  // Phase 1: Dark ModepodGroup'
                         },
                         classes: 'podGroup'
@@ -227,6 +439,7 @@ function convertToCytoscapeFormat(
                     label: node.label || node.id,
                     layer,
                     displayLayer: getLayerLabel(layer, networkType),
+                    displayLabel: `${getLayerLabel(layer, networkType)}\n${node.label || node.id}`,
                     pod: node.pod,
                     x: typeof node.x === 'number' ? node.x : node.position?.x,
                     y: typeof node.y === 'number' ? node.y : node.position?.y,
@@ -239,12 +452,15 @@ function convertToCytoscapeFormat(
 
     // 处理边
     (data.connections || []).forEach((conn: TopologyEdge, idx: number) => {
-        if (nodeIds.has(conn.source) && nodeIds.has(conn.target)) {
+        const source = aggregateIdByNode.get(conn.source) || conn.source;
+        const target = aggregateIdByNode.get(conn.target) || conn.target;
+        if (source === target) return;
+        if (nodeIds.has(source) && nodeIds.has(target)) {
             edges.push({
                 data: {
                     id: `edge-${idx}`,
-                    source: conn.source,
-                    target: conn.target,
+                    source,
+                    target,
                     srcPort: conn.srcPort,
                     dstPort: conn.dstPort,
                     label: conn.srcPort && conn.dstPort ? `${conn.srcPort}-${conn.dstPort}` : ''
@@ -257,10 +473,10 @@ function convertToCytoscapeFormat(
 }
 
 // Phase 1: 辅助函数 - 从 ID 提取 Rail (数字)
-function getRailFromId(id: string): number {
-    const match = id.match(/[-_](?:RAIL|R|Plane|P)(\d+)[-_]/i);
-    if (match) return parseInt(match[1], 10);
-    return 999; // 默认值，表示不匹配
+function getRailFromId(id: string): string | null {
+    const match = id.match(/(?:^|[-_])(?:RAIL|R|Plane|P)[-_ ]*(\d+)(?:[-_]|$)/i);
+    if (!match) return null;
+    return String(parseInt(match[1], 10));
 }
 
 
@@ -279,12 +495,22 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
     height = '600px',
     highlightedNodeId,
     activeCoreFilter = null,
+    focusedSpineId = null,
     collapsedPods = new Set(),
+    viewLevel = 'group',
+    onViewLevelChange,
     networkType = 'ib'
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<cytoscape.Core | null>(null);
     const [stats, setStats] = useState({ nodes: 0, edges: 0, renderTime: 0 });
+    const zoomTimeoutRef = useRef<number | null>(null);
+    const viewLevelRef = useRef(viewLevel);
+    const lastFitRef = useRef<{ selectedPod: string; selectedRail: string; viewLevel: string } | null>(null);
+
+    useEffect(() => {
+        viewLevelRef.current = viewLevel;
+    }, [viewLevel]);
 
     // Phase 1: 使用 useMemo 获取样式，避免重复计算
     const styles = useMemo(() => getPremiumStyles(), []);
@@ -318,11 +544,13 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
         const { nodes, edges } = convertToCytoscapeFormat(
             data,
             selectedPod,
-            // layerVisibility removed
+            layerVisibility,
             selectedRail,
             activeCoreFilter,
             collapsedPods as Set<string>,
-            networkType
+            viewLevel,
+            networkType,
+            focusedSpineId
         );
 
         // 如果已有实例，更新数据
@@ -334,9 +562,18 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             cyRef.current.layout({
                 name: 'preset',
                 positions: (node: any) => {
-                    return calculateNodePosition(node, data.nodesByLayer, (data as any).layerY);
+                    return calculateNodePosition(node, data.nodesByLayer, (data as any).layerY, networkType);
                 }
             }).run();
+
+            const shouldFit = !lastFitRef.current
+                || lastFitRef.current.selectedPod !== selectedPod
+                || lastFitRef.current.selectedRail !== selectedRail
+                || lastFitRef.current.viewLevel !== viewLevel;
+            if (shouldFit) {
+                cyRef.current.fit(undefined, 50);
+                cyRef.current.center();
+            }
         } else {
             // 创建新实例
             const cy = Cytoscape({
@@ -345,7 +582,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
                 style: styles,  // Phase 1: 使用 Premium Styles
                 layout: {
                     name: 'preset',
-                    positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY),
+                    positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY, networkType),
                     fit: true,
                     padding: 50,
                     animate: false
@@ -366,6 +603,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
                         id: node.id(),
                         label: node.data('label'),
                         layer: node.data('displayLayer') || node.data('layer'), // Use localized layer name
+                        rawLayer: node.data('layer'),
                         pod: node.data('pod')
                     });
                 }
@@ -383,12 +621,31 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
                 }
             });
 
+            cy.on('zoom', (event) => {
+                if (!onViewLevelChange) return;
+                if (!event.originalEvent) return;
+                if (zoomTimeoutRef.current) window.clearTimeout(zoomTimeoutRef.current);
+                zoomTimeoutRef.current = window.setTimeout(() => {
+                    if (!cyRef.current) return;
+                    if (viewLevelRef.current === 'detail') return;
+                    const zoom = cyRef.current.zoom();
+                    const level = viewLevelRef.current === 'overview'
+                        ? (zoom > 0.55 ? 'group' : 'overview')
+                        : (zoom < 0.35 ? 'overview' : 'group');
+                    if (level !== viewLevelRef.current) {
+                        onViewLevelChange(level);
+                    }
+                }, 150);
+            });
+
             // 自适应视图
             cy.fit(undefined, 50);
             cy.center();
 
             cyRef.current = cy;
         }
+
+        lastFitRef.current = { selectedPod, selectedRail, viewLevel };
 
         const endTime = performance.now();
         setStats({
@@ -406,8 +663,11 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
         data,
         selectedPod,
         selectedRail,
+        layerVisibility,
         activeCoreFilter,
+        focusedSpineId,
         collapsedPods,
+        viewLevel,
         networkType,
         styles,
         onNodeClick,
@@ -419,6 +679,10 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
      */
     useEffect(() => {
         return () => {
+            if (zoomTimeoutRef.current) {
+                window.clearTimeout(zoomTimeoutRef.current);
+                zoomTimeoutRef.current = null;
+            }
             if (cyRef.current) {
                 cyRef.current.destroy();
                 cyRef.current = null;
@@ -462,7 +726,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
 
         cyRef.current.layout({
             name: 'preset',
-            positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY),
+            positions: (node: any) => calculateNodePosition(node, data.nodesByLayer, (data as any).layerY, networkType),
             animate: true,
             animationDuration: 500,
             fit: true,

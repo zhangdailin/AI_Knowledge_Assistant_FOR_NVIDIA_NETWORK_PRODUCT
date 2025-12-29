@@ -28,12 +28,6 @@ const KnowledgeBase: React.FC = () => {
 
   const { user } = useAuthStore();
 
-  useEffect(() => {
-    if (user) {
-      loadDocuments();
-      loadCategories();
-    }
-  }, [user, loadDocuments, loadCategories]);
 
   const loadCategories = useCallback(async () => {
     try {
@@ -43,6 +37,22 @@ const KnowledgeBase: React.FC = () => {
       console.error('加载分类失败:', error);
     }
   }, []);
+
+  const loadDocuments = useCallback(async () => {
+    if (user) {
+      const docs = await unifiedStorageManager.getDocuments(user.id);
+      setDocuments(docs);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadDocuments();
+      loadCategories();
+    }
+  }, [user, loadDocuments, loadCategories]);
+
+
 
   const handleAddCategory = async (parentId: string | null, name: string) => {
     try {
@@ -118,12 +128,7 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  const loadDocuments = useCallback(async () => {
-    if (user) {
-      const docs = await unifiedStorageManager.getDocuments(user.id);
-      setDocuments(docs);
-    }
-  }, [user]);
+
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
