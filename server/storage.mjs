@@ -363,6 +363,24 @@ async function loadCacheConfig() {
   }
 }
 
+function pruneChunkCache(now = Date.now()) {
+  for (const [key, val] of chunkCache.entries()) {
+    if (now - val.timestamp > CACHE_TTL) {
+      chunkCache.delete(key);
+    }
+  }
+
+  while (chunkCache.size > MAX_CACHE_ENTRIES) {
+    const firstKey = chunkCache.keys().next().value;
+    chunkCache.delete(firstKey);
+  }
+}
+
+export async function reloadCacheConfig() {
+  await loadCacheConfig();
+  pruneChunkCache();
+}
+
 // 初始化时加载配置
 loadCacheConfig();
 
@@ -376,18 +394,8 @@ async function getChunksFromFile(file) {
     return cached.data;
   }
 
-  // 清理过期缓存
-  for (const [key, val] of chunkCache.entries()) {
-    if (now - val.timestamp > CACHE_TTL) {
-      chunkCache.delete(key);
-    }
-  }
-
-  // LRU 淘汰：当超过最大条目数时删除最早的
-  while (chunkCache.size >= MAX_CACHE_ENTRIES) {
-    const firstKey = chunkCache.keys().next().value;
-    chunkCache.delete(firstKey);
-  }
+  // 清理过期缓存 + LRU 淘汰
+  pruneChunkCache(now);
 
   const filePath = path.join(CHUNKS_DIR, file);
   try {

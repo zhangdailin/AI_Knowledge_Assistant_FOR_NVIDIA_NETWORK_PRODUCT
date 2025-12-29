@@ -96,6 +96,14 @@ export class SimpleLRUCache {
         this.cache.set(key, value);
     }
 
+    setMaxSize(maxSize) {
+        this.maxSize = maxSize;
+        while (this.cache.size > this.maxSize) {
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+        }
+    }
+
     clear() {
         this.cache.clear();
     }

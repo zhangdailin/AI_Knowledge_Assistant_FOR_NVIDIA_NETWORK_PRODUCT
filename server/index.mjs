@@ -31,6 +31,13 @@ import { inferLayersFromTopology } from './topology-inference.mjs';
 // 搜索结果缓存
 const searchCache = new SimpleLRUCache(200);
 
+function applySearchCacheSize(size) {
+  const parsed = Number(size);
+  if (Number.isFinite(parsed) && parsed > 0 && parsed !== searchCache.maxSize) {
+    searchCache.setMaxSize(parsed);
+  }
+}
+
 
 // RRF 融合算法 (参数可配置)
 function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
@@ -463,6 +470,7 @@ app.get('/api/chunks/search', async (req, res) => {
     const retrievalConfig = settings.retrieval || {};
     const searchLimit = parseInt(limit) || retrievalConfig.searchLimit || 30;
     const rerankTopN = retrievalConfig.rerankTopN || 10;
+    applySearchCacheSize(retrievalConfig.searchCacheSize);
 
     // 展开分类：如果指定了 categoryId，获取该分类及其子分类的所有 ID
     let categoryIds = null;
@@ -477,6 +485,8 @@ app.get('/api/chunks/search', async (req, res) => {
       q,
       limit: searchLimit,
       categoryId: categoryId || 'all',
+      embeddingModel: settings?.modelSelection?.embedding || 'default',
+      rerankModel: settings?.modelSelection?.reranking || 'default',
       rrfK: retrievalConfig.rrfK ?? 'default',
       keywordWeight: retrievalConfig.keywordWeight ?? 'default',
       vectorWeight: retrievalConfig.vectorWeight ?? 'default',
@@ -627,6 +637,8 @@ app.get('/api/stats', async (req, res) => {
 app.put('/api/settings', async (req, res) => {
   try {
     const settings = await storage.updateSettings(req.body);
+    await storage.reloadCacheConfig();
+    applySearchCacheSize(settings?.retrieval?.searchCacheSize);
     res.json({ ok: true, settings });
   } catch (error) {
     console.error('更新设置失败:', error);
