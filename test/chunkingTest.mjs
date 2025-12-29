@@ -139,8 +139,10 @@ results.push(await runTest('Converts HTML tables to Markdown', () => {
   const hasHtml = chunks.some(chunk => /<table|<tr|<td/i.test(chunk.content))
   assert(!hasHtml, 'expected HTML table tags to be removed')
 
-  const hasMarkdownTable = chunks.some(chunk => chunk.content.includes('| --- |'))
-  assert(hasMarkdownTable, 'expected Markdown table separators')
+  const hasSemanticTable = chunks.some(chunk =>
+    chunk.content.includes('[表格开始]') || chunk.content.includes('[表格内容]')
+  )
+  assert(hasSemanticTable, 'expected semantic table markers')
 }))
 
 results.push(await runTest('Summary includes keyword hints', () => {

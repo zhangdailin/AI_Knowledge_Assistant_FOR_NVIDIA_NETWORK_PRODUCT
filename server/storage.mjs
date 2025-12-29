@@ -479,11 +479,15 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     const chunks = await getChunksFromFile(file);
 
     for (const chunk of chunks) {
-      const contentLower = chunk.content.toLowerCase();
-      let score = docScoreBonus;
-      let matchedCount = 0;
+      const content = typeof chunk.content === 'string' ? chunk.content : '';
+      const contentLower = content.toLowerCase();
+      if (!contentLower) continue;
 
-      if (contentLower.includes(queryLower)) score += 10;
+      let score = 0;
+      let matchedCount = 0;
+      const hasExactMatch = contentLower.includes(queryLower);
+
+      if (hasExactMatch) score += 10;
 
       for (const word of expandedQueryWords) {
         if (!word) continue;
@@ -505,6 +509,11 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
       }
 
       if (matchedCount > 1) score += matchedCount * 1.5;
+
+      const hasContentMatch = hasExactMatch || matchedCount > 0;
+      if (!hasContentMatch) continue;
+
+      score += docScoreBonus;
 
       if (score > 2) {
         if (intent.isCommand) {
@@ -562,6 +571,7 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   let topResults = [];
+  let mismatchLogged = false;
 
   // 从配置读取向量搜索阈值
   const settings = await readJSON(SETTINGS_FILE, {});
@@ -581,6 +591,14 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
 
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
+        if (chunk.embedding.length !== queryEmbedding.length) {
+          if (!mismatchLogged) {
+            console.warn(`[vectorSearch] embedding dimension mismatch: query=${queryEmbedding.length}, chunk=${chunk.embedding.length}`);
+            mismatchLogged = true;
+          }
+          continue;
+        }
+
         let score = cosine(queryEmbedding, chunk.embedding);
 
         // 分类优先加分：如果指定了分类，匹配分类的结果获得加分
@@ -653,8 +671,8 @@ export async function updateSettings(updates) {
 
 export async function getApiKey(provider) {
   const settings = await getSettings();
-  const envKeyName = `${provider.toUpperCase()}_API_KEY`;
-  return settings.apiKeys?.[provider] || process.env[envKeyName] || process.env[`VITE_${envKeyName}`] || null;
+  const apiKeys = settings.apiKeys || {};
+  return apiKeys[provider] || null;
 }
 
 // ========== 查询日志管理 ==========

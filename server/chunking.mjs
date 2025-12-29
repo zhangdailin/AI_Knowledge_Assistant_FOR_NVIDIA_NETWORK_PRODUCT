@@ -41,25 +41,19 @@ function convertHtmlTableToMarkdown(html) {
     const rows = tableContent.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) || [];
     if (rows.length === 0) return match;
 
-    let isFirstRow = true;
     const markdownRows = rows.map(row => {
-      // 同时匹配 <th> 和 <td> 标签
-      const thCells = row.match(/<th[^>]*>([\s\S]*?)<\/th>/gi) || [];
-      const tdCells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
-      const cells = thCells.length > 0 ? thCells : tdCells;
-      
-      if (cells.length === 0) return null; // 跳过空行
-      
+      const cells = row.match(/<(td|th)[^>]*>([\s\S]*?)<\/(td|th)>/gi) || [];
+      if (cells.length === 0) return null;
+
       const cellTexts = cells.map(cell => {
-        // 提取 <th>...</th> 或 <td>...</td> 中的文本内容
-        const text = cell.replace(/<(th|td)[^>]*>/gi, '').replace(/<\/(th|td)>/gi, '').trim();
+        // 提取 <td>/<th> 中的文本内容
+        const text = cell.replace(/<\/?t[dh][^>]*>/gi, '').trim();
         // 移除嵌套的 HTML 标签
         return text.replace(/<[^>]+>/g, '').trim();
       });
-      
-      const isHeaderRow = thCells.length > 0;
-      return { text: '| ' + cellTexts.join(' | ') + ' |', isHeader: isHeaderRow, cellCount: cellTexts.length };
-    }).filter(row => row !== null);
+
+      return { text: '| ' + cellTexts.join(' | ') + ' |', cellCount: cellTexts.length };
+    }).filter(Boolean);
 
     if (markdownRows.length === 0) return match;
 
@@ -67,9 +61,7 @@ function convertHtmlTableToMarkdown(html) {
     const result = [];
     const firstRow = markdownRows[0];
     result.push(firstRow.text);
-    // 添加分隔符行（在第一行后）
     result.push('| ' + Array(firstRow.cellCount).fill('---').join(' | ') + ' |');
-    // 添加剩余行
     markdownRows.slice(1).forEach(row => result.push(row.text));
 
     return '\n' + result.join('\n') + '\n';
@@ -77,12 +69,80 @@ function convertHtmlTableToMarkdown(html) {
 }
 
 /**
+ * 将 Markdown 表格语义化（避免表格语法影响分块与检索）
+ */
+function convertMarkdownTablesToSemantic(text) {
+  const lines = text.split('\n');
+  const output = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const nextLine = lines[i + 1];
+
+    if (isMarkdownTableHeader(line, nextLine)) {
+      const headerCells = parseMarkdownTableRow(line);
+      i += 2;
+
+      const bodyRows = [];
+      while (i < lines.length && isMarkdownTableRow(lines[i])) {
+        bodyRows.push(parseMarkdownTableRow(lines[i]));
+        i += 1;
+      }
+
+      output.push('[表格开始]');
+      if (headerCells.length > 0) {
+        output.push(`[表头] ${headerCells.join(' | ')}`);
+      }
+      bodyRows.forEach(row => {
+        output.push(`[表格内容] ${row.join(' | ')}`);
+      });
+      output.push('[表格结束]');
+      continue;
+    }
+
+    output.push(line);
+    i += 1;
+  }
+
+  return output.join('\n');
+}
+
+function isMarkdownTableHeader(line, nextLine) {
+  if (!line || !nextLine) return false;
+  return line.includes('|') && isMarkdownTableSeparator(nextLine);
+}
+
+function isMarkdownTableSeparator(line) {
+  if (!line) return false;
+  if (!line.includes('-')) return false;
+  return /^\s*\|?[\s:-]+(\|[\s:-]+)+\|?\s*$/.test(line);
+}
+
+function isMarkdownTableRow(line) {
+  if (!line) return false;
+  if (!line.includes('|')) return false;
+  return !isMarkdownTableSeparator(line);
+}
+
+function parseMarkdownTableRow(line) {
+  const trimmed = line.trim();
+  const withoutEdges = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return withoutEdges.split('|').map(cell => {
+    const cleaned = cell.replace(/<[^>]+>/g, '').trim();
+    return cleaned;
+  });
+}
+
+/**
  * 主入口：Markdown 智能分片
  * @param {string} text - Markdown 文本
  * @param {number} maxChunkSize - 最大块大小（字符数）
+ * @param {number} parentSize - section 分块上限（可选）
+ * @param {number} childSize - section 内部切分大小（可选）
  * @returns {Array} chunks 数组
  */
-export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
+export function enhancedParentChildChunking(text, maxChunkSize = 3000, parentSize = null, childSize = null) {
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     console.warn('[Chunking] 输入文本为空');
     return [];
@@ -90,6 +150,9 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
 
   const startTime = Date.now();
   console.log(`[Chunking] 开始处理文档，大小: ${Math.round(text.length / 1024)} KB`);
+
+  const effectiveParentSize = normalizeChunkSize(parentSize, maxChunkSize);
+  const effectiveChildSize = normalizeChunkSize(childSize, effectiveParentSize);
 
   try {
     // Step 0: 改进 Markdown 结构
@@ -101,11 +164,14 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
     // Step 2: 预处理 - 保护代码块
     const { processedText, codeBlocks } = protectCodeBlocks(processedInput);
 
-    // Step 2: 按标题分割成 sections
-    const sections = splitBySections(processedText);
+    // Step 3: Markdown 表格语义化
+    const semanticText = convertMarkdownTablesToSemantic(processedText);
+
+    // Step 4: 按标题分割成 sections
+    const sections = splitBySections(semanticText);
     console.log(`[Chunking] 解析出 ${sections.length} 个 sections`);
 
-    // Step 3: 生成 chunks
+    // Step 5: 生成 chunks
     const chunks = [];
     let chunkIndex = 0;
 
@@ -113,16 +179,14 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
       // 还原代码块
       const content = restoreCodeBlocks(section.content, codeBlocks);
 
-      // 短内容处理：有标题的 section 保留（标题本身有价值），无标题的短内容跳过
-      const hasHeader = section.breadcrumbs && section.breadcrumbs.length > 0;
-      if (content.trim().length < 50 && !hasHeader) continue; // 跳过太短且无标题的内容
+      if (shouldSkipSection(content, section.breadcrumbs, 50)) continue;
 
-      // 如果 section 内容不超过 maxChunkSize，直接作为一个 chunk
-      if (content.length <= maxChunkSize) {
+      // 如果 section 内容不超过 parentSize，直接作为一个 chunk
+      if (content.length <= effectiveParentSize) {
         chunks.push(createChunk(content, section.breadcrumbs, chunkIndex++));
       } else {
         // 内容太长，需要智能切分（但保护代码块）
-        const subChunks = splitLargeSection(content, section.breadcrumbs, maxChunkSize, chunkIndex);
+        const subChunks = splitLargeSection(content, section.breadcrumbs, effectiveChildSize, chunkIndex);
         chunks.push(...subChunks);
         chunkIndex += subChunks.length;
       }
@@ -136,8 +200,26 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
   } catch (error) {
     console.error('[Chunking] 处理出错:', error);
     // 降级：简单按段落切分
-    return fallbackChunking(text, maxChunkSize);
+    return fallbackChunking(text, effectiveParentSize);
   }
+}
+
+function normalizeChunkSize(size, fallback) {
+  if (typeof size !== 'number' || Number.isNaN(size) || size <= 0) return fallback;
+  return Math.round(size);
+}
+
+function shouldSkipSection(content, breadcrumbs, minLength) {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+  if (trimmed.length >= minLength) return false;
+
+  const hasHeader = breadcrumbs && breadcrumbs.length > 0;
+  if (hasHeader) return false;
+
+  const lines = trimmed.split('\n').map(line => line.trim()).filter(Boolean);
+  const hasNonHeading = lines.some(line => !/^#{1,6}\s+/.test(line));
+  return !hasNonHeading;
 }
 
 /**

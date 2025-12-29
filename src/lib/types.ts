@@ -86,7 +86,7 @@ export interface Chunk {
   tokenCount: number;
   createdAt: string;
   parentId?: string; // 父 chunk 的 ID（用于父子文本切块）
-  chunkType?: 'parent' | 'child'; // chunk 类型：parent 为父块（较大），child 为子块（较小）
+  chunkType?: 'parent' | 'child' | 'semantic'; // chunk 类型：parent 为父块（较大），child 为子块（较小），semantic 为语义块
   metadata?: ChunkMetadata; // 元数据，可存储 header 等信息
 }
 
@@ -126,6 +126,6 @@ export interface ChunkData {
   chunkIndex: number;
   tokenCount: number;
   parentId?: string;
-  chunkType?: 'parent' | 'child';
+  chunkType?: 'parent' | 'child' | 'semantic';
   metadata?: ChunkMetadata;
 }

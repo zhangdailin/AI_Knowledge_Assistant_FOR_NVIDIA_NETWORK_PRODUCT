@@ -44,10 +44,14 @@ async function searchKnowledgeBase(query: string): Promise<Array<{ content: stri
     const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=5`);
     if (!res.ok) return [];
     const data = await res.json();
-    return (data.chunks || []).map((chunk: any) => ({
-      content: chunk.content,
-      score: chunk._score || 0
-    }));
+    return (data.chunks || []).map((chunk: any) => {
+      const rrfScore = typeof chunk._score === 'number' ? chunk._score : 0;
+      const rerankScore = typeof chunk.rerank_score === 'number' ? chunk.rerank_score : 0;
+      return {
+        content: chunk.content,
+        score: Math.max(rrfScore, rerankScore)
+      };
+    });
   } catch {
     return [];
   }

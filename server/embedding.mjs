@@ -57,7 +57,8 @@ export async function embedTexts(texts) {
   }
 
   // 获取 API key 和模型
-  const apiKey = await storage.getApiKey('siliconflow') || process.env.SILICONFLOW_API_KEY || process.env.VITE_SILICONFLOW_API_KEY;
+  // 获取 API key 和模型
+  const apiKey = await storage.getApiKey('siliconflow');
   if (!apiKey) throw new Error('SiliconFlow API key 未配置');
 
   const embeddingModel = await getEmbeddingModel();
@@ -107,7 +108,8 @@ export async function rerankDocuments(query, documents, topN = 10) {
   }
 
   // 获取 API key 和模型
-  const apiKey = await storage.getApiKey('siliconflow') || process.env.SILICONFLOW_API_KEY || process.env.VITE_SILICONFLOW_API_KEY;
+  // 获取 API key 和模型
+  const apiKey = await storage.getApiKey('siliconflow');
   if (!apiKey) {
     console.warn('Reranking skipped: SiliconFlow API key 未配置');
     return documents.slice(0, topN);
@@ -139,6 +141,10 @@ export async function rerankDocuments(query, documents, topN = 10) {
 
     const data = await res.json();
     const results = data?.results || [];
+
+    if (results.length === 0) {
+      return documents.slice(0, topN);
+    }
 
     // 根据 rerank 结果重新排序
     const rerankedDocs = results.map(r => ({

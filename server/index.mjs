@@ -344,56 +344,7 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
   }
 });
 
-app.post('/api/ocr', upload.single('file'), async (req, res) => {
-  try {
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: 'no_file' });
-    const endpoint = process.env.AZURE_VISION_ENDPOINT;
-    const key = process.env.AZURE_VISION_KEY;
-    if (!endpoint || !key) return res.status(400).json({ error: 'ocr_not_configured' });
-    const url = `${endpoint.replace(/\/$/, '')}/vision/v3.2/read/analyze`;
-    const init = {
-      method: 'POST',
-      headers: {
-        'Ocp-Apim-Subscription-Key': key,
-        'Content-Type': 'application/octet-stream'
-      },
-      body: file.buffer
-    };
-    const resp = await fetch(url, init);
-    if (!resp.ok) {
-      const text = await resp.text();
-      return res.status(500).json({ ok: false, error: 'ocr_submit_failed', detail: text });
-    }
-    const opLoc = resp.headers.get('operation-location');
-    if (!opLoc) return res.status(500).json({ ok: false, error: 'missing_operation_location' });
-    let result;
-    for (let i = 0; i < 20; i++) {
-      await sleep(1000);
-      const r = await fetch(opLoc, {
-        headers: { 'Ocp-Apim-Subscription-Key': key }
-      });
-      if (!r.ok) continue;
-      result = await r.json();
-      if (result.status === 'succeeded' || result.status === 'failed') break;
-    }
-    if (!result || result.status !== 'succeeded') {
-      return res.status(500).json({ ok: false, error: 'ocr_timeout_or_failed', status: result?.status });
-    }
-    const pages = result.analyzeResult?.readResults || [];
-    const lines = [];
-    for (const pg of pages) {
-      for (const ln of pg.lines || []) {
-        if (ln.text) lines.push(ln.text);
-      }
-    }
-    const text = lines.join('\n');
-    return res.json({ ok: true, text, meta: { pages: pages.length } });
-  } catch (e) {
-    console.error('ocr error', e);
-    return res.status(500).json({ ok: false, error: 'ocr_exception' });
-  }
-});
+
 
 // ========== 知识库 API ==========
 

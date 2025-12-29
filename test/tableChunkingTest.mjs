@@ -152,7 +152,7 @@ function runTest(name, doc) {
   const chunks = enhancedParentChildChunking(doc, 4000);
 
   // 语义块类型检查（新算法使用 'semantic' 类型）
-  const semanticChunks = chunks.filter(c => c.chunkType === 'semantic');
+  const semanticChunks = chunks.filter(c => c.chunkType === 'semantic' || !c.chunkType);
 
   console.log(`\n📊 分块统计:`);
   console.log(`   总 chunks: ${chunks.length}`);
@@ -173,11 +173,11 @@ function runTest(name, doc) {
 
   // 检查质量指标
   const hasRawHtml = chunks.some(c =>
-    c.content.includes('<td>') || c.content.includes('<tr>') || c.content.includes('<th>')
+    c.content.includes('<td>') || c.content.includes('<tr>') || c.content.includes('<th>') || c.content.includes('<table')
   );
 
-  const hasMarkdownTable = chunks.some(c =>
-    c.content.includes('| ') && c.content.includes(' |')
+  const hasSemanticTable = chunks.some(c =>
+    c.content.includes('[表格开始]') || c.content.includes('[表格内容]')
   );
 
   const hasBreadcrumbs = chunks.some(c =>
@@ -193,7 +193,7 @@ function runTest(name, doc) {
   console.log(`   ${hasBreadcrumbs ? '✓' : '○'} 包含面包屑导航: ${hasBreadcrumbs}`);
   console.log(`   ${hasSummary ? '✓' : '○'} 包含内容摘要: ${hasSummary}`);
   if (doc.includes('<table') || doc.includes('|---')) {
-    console.log(`   ${hasMarkdownTable ? '✓' : '✗'} 表格已转换为 Markdown: ${hasMarkdownTable}`);
+    console.log(`   ${hasSemanticTable ? '✓' : '✗'} 表格已语义化: ${hasSemanticTable}`);
   }
 
   return {
@@ -202,7 +202,7 @@ function runTest(name, doc) {
     hasRawHtml,
     hasBreadcrumbs,
     hasSummary,
-    hasMarkdownTable: doc.includes('<table') || doc.includes('|---') ? hasMarkdownTable : true
+    hasSemanticTable: doc.includes('<table') || doc.includes('|---') ? hasSemanticTable : true
   };
 }
 
@@ -221,15 +221,14 @@ console.log('========================================\n');
 let allPassed = true;
 results.forEach(r => {
   // 核心检查：HTML 已转换、生成了 chunks
-  const passed = !r.hasRawHtml && r.hasMarkdownTable && r.chunkCount > 0;
+  const passed = !r.hasRawHtml && r.hasSemanticTable && r.chunkCount > 0;
   if (!passed) allPassed = false;
 
   const status = passed ? '✓ 通过' : '✗ 失败';
   console.log(`${status} | ${r.name}`);
-  console.log(`        Chunks: ${r.chunkCount}, HTML清理: ${!r.hasRawHtml}, Markdown表格: ${r.hasMarkdownTable}`);
+  console.log(`        Chunks: ${r.chunkCount}, HTML清理: ${!r.hasRawHtml}, 表格语义化: ${r.hasSemanticTable}`);
 });
 
 console.log(`\n总体结果: ${allPassed ? '✓ 全部通过' : '✗ 存在失败'}\n`);
 
 process.exit(allPassed ? 0 : 1);
-
