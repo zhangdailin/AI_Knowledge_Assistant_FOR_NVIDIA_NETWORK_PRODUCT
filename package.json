@@ -1,7 +1,8 @@
 {
-  "name": "trae-project",
+  "name": "ai-knowledge-assistant",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "AI 驱动的知识库管理与智能问答系统，支持文档解析、语义搜索、网络拓扑可视化",
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",
