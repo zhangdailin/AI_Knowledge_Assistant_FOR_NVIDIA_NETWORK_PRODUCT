@@ -23,6 +23,58 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
     return applyManualPatterns(portMap, manualPatterns);
   }
 
+  const deviceSet = new Set();
+
+  // 收集所有设备
+  for (const [key, val] of portMap) {
+    const [sys] = key.split('|');
+    const { peer } = val;
+    deviceSet.add(sys);
+    deviceSet.add(peer);
+  }
+
+  // 过滤掉 GPU/Compute 节点，只保留网络设备
+  const allDevices = Array.from(deviceSet);
+  // 使用宽泛的正则匹配计算节点: GPU, Compute, Worker, Node, Host
+  // 增加 DGX, H100, A100, SRV 以覆盖更多情况
+  const gpuRegex = /GPU|compute|worker|node|host|server|dgx|h100|a100|h800|a800|srv|-n\d+|psnode/i;
+  const devices = allDevices.filter(d => !gpuRegex.test(d));
+
+  // IB 网络命名优先：IBCR/IBSP/IBLF 覆盖率足够时，直接采用命名分类
+  const ibNameLayers = { core: [], spine: [], leaf: [] };
+  for (const device of devices) {
+    if (/IBCR/i.test(device)) {
+      ibNameLayers.core.push(device);
+    } else if (/IBSP/i.test(device)) {
+      ibNameLayers.spine.push(device);
+    } else if (/IBLF/i.test(device)) {
+      ibNameLayers.leaf.push(device);
+    }
+  }
+
+  const ibMatchedCount = ibNameLayers.core.length + ibNameLayers.spine.length + ibNameLayers.leaf.length;
+  const ibCoverage = devices.length > 0 ? ibMatchedCount / devices.length : 0;
+  const ibHasAllLayers = ibNameLayers.core.length > 0 && ibNameLayers.spine.length > 0 && ibNameLayers.leaf.length > 0;
+  const shouldUseIbName =
+    ibCoverage >= 0.6 &&
+    ibHasAllLayers &&
+    (networkType === 'ib' || (networkType === 'auto' && ibMatchedCount > 0));
+
+  if (shouldUseIbName) {
+    console.log(`[AutoDetectLayers] ✅ IB 命名检测生效 (覆盖率: ${(ibCoverage * 100).toFixed(1)}%)`);
+    return {
+      layers: ibNameLayers,
+      detection: 'ib-name',
+      stats: {
+        totalDevices: devices.length,
+        coreCount: ibNameLayers.core.length,
+        spineCount: ibNameLayers.spine.length,
+        leafCount: ibNameLayers.leaf.length,
+        coverage: ibCoverage
+      }
+    };
+  }
+
   // 优先级2: 拓扑推断 (最可靠,命名无关)
   try {
     const topoResult = inferLayersFromTopology(portMap);
@@ -48,23 +100,6 @@ export function autoDetectLayers(portMap, manualPatterns = null, networkType = '
 
   // 优先级3: 命名规则检测 (降级方案)
   console.log('[AutoDetectLayers] 使用命名规则检测');
-  const deviceSet = new Set();
-
-  // 收集所有设备
-  for (const [key, val] of portMap) {
-    const [sys] = key.split('|');
-    const { peer } = val;
-    deviceSet.add(sys);
-    deviceSet.add(peer);
-  }
-
-  // 过滤掉 GPU/Compute 节点，只保留网络设备
-  const allDevices = Array.from(deviceSet);
-  // 使用宽泛的正则匹配计算节点: GPU, Compute, Worker, Node, Host
-  // 增加 DGX, H100, A100, SRV 以覆盖更多情况
-  const gpuRegex = /GPU|compute|worker|node|host|server|dgx|h100|a100|h800|a800|srv|-n\d+|psnode/i;
-  const devices = allDevices.filter(d => !gpuRegex.test(d));
-
   const layers = { core: [], spine: [], leaf: [] };
 
   // 如果提供了自定义模式，使用自定义模式
@@ -280,11 +315,15 @@ export function extractPodIdentifiers(devices, config = {}) {
   } = config;
 
   const pods = new Set(['ALL']);  // 始终包含ALL
-  const deviceToPod = new Map();
-  deviceToPod.set('ALL', new Set(devices));
+  const deviceToPods = new Map(); // device -> Set<pod>
+  const podToDevices = new Map(); // pod -> Set<device>
+  podToDevices.set('ALL', new Set(devices));
+  for (const device of devices) {
+    deviceToPods.set(device, new Set(['ALL']));
+  }
 
   if (method === 'none') {
-    return { pods: Array.from(pods), deviceToPod };
+    return { pods: Array.from(pods), deviceToPods, podToDevices };
   }
 
   if (method === 'regex') {
@@ -294,8 +333,9 @@ export function extractPodIdentifiers(devices, config = {}) {
       if (match) {
         const pod = match[0].toUpperCase();
         pods.add(pod);
-        if (!deviceToPod.has(pod)) deviceToPod.set(pod, new Set());
-        deviceToPod.get(pod).add(device);
+        if (!podToDevices.has(pod)) podToDevices.set(pod, new Set());
+        podToDevices.get(pod).add(device);
+        deviceToPods.get(device).add(pod);
       }
     }
   } else if (method === 'prefix') {
@@ -304,14 +344,15 @@ export function extractPodIdentifiers(devices, config = {}) {
       if (parts.length > prefixLength) {
         const pod = parts.slice(0, prefixLength).join(delimiter).toUpperCase();
         pods.add(pod);
-        if (!deviceToPod.has(pod)) deviceToPod.set(pod, new Set());
-        deviceToPod.get(pod).add(device);
+        if (!podToDevices.has(pod)) podToDevices.set(pod, new Set());
+        podToDevices.get(pod).add(device);
+        deviceToPods.get(device).add(pod);
       }
     }
   }
 
   // 为ALL添加所有设备
-  deviceToPod.set('ALL', new Set(devices));
+  podToDevices.set('ALL', new Set(devices));
 
   return {
     pods: Array.from(pods).sort((a, b) => {
@@ -319,7 +360,8 @@ export function extractPodIdentifiers(devices, config = {}) {
       if (b === 'ALL') return 1;
       return a.localeCompare(b);
     }),
-    deviceToPod
+    deviceToPods,
+    podToDevices
   };
 }
 
@@ -431,12 +473,9 @@ export function buildTopologyStructure(portMap, config = {}) {
 
   // 步骤2: 提取POD标识
   const podResult = extractPodIdentifiers(allDevices, podExtraction);
-  const { pods, deviceToPod } = podResult;
+  const { pods, deviceToPods, podToDevices } = podResult;
 
-  // 步骤3: 追溯三层链路
-  const chains = traceThreeLayerChains(portMap, layers);
-
-  // 步骤4: 按层级组织节点，保持POD信息用于前端过滤
+  // 步骤3: 按层级组织节点，保持POD信息用于前端过滤
   const nodesByLayer = {};
   const allNodesList = [];
 
@@ -454,12 +493,8 @@ export function buildTopologyStructure(portMap, config = {}) {
     nodesByLayer[layer] = [];
 
     for (const device of layers[layer]) {
-      const podSet = deviceToPod.get(device) || new Set();
-      const pod = podSet.size > 0 ? Array.from(podSet)[0] : 'ALL';
-
-      // 如果设备未被分配层级，但在 chains 中出现，它可能已经在 layers 中了？
-      // autoDetectLayers 必须填充 layers。
-      // 如果它没在 layers 中，我们需要补救。
+      const podSet = deviceToPods.get(device) || new Set(['ALL']);
+      const pod = Array.from(podSet).find(p => p !== 'ALL') || 'ALL';
 
       const node = {
         id: device,
@@ -475,9 +510,11 @@ export function buildTopologyStructure(portMap, config = {}) {
     }
   }
 
-  // 步骤4b: 按POD组织边
+  // 步骤3b: 按POD组织边
   const edgesByPod = {};
-  const hierarchyEdgesMap = {};  // core-spine, spine-leaf等跨层级边
+  const hierarchyEdgesMap = {};
+  const allEdges = [];
+  const seenEdges = new Set();
 
   for (const pod of pods) {
     edgesByPod[pod] = [];
@@ -486,82 +523,51 @@ export function buildTopologyStructure(portMap, config = {}) {
     }
   }
 
-  // 生成边
-  for (const chain of chains) {
-    const { deviceA, deviceB, deviceC, portA, portB, portC, layerA, layerB, layerC } = chain;
+  for (const [key, val] of portMap) {
+    const [sys, port] = key.split('|');
+    const { peer, peerPort } = val;
+    if (!sys || !peer) continue;
 
-    // A-B边
-    const edgeAB = {
-      id: `${deviceA}|${portA}->${deviceB}|${portB}`,
-      source: deviceA,
-      target: deviceB,
-      srcPort: portA,
-      dstPort: portB,
-      sourcePort: portA,
-      targetPort: portB,
+    const edgeKey = [`${sys}|${port}`, `${peer}|${peerPort}`].sort().join('<->');
+    if (seenEdges.has(edgeKey)) continue;
+    seenEdges.add(edgeKey);
+
+    const layerA = getDeviceLayer(sys, layers) || 'unknown';
+    const layerB = getDeviceLayer(peer, layers) || 'unknown';
+
+    const edge = {
+      id: `${sys}|${port}->${peer}|${peerPort}`,
+      source: sys,
+      target: peer,
+      srcPort: port,
+      dstPort: peerPort,
+      sourcePort: port,
+      targetPort: peerPort,
       layer: `${layerA}-${layerB}`
     };
 
-    // B-C边
-    const edgeBC = {
-      id: `${deviceB}|${portB}->${deviceC}|${portC}`,
-      source: deviceB,
-      target: deviceC,
-      srcPort: portB,
-      dstPort: portC,
-      sourcePort: portB,
-      targetPort: portC,
-      layer: `${layerB}-${layerC}`
-    };
+    allEdges.push(edge);
 
-    // 添加到所有POD的边集合
     for (const pod of pods) {
-      // 检查AB设备是否都在这个POD中
-      const deviceAPod = deviceToPod.get(deviceA)?.has(pod) || pod === 'ALL';
-      const deviceBPod = deviceToPod.get(deviceB)?.has(pod) || pod === 'ALL';
-      if (deviceAPod && deviceBPod) {
-        edgesByPod[pod].push(edgeAB);
-      }
+      const podDevices = podToDevices.get(pod);
+      const inSamePod = pod === 'ALL' || (podDevices?.has(sys) && podDevices?.has(peer));
+      if (!inSamePod) continue;
 
-      // 检查BC设备是否都在这个POD中
-      const deviceCPod = deviceToPod.get(deviceC)?.has(pod) || pod === 'ALL';
-      if (deviceBPod && deviceCPod) {
-        edgesByPod[pod].push(edgeBC);
-      }
-    }
-  }
+      edgesByPod[pod].push(edge);
 
-  // 去重边
-  for (const pod of pods) {
-    const seen = new Set();
-    edgesByPod[pod] = edgesByPod[pod].filter(edge => {
-      const key = [edge.source, edge.target].sort().join('|');
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  // 提取跨层级边（用于动态加载）
-  for (const pod of Object.keys(pods).filter(p => p !== 'ALL')) {
-    const spineDevices = layers.spine.filter(d => deviceToPod.get(pod)?.has(d));
-
-    hierarchyEdgesMap[pod] = {};
-    for (const spine of spineDevices) {
-      hierarchyEdgesMap[pod][spine] = [];
-    }
-
-    // 从chains中提取core-spine边
-    for (const chain of chains) {
-      if (chain.layerA === 'core' && chain.layerB === 'spine') {
-        if (deviceToPod.get(chain.deviceB)?.has(pod)) {
-          hierarchyEdgesMap[pod][chain.deviceB] = hierarchyEdgesMap[pod][chain.deviceB] || [];
-          hierarchyEdgesMap[pod][chain.deviceB].push({
-            id: `${chain.deviceA}|${chain.portA}->${chain.deviceB}|${chain.portB}`,
-            source: chain.deviceA,
-            target: chain.deviceB,
-            sourcePort: chain.portA,
-            targetPort: chain.portB
+      if (pod !== 'ALL') {
+        const isCoreSpine =
+          (layerA === 'core' && layerB === 'spine') ||
+          (layerA === 'spine' && layerB === 'core');
+        if (isCoreSpine) {
+          const spine = layerA === 'spine' ? sys : peer;
+          if (!hierarchyEdgesMap[pod][spine]) hierarchyEdgesMap[pod][spine] = [];
+          hierarchyEdgesMap[pod][spine].push({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            sourcePort: edge.srcPort,
+            targetPort: edge.dstPort
           });
         }
       }
@@ -575,7 +581,7 @@ export function buildTopologyStructure(portMap, config = {}) {
     success: true,
     nodesByLayer: nodesByLayer,    // 按网络层分组的节点，前端用于渲染
     nodes: nodesByLayer,            // 同时返回新名称兼容
-    connections: Object.values(edgesByPod).flat(),  // 展平所有边供前端使用
+    connections: allEdges,  // 全量连接（去重）
     edges: edgesByPod,            // 按POD分组的边
     hierarchyEdges: hierarchyEdgesMap,
     metadata: {
@@ -589,9 +595,9 @@ export function buildTopologyStructure(portMap, config = {}) {
       coreDevices: layers.core,
       stats
     },
-    chainsCount: chains.length,
+    chainsCount: allEdges.length,
     nodeCount: allNodesList.length,
-    edgeCount: Object.values(edgesByPod).flat().length
+    edgeCount: allEdges.length
   };
 }
 

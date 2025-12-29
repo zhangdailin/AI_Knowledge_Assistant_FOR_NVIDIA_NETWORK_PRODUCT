@@ -107,6 +107,13 @@ function calculateNodePosition(node: any, nodesByLayer: any, layerY?: Record<str
         console.log(`[LayoutDebug] Node=${data.id}, Layer=${layer}, LayerNodes=${nodesByLayer?.[layer]?.length}`);
     }
 
+    if (typeof data.x === 'number' && typeof data.y === 'number') {
+        return { x: data.x, y: data.y };
+    }
+    if (data.position && typeof data.position.x === 'number' && typeof data.position.y === 'number') {
+        return { x: data.position.x, y: data.position.y };
+    }
+
     if (!layer || !nodesByLayer || !nodesByLayer[layer]) {
         console.warn(`[LayoutDebug] MISSING LAYER DATA for Node=${data.id}, Layer=${layer}`);
         return { x: 0, y: 0 };
@@ -221,6 +228,8 @@ function convertToCytoscapeFormat(
                     layer,
                     displayLayer: getLayerLabel(layer, networkType),
                     pod: node.pod,
+                    x: typeof node.x === 'number' ? node.x : node.position?.x,
+                    y: typeof node.y === 'number' ? node.y : node.position?.y,
                     parent: parentId  // Phase 1: 指定父节点
                 },
                 classes: layer
@@ -495,7 +504,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
         if (!cyRef.current) return null;
         return cyRef.current.png({
             output: 'blob',
-            bg: '#ffffff',
+            bg: NEON_PALETTE.background,
             full: true,
             scale: 2
         });
@@ -506,8 +515,8 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             {/* Cytoscape 容器 */}
             <div
                 ref={containerRef}
-                className="w-full h-full bg-gray-50 rounded-lg border border-gray-200"
-                style={{ minHeight: height }}
+                className="w-full h-full rounded-lg border border-slate-800"
+                style={{ minHeight: height, backgroundColor: NEON_PALETTE.background }}
             />
 
             {/* 统计信息 */}

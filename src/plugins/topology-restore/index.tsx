@@ -77,6 +77,13 @@ const getLayerLabel = (layer: string, networkType: NetworkType = 'ib'): string =
   return layer.charAt(0).toUpperCase() + layer.slice(1);
 };
 
+const getRailFromId = (id: string): string | null => {
+  const match =
+    id.match(/[-_](?:RAIL|R|Plane|P)(\d+)[-_]/i) ||
+    id.match(/^(?:RAIL|R|Plane|P)(\d+)[-_]/i);
+  return match ? match[1] : null;
+};
+
 const TopologyRestoreTool: React.FC = () => {
   const [networkType, setNetworkType] = useState<NetworkType>('ib');
   const [file, setFile] = useState<File | null>(null);
@@ -117,6 +124,7 @@ const TopologyRestoreTool: React.FC = () => {
   const [collapsedPods, setCollapsedPods] = useState<Set<string>>(new Set());
   const [focusedPod, setFocusedPod] = useState<string | null>(null);
   const [viewLevel, setViewLevel] = useState<'overview' | 'group' | 'detail'>('group'); // Default to 'group' for backward compat
+  const railRequired = networkType === 'ib' && rails.length > 0;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -391,6 +399,15 @@ const TopologyRestoreTool: React.FC = () => {
         filteredNodes = nodeList.filter((n: any) => n.pod === pod || n.id?.includes(pod) || !n.pod);
       }
 
+      // Rail 过滤（IB 网络）
+      if (networkType === 'ib' && selectedRail && selectedRail !== 'ALL') {
+        filteredNodes = filteredNodes.filter((n: any) => {
+          const rail = getRailFromId(n.id);
+          if (rail) return rail === selectedRail;
+          return layer === 'core';
+        });
+      }
+
       // 为该层的节点计算坐标
       const yPos = layerYPositions[layer] ?? (Object.keys(nodesByLayer).indexOf(layer) * layerGap);
       let xGap = nodeGap; // 默认使用 Core 间距
@@ -409,6 +426,9 @@ const TopologyRestoreTool: React.FC = () => {
       filteredNodes.forEach((node: any, nodeIdx: number) => {
         // 使用 nodeIdx 而非全局索引，确保 POD 过滤后也正确
         const xPos = nodeIdx * xGap - layerCenterX + centerX;
+        const presetPosition = node.position ||
+          (typeof node.x === 'number' && typeof node.y === 'number' ? { x: node.x, y: node.y } : null);
+        const position = presetPosition || { x: xPos, y: yPos };
 
         nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
@@ -417,7 +437,7 @@ const TopologyRestoreTool: React.FC = () => {
         const nodeData = {
           id: node.id,
           type: 'default',
-          position: { x: xPos, y: yPos },
+          position,
           data: {
             label: (
               <div style={{
@@ -523,6 +543,8 @@ const TopologyRestoreTool: React.FC = () => {
     selectedEdgeInfo,
     enableEdgeBundling,
     edgeBundlingThreshold,
+    networkType,
+    selectedRail,
     setNodes,
     setEdges
   ]);
@@ -1099,23 +1121,25 @@ const TopologyRestoreTool: React.FC = () => {
           <div className="flex-1 bg-white border border-gray-200 rounded-lg overflow-hidden relative" style={{ height: '600px' }}>
 
             {/* 强制选择提示 */}
-            {!loading && (!selectedPod || !selectedRail) && (
+            {!loading && (!selectedPod || (railRequired && !selectedRail)) && (
               <div className="absolute inset-0 z-40 bg-gray-50/50 backdrop-blur-sm flex flex-col items-center justify-center">
                 <div className="bg-white p-8 rounded-xl shadow-lg border border-gray-200 text-center max-w-md">
                   <Layers className="w-16 h-16 text-blue-500 mx-auto mb-4" />
                   <h3 className="text-xl font-bold text-gray-800 mb-2">请选择视图范围</h3>
                   <p className="text-gray-500 mb-6">
                     检测到大规模网络拓扑。为了获得最佳性能和清晰度，请先在上方工具栏选择目标
-                    <span className="font-bold text-gray-700 mx-1">POD</span> 和
-                    <span className="font-bold text-gray-700 mx-1">Rail</span>。
+                    <span className="font-bold text-gray-700 mx-1">POD</span>
+                    {railRequired && <span className="font-bold text-gray-700 mx-1">和 Rail</span>}。
                   </p>
                   <div className="flex gap-3 justify-center">
                     <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
                       POD: {selectedPod || '未选择'}
                     </div>
-                    <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
-                      Rail: {selectedRail || '未选择'}
-                    </div>
+                    {railRequired && (
+                      <div className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
+                        Rail: {selectedRail || '未选择'}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1454,20 +1478,12 @@ function extractRails(nodes: any[]): string[] {
   const railSet = new Set<string>();
   // railSet.add('ALL'); // 移除 ALL，强制选择具体 Rail
   nodes.forEach(node => {
-    // 尝试多种 Rail 命名模式
-    // 1. Pattern: ...-RAIL1-...
-    // 2. Pattern: ...-R1-...
-    // 3. Pattern: ...-Plane1-...
-    const match = node.id.match(/[-_](?:RAIL|R|Plane|P)(\d+)[-_]/i) ||
-      node.id.match(/^(?:RAIL|R|Plane|P)(\d+)[-_]/i);
-
-    if (match) {
-      railSet.add(match[1]);
-    }
+    const rail = getRailFromId(node.id);
+    if (rail) railSet.add(rail);
   });
 
-  // 如果没提取到，给默认值? 不，返回空，让 UI 处理
-  if (railSet.size === 0) return ['1']; // 假设至少有 Rail 1? 或者返回空
+  // 如果没提取到，返回空，让 UI 处理
+  if (railSet.size === 0) return [];
 
   // sort numeric
   return Array.from(railSet).sort((a, b) => {
