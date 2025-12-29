@@ -459,19 +459,20 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     if (!file.endsWith('.json')) continue;
     const docId = file.replace('.json', '');
     const doc = docMap.get(docId);
-    let docScoreBonus = 0;
+    let filenameScoreBonus = 0;
+    let categoryScoreBonus = 0;
 
     if (doc) {
       const filenameLower = doc.filename.toLowerCase();
       for (const word of expandedQueryWords) {
-        if (filenameLower.includes(word)) docScoreBonus += 2;
+        if (filenameLower.includes(word)) filenameScoreBonus += 1;
       }
 
       // 分类优先加分：如果指定了分类，匹配分类的文档获得加分
       if (categoryIds && categoryIds.length > 0) {
         const docCatId = doc.categoryId || 'default';
         if (categoryIds.includes(docCatId)) {
-          docScoreBonus += 20; // 分类匹配加分
+          categoryScoreBonus = 6; // 分类匹配加分
         }
       }
     }
@@ -513,6 +514,7 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
       const hasContentMatch = hasExactMatch || matchedCount > 0;
       if (!hasContentMatch) continue;
 
+      const docScoreBonus = Math.min(filenameScoreBonus + categoryScoreBonus, 8);
       score += docScoreBonus;
 
       if (score > 2) {
@@ -571,7 +573,9 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
   let topResults = [];
-  let mismatchLogged = false;
+  let mismatchCount = 0;
+  let totalEmbeddings = 0;
+  let mismatchExample = null;
 
   // 从配置读取向量搜索阈值
   const settings = await readJSON(SETTINGS_FILE, {});
@@ -591,11 +595,10 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
 
     for (const chunk of chunks) {
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
+        totalEmbeddings++;
         if (chunk.embedding.length !== queryEmbedding.length) {
-          if (!mismatchLogged) {
-            console.warn(`[vectorSearch] embedding dimension mismatch: query=${queryEmbedding.length}, chunk=${chunk.embedding.length}`);
-            mismatchLogged = true;
-          }
+          mismatchCount++;
+          if (mismatchExample === null) mismatchExample = chunk.embedding.length;
           continue;
         }
 
@@ -605,7 +608,7 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
         if (categoryIds && categoryIds.length > 0 && doc) {
           const docCatId = doc.categoryId || 'default';
           if (categoryIds.includes(docCatId)) {
-            score += 0.15; // 分类匹配加分（向量分数范围 0-1）
+            score += 0.05; // 分类匹配加分（向量分数范围 0-1）
           }
         }
 
@@ -615,6 +618,16 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
         }
       }
     }
+  }
+
+  if (mismatchCount > 0) {
+    const mismatchSummary = totalEmbeddings > 0
+      ? `${mismatchCount}/${totalEmbeddings}`
+      : `${mismatchCount}`;
+    const allMismatched = totalEmbeddings > 0 && mismatchCount === totalEmbeddings;
+    const detail = mismatchExample !== null ? `, sample=${mismatchExample}` : '';
+    const severity = allMismatched ? 'all' : 'partial';
+    console.warn(`[vectorSearch] ${severity} embedding dimension mismatch: query=${queryEmbedding.length}${detail}, skipped=${mismatchSummary}. Consider regenerating embeddings.`);
   }
 
   // 第二步：排序并返回前limit个结果
@@ -632,7 +645,8 @@ export async function findChunksByPattern(pattern, limit = 10) {
     if (!file.endsWith('.json')) continue;
     const chunks = await getChunksFromFile(file);
     for (const chunk of chunks) {
-      if (pattern.test(chunk.content)) {
+      const content = typeof chunk.content === 'string' ? chunk.content : '';
+      if (content && pattern.test(content)) {
         results.push(chunk);
         if (results.length >= limit) return results;
       }

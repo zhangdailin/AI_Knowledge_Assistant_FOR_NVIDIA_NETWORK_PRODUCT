@@ -473,7 +473,16 @@ app.get('/api/chunks/search', async (req, res) => {
     }
 
 
-    const cacheKey = `${q}_${searchLimit}_${categoryId || 'all'}`;
+    const cacheKey = JSON.stringify({
+      q,
+      limit: searchLimit,
+      categoryId: categoryId || 'all',
+      rrfK: retrievalConfig.rrfK ?? 'default',
+      keywordWeight: retrievalConfig.keywordWeight ?? 'default',
+      vectorWeight: retrievalConfig.vectorWeight ?? 'default',
+      vectorMinScore: retrievalConfig.vectorMinScore ?? 'default',
+      rerankTopN
+    });
     const cached = searchCache.get(cacheKey);
     if (cached) return res.json({ ok: true, chunks: cached, _cached: true });
 
@@ -501,7 +510,8 @@ app.get('/api/chunks/search', async (req, res) => {
 
     // 3. Reranking (使用配置的 topN)
     if (finalResults.length > 0) {
-      finalResults = await rerankDocuments(q, finalResults, rerankTopN);
+      const rerankedResults = await rerankDocuments(q, finalResults, rerankTopN);
+      finalResults = rerankedResults.length > 0 ? rerankedResults : finalResults;
     }
 
     // 4. 写入缓存

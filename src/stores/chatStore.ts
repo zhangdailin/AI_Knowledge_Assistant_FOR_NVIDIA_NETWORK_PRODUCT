@@ -185,9 +185,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Search knowledge base
       const knowledgeResults = await searchKnowledgeBase(content);
 
+      const maxKnowledgeScore = knowledgeResults.reduce((max, r) => Math.max(max, r.score), 0);
       // 判断是否有相关知识库内容（RRF分数阈值调高到0.02）
-      const hasRelevantKnowledge = knowledgeResults.length > 0 && knowledgeResults[0].score > 0.02;
-      console.log('[Chat] 知识库搜索结果:', knowledgeResults.length, '条, 最高分:', knowledgeResults[0]?.score || 0);
+      const hasRelevantKnowledge = maxKnowledgeScore > 0.02;
+      console.log('[Chat] 知识库搜索结果:', knowledgeResults.length, '条, 最高分:', maxKnowledgeScore);
 
       // Build context from knowledge base
       let knowledgeContext = '';
