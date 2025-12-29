@@ -171,20 +171,17 @@ async function processUploadedFile(documentId, file) {
     });
 
     // 2. 分块
-    // 根据文件大小调整参数
-    // 大文件使用更大的块大小，减少块数量
-    let parentSize = 2000;
-    let childSize = 600;
+    // 根据文件大小调整最大块大小
+    let maxChunkSize = 4000;
 
     if (text.length > 500 * 1024) {
-      // 大文件：使用更大的块
-      parentSize = 3000;
-      childSize = 800;
-      console.log(`[Async] 大文件检测，使用优化参数: parentSize=${parentSize}, childSize=${childSize}`);
+      // 大文件：使用更大的块，减少块数量
+      maxChunkSize = 6000;
+      console.log(`[Async] 大文件检测，使用优化参数: maxChunkSize=${maxChunkSize}`);
     }
 
     const chunkStartTime = Date.now();
-    const chunks = chunking.enhancedParentChildChunking(text, 4000, parentSize, childSize);
+    const chunks = chunking.enhancedParentChildChunking(text, maxChunkSize);
     const chunkTime = Date.now() - chunkStartTime;
 
     // 详细统计

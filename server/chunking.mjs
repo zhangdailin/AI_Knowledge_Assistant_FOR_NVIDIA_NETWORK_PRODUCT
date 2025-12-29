@@ -41,23 +41,36 @@ function convertHtmlTableToMarkdown(html) {
     const rows = tableContent.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) || [];
     if (rows.length === 0) return match;
 
+    let isFirstRow = true;
     const markdownRows = rows.map(row => {
-      const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+      // 同时匹配 <th> 和 <td> 标签
+      const thCells = row.match(/<th[^>]*>([\s\S]*?)<\/th>/gi) || [];
+      const tdCells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+      const cells = thCells.length > 0 ? thCells : tdCells;
+      
+      if (cells.length === 0) return null; // 跳过空行
+      
       const cellTexts = cells.map(cell => {
-        // 提取 <td>...</td> 中的文本内容
-        const text = cell.replace(/<td[^>]*>/gi, '').replace(/<\/td>/gi, '').trim();
+        // 提取 <th>...</th> 或 <td>...</td> 中的文本内容
+        const text = cell.replace(/<(th|td)[^>]*>/gi, '').replace(/<\/(th|td)>/gi, '').trim();
         // 移除嵌套的 HTML 标签
         return text.replace(/<[^>]+>/g, '').trim();
       });
-      return '| ' + cellTexts.join(' | ') + ' |';
-    });
+      
+      const isHeaderRow = thCells.length > 0;
+      return { text: '| ' + cellTexts.join(' | ') + ' |', isHeader: isHeaderRow, cellCount: cellTexts.length };
+    }).filter(row => row !== null);
 
     if (markdownRows.length === 0) return match;
 
+    // 构建 Markdown 表格
+    const result = [];
+    const firstRow = markdownRows[0];
+    result.push(firstRow.text);
     // 添加分隔符行（在第一行后）
-    const result = [markdownRows[0]];
-    result.push('| ' + markdownRows[0].split('|').slice(1, -1).map(() => '---').join(' | ') + ' |');
-    result.push(...markdownRows.slice(1));
+    result.push('| ' + Array(firstRow.cellCount).fill('---').join(' | ') + ' |');
+    // 添加剩余行
+    markdownRows.slice(1).forEach(row => result.push(row.text));
 
     return '\n' + result.join('\n') + '\n';
   });
@@ -100,7 +113,9 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000) {
       // 还原代码块
       const content = restoreCodeBlocks(section.content, codeBlocks);
 
-      if (content.trim().length < 50) continue; // 跳过太短的内容
+      // 短内容处理：有标题的 section 保留（标题本身有价值），无标题的短内容跳过
+      const hasHeader = section.breadcrumbs && section.breadcrumbs.length > 0;
+      if (content.trim().length < 50 && !hasHeader) continue; // 跳过太短且无标题的内容
 
       // 如果 section 内容不超过 maxChunkSize，直接作为一个 chunk
       if (content.length <= maxChunkSize) {

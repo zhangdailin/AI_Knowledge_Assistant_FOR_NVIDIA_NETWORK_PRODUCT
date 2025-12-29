@@ -1,6 +1,6 @@
 /**
- * 父子块分块算法测试 v2
- * 验证新的语义感知分块算法
+ * 语义分块算法测试 v3
+ * 验证语义感知分块算法
  */
 
 import { enhancedParentChildChunking } from '../server/chunking.mjs';
@@ -63,7 +63,7 @@ nv config apply
 4. 防火墙是否放行 TCP 179 端口
 `;
 
-// 测试用例 2: HTML 表格
+// 测试用例 2: HTML 表格（包含 <th> 表头）
 const htmlTableDoc = `
 # 网络命令参考
 
@@ -135,96 +135,81 @@ nv config apply
 `;
 
 console.log('========================================');
-console.log('父子块分块算法测试 v2');
+console.log('语义分块算法测试 v3');
 console.log('========================================\n');
 
 function runTest(name, doc) {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`测试: ${name}`);
   console.log('='.repeat(50));
-  
+
   console.log('\n📄 原始文档 (前 200 字符):');
   console.log('-'.repeat(40));
   console.log(doc.substring(0, 200) + (doc.length > 200 ? '...' : ''));
   console.log('-'.repeat(40));
-  
-  const chunks = enhancedParentChildChunking(doc, 4000, 1500, 500);
-  
-  const parentChunks = chunks.filter(c => c.chunkType === 'parent');
-  const childChunks = chunks.filter(c => c.chunkType === 'child');
-  
+
+  // 使用新的函数签名（只传 maxChunkSize）
+  const chunks = enhancedParentChildChunking(doc, 4000);
+
+  // 语义块类型检查（新算法使用 'semantic' 类型）
+  const semanticChunks = chunks.filter(c => c.chunkType === 'semantic');
+
   console.log(`\n📊 分块统计:`);
   console.log(`   总 chunks: ${chunks.length}`);
-  console.log(`   父块: ${parentChunks.length} 个`);
-  console.log(`   子块: ${childChunks.length} 个`);
-  
-  // 显示父块详情
-  console.log('\n📦 父块详情:');
-  parentChunks.forEach((chunk, idx) => {
+  console.log(`   语义块: ${semanticChunks.length} 个`);
+
+  // 显示 chunk 详情
+  console.log('\n📦 Chunk 详情:');
+  chunks.slice(0, 3).forEach((chunk, idx) => {
     const header = chunk.metadata?.header || '(无标题)';
     const breadcrumbs = chunk.metadata?.breadcrumbs?.join(' > ') || '';
     const summary = chunk.metadata?.summary || '';
-    
-    console.log(`\n   [父块 ${idx + 1}] "${header}"`);
+
+    console.log(`\n   [Chunk ${idx + 1}] "${header}"`);
     if (breadcrumbs) console.log(`   面包屑: ${breadcrumbs}`);
     if (summary) console.log(`   摘要: ${summary.substring(0, 80)}...`);
     console.log(`   内容长度: ${chunk.content.length} 字符`);
-    
-    // 显示关联的子块数量
-    const relatedChildren = childChunks.filter(c => c.parentId === chunk.id);
-    console.log(`   关联子块: ${relatedChildren.length} 个`);
   });
-  
-  // 显示子块示例
-  if (childChunks.length > 0) {
-    console.log('\n📝 子块示例 (前 2 个):');
-    childChunks.slice(0, 2).forEach((chunk, idx) => {
-      console.log(`\n   [子块 ${idx + 1}]`);
-      console.log(`   位置: ${chunk.metadata?.childIndex + 1}/${chunk.metadata?.totalChildren}`);
-      console.log(`   内容预览: ${chunk.content.substring(0, 100).replace(/\n/g, ' ')}...`);
-    });
-  }
-  
+
   // 检查质量指标
-  const hasSemanticTable = chunks.some(c => 
-    c.content.includes('[表格开始]') || c.content.includes('[表格内容]')
+  const hasRawHtml = chunks.some(c =>
+    c.content.includes('<td>') || c.content.includes('<tr>') || c.content.includes('<th>')
   );
-  
-  const hasRawHtml = chunks.some(c => 
-    c.content.includes('<td>') || c.content.includes('<tr>')
+
+  const hasMarkdownTable = chunks.some(c =>
+    c.content.includes('| ') && c.content.includes(' |')
   );
-  
-  const hasBreadcrumbs = parentChunks.some(c => 
+
+  const hasBreadcrumbs = chunks.some(c =>
     c.metadata?.breadcrumbs && c.metadata.breadcrumbs.length > 0
   );
-  
-  const hasSummary = parentChunks.some(c => 
+
+  const hasSummary = chunks.some(c =>
     c.metadata?.summary && c.metadata.summary.length > 0
   );
-  
+
   console.log('\n✅ 质量检查:');
   console.log(`   ${!hasRawHtml ? '✓' : '✗'} HTML 标签已清理: ${!hasRawHtml}`);
   console.log(`   ${hasBreadcrumbs ? '✓' : '○'} 包含面包屑导航: ${hasBreadcrumbs}`);
   console.log(`   ${hasSummary ? '✓' : '○'} 包含内容摘要: ${hasSummary}`);
   if (doc.includes('<table') || doc.includes('|---')) {
-    console.log(`   ${hasSemanticTable ? '✓' : '✗'} 表格已语义化: ${hasSemanticTable}`);
+    console.log(`   ${hasMarkdownTable ? '✓' : '✗'} 表格已转换为 Markdown: ${hasMarkdownTable}`);
   }
-  
+
   return {
     name,
-    parentCount: parentChunks.length,
-    childCount: childChunks.length,
+    chunkCount: chunks.length,
     hasRawHtml,
     hasBreadcrumbs,
     hasSummary,
-    hasSemanticTable: doc.includes('<table') || doc.includes('|---') ? hasSemanticTable : true
+    hasMarkdownTable: doc.includes('<table') || doc.includes('|---') ? hasMarkdownTable : true
   };
 }
 
 // 运行所有测试
 const results = [];
 results.push(runTest('多级标题结构', hierarchicalDoc));
-results.push(runTest('HTML 表格', htmlTableDoc));
+results.push(runTest('HTML 表格（含表头）', htmlTableDoc));
 results.push(runTest('纯文本 (无标题)', plainTextDoc));
 results.push(runTest('混合内容', mixedDoc));
 
@@ -235,12 +220,13 @@ console.log('========================================\n');
 
 let allPassed = true;
 results.forEach(r => {
-  const passed = !r.hasRawHtml && r.hasSemanticTable && r.parentCount > 0;
+  // 核心检查：HTML 已转换、生成了 chunks
+  const passed = !r.hasRawHtml && r.hasMarkdownTable && r.chunkCount > 0;
   if (!passed) allPassed = false;
-  
+
   const status = passed ? '✓ 通过' : '✗ 失败';
   console.log(`${status} | ${r.name}`);
-  console.log(`        父块: ${r.parentCount}, 子块: ${r.childCount}`);
+  console.log(`        Chunks: ${r.chunkCount}, HTML清理: ${!r.hasRawHtml}, Markdown表格: ${r.hasMarkdownTable}`);
 });
 
 console.log(`\n总体结果: ${allPassed ? '✓ 全部通过' : '✗ 存在失败'}\n`);
