@@ -27,6 +27,10 @@ import * as chunking from './chunking.mjs';
 import * as topology from './topology.mjs';
 import { analyzeRoCETopology } from './roce-topology.mjs';
 import { inferLayersFromTopology } from './topology-inference.mjs';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import { chromium } from 'playwright';
 
 // 搜索结果缓存
 const searchCache = new SimpleLRUCache(200);
@@ -1438,6 +1442,240 @@ async function getLLMModel() {
     return 'Qwen/Qwen3-32B';
   }
 }
+
+// ========== NVIDIA 文档转 PDF ==========
+const NVIDIA_PDF_CSS = `
+@page { size: A4; margin: 12mm 12mm 20mm 12mm; }
+@media print {
+  header, footer, .site-header, .site-footer, .breadcrumbs,
+  .page-header, .doc-footer, .page-footer {
+    display: none !important;
+  }
+  *[style*="position:sticky"], *[style*="position: sticky"],
+  *[style*="position:fixed"], *[style*="position: fixed"],
+  .sticky, .fixed, [class*="sticky"], [class*="fixed"] {
+    display: none !important;
+  }
+  img, svg, video, table { max-width: 100% !important; height: auto !important; }
+  pre, code { white-space: pre-wrap !important; word-break: break-word; }
+  table, figure { break-inside: avoid; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
+body { color: #111827; font-size: 12pt; line-height: 1.5; }
+`;
+
+const fetchWithTimeout = async (targetUrl, timeoutMs = 30_000) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(targetUrl, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const fetchPdf = async (targetUrl) => {
+  const pdfRes = await fetchWithTimeout(targetUrl, 45_000);
+  if (!pdfRes.ok) return null;
+  const contentType = pdfRes.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/pdf')) return null;
+  const arrayBuffer = await pdfRes.arrayBuffer();
+  return { buffer: Buffer.from(arrayBuffer), contentType };
+};
+
+const guessPdfUrlFromHtml = (html) => {
+  const matches = html.match(/href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i);
+  if (matches && matches[1]) return matches[1];
+  const alt = html.match(/src=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i);
+  if (alt && alt[1]) return alt[1];
+  return null;
+};
+
+const generateNvidiaPdf = async (url, filename) => {
+  let browser;
+  const outPath = path.join(os.tmpdir(), `nvidia-doc-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  try {
+    const directPdf = await fetchPdf(url);
+    if (directPdf) {
+      await fs.writeFile(outPath, directPdf.buffer);
+      return { outPath, filename };
+    }
+
+    const htmlRes = await fetchWithTimeout(url, 30_000);
+    if (htmlRes.ok) {
+      const html = await htmlRes.text();
+      const pdfLink = guessPdfUrlFromHtml(html);
+      if (pdfLink) {
+        const resolved = new URL(pdfLink, url).toString();
+        const pdfResult = await fetchPdf(resolved);
+        if (pdfResult) {
+          const pdfName = resolved.split('/').pop() || filename;
+          await fs.writeFile(outPath, pdfResult.buffer);
+          return { outPath, filename: pdfName };
+        }
+      }
+    }
+
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--disable-gpu',
+        '--ignore-certificate-errors',
+        '--no-sandbox',
+        '--disable-web-security'
+      ]
+    });
+
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+    });
+
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    page.setDefaultTimeout(240_000);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 240_000 });
+    await page.waitForLoadState('networkidle', { timeout: 240_000 });
+    await page.waitForTimeout(2000);
+
+    await page.addStyleTag({ content: NVIDIA_PDF_CSS });
+
+    const scrollToBottom = async () => {
+      let lastHeight = 0;
+      for (let i = 0; i < 60; i += 1) {
+        const height = await page.evaluate(() => document.body.scrollHeight);
+        if (height === lastHeight) break;
+        lastHeight = height;
+        await page.evaluate((h) => window.scrollTo(0, h), height);
+        await page.waitForTimeout(300);
+      }
+    };
+    await scrollToBottom();
+    try {
+      await page.waitForFunction(
+        () => Array.from(document.images || []).every((img) => img.complete),
+        { timeout: 60_000 }
+      );
+    } catch {}
+    try {
+      await page.evaluate(() => document.fonts && document.fonts.ready);
+    } catch {}
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.emulateMedia({ media: 'print' });
+
+    await page.pdf({
+      path: outPath,
+      format: 'A4',
+      printBackground: true,
+      displayHeaderFooter: false,
+      margin: { top: '12mm', right: '12mm', bottom: '20mm', left: '12mm' },
+      scale: 1,
+      preferCSSPageSize: true
+    });
+
+    return { outPath, filename };
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.warn('[PDF] 浏览器关闭失败:', closeError?.message || closeError);
+      }
+    }
+  }
+};
+
+const runNvidiaPdfTask = async (taskId, url) => {
+  const parsedUrl = new URL(url);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const baseName = parsedUrl.pathname.split('/').filter(Boolean).pop() || 'nvidia-doc';
+  const filename = `${baseName}-${stamp}.pdf`;
+
+  const maxRetries = 2;
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      taskQueue.updateTask(taskId, {
+        status: 'processing',
+        progress: Math.min(95, attempt * 30),
+        metadata: { ...(taskQueue.getTask(taskId)?.metadata || {}), attempt }
+      });
+      const result = await generateNvidiaPdf(url, filename);
+      taskQueue.completeTask(taskId, result);
+      return;
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+      if (attempt > maxRetries) break;
+      await sleep(1000 * Math.pow(2, attempt));
+    }
+  }
+
+  taskQueue.failTask(taskId, lastError || 'PDF 生成失败');
+};
+
+app.post('/api/nvidia-doc-pdf/tasks', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ ok: false, error: '请提供文档链接' });
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return res.status(400).json({ ok: false, error: '链接格式不正确' });
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    return res.status(400).json({ ok: false, error: '仅支持 https 链接' });
+  }
+
+  if (!parsedUrl.hostname.includes('nvidia.com')) {
+    return res.status(400).json({ ok: false, error: '仅支持英伟达文档站点链接' });
+  }
+
+  const task = taskQueue.createTask('nvidia_doc_pdf', `nvidia-${Date.now()}`, {
+    url,
+    createdAt: new Date().toISOString()
+  });
+
+  runNvidiaPdfTask(task.id, url).catch((error) => {
+    console.error('[PDF] 异步任务失败:', error);
+    taskQueue.failTask(task.id, error);
+  });
+
+  res.json({ ok: true, taskId: task.id });
+});
+
+app.get('/api/nvidia-doc-pdf/tasks/:taskId', async (req, res) => {
+  const task = taskQueue.getTask(req.params.taskId);
+  if (!task) return res.status(404).json({ ok: false, error: '任务不存在' });
+  res.json({ ok: true, task });
+});
+
+app.get('/api/nvidia-doc-pdf/tasks/:taskId/download', async (req, res) => {
+  const task = taskQueue.getTask(req.params.taskId);
+  if (!task) return res.status(404).json({ ok: false, error: '任务不存在' });
+  if (task.status !== 'completed' || !task.result?.outPath) {
+    return res.status(400).json({ ok: false, error: '任务未完成' });
+  }
+
+  const { outPath, filename } = task.result;
+  const cleanupTempFile = async () => {
+    try {
+      await fs.unlink(outPath);
+    } catch (err) {
+      if (err?.code !== 'ENOENT') {
+        console.warn('[PDF] 临时文件清理失败:', err.message);
+      }
+    }
+  };
+
+  res.on('close', cleanupTempFile);
+  res.download(outPath, filename || 'nvidia-doc.pdf', cleanupTempFile);
+});
 
 app.post('/api/chat', async (req, res) => {
   try {

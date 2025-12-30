@@ -42,6 +42,15 @@ export function createTask(type, documentId, metadata = {}) {
   return task;
 }
 
+export function updateTask(taskId, updates = {}) {
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  Object.assign(task, updates);
+  task.updatedAt = new Date().toISOString();
+  tasks.set(taskId, task);
+  return task;
+}
+
 // 获取任务
 export function getTask(taskId) {
   return tasks.get(taskId) || null;

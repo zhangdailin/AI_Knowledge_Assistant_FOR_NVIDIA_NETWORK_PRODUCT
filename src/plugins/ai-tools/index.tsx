@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Wrench, ChevronRight, X, Network, GitBranch } from 'lucide-react';
+import { Search, Wrench, ChevronRight, X, Network, GitBranch, FileDown } from 'lucide-react';
 
 // 导入插件
 import SnToIblfTool, { pluginMeta as snIblfMeta } from '../sn-iblf';
@@ -7,6 +7,7 @@ import SnAddressTool, { pluginMeta as snAddressMeta } from '../sn-address';
 import SnTopologyTool, { pluginMeta as snTopologyMeta } from '../sn-topology';
 import TopologyRestoreTool from '../topology-restore';
 import { pluginMeta as topologyRestoreMeta } from '../topology-restore/plugin-meta';
+import NvidiaDocPdfTool, { pluginMeta as nvidiaDocPdfMeta } from '../nvidia-doc-pdf';
 
 // 插件注册表
 const plugins = [
@@ -25,6 +26,10 @@ const plugins = [
   {
     ...topologyRestoreMeta,
     component: TopologyRestoreTool
+  },
+  {
+    ...nvidiaDocPdfMeta,
+    component: NvidiaDocPdfTool
   }
 ];
 
@@ -40,6 +45,7 @@ const AITools: React.FC = () => {
     switch (iconName) {
       case 'Network': return Network;
       case 'GitBranch': return GitBranch;
+      case 'FileDown': return FileDown;
       default: return Search;
     }
   };

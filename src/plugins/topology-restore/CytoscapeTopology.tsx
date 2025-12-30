@@ -324,6 +324,7 @@ function convertToCytoscapeFormat(
     const isPodMatch = (node: TopologyNode) => {
         if (!selectedPod || selectedPod === 'ALL') return true;
         if (node.pod === selectedPod) return true;
+        if (node.pod === 'ALL') return true;
         if (node.id?.includes(selectedPod)) return true;
         return !node.pod;
     };

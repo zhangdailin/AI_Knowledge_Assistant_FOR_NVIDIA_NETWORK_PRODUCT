@@ -94,5 +94,47 @@
     "query": "如何写好ppt",
     "responseTime": 12301,
     "timestamp": "2025-12-29T11:06:40.737Z"
+  },
+  {
+    "id": "log-1767057024353",
+    "query": "你好",
+    "responseTime": 5024,
+    "timestamp": "2025-12-30T01:10:24.353Z"
+  },
+  {
+    "id": "log-1767057141429",
+    "query": "如何配置vxlan",
+    "responseTime": 58815,
+    "timestamp": "2025-12-30T01:12:21.429Z"
+  },
+  {
+    "id": "log-1767057641454",
+    "query": "你好",
+    "responseTime": 6201,
+    "timestamp": "2025-12-30T01:20:41.454Z"
+  },
+  {
+    "id": "log-1767057732660",
+    "query": "如何检查cumulus交换机的配置",
+    "responseTime": 34442,
+    "timestamp": "2025-12-30T01:22:12.660Z"
+  },
+  {
+    "id": "log-1767057854603",
+    "query": "我记得有一个 nv config 命令可以用来查 配置",
+    "responseTime": 38324,
+    "timestamp": "2025-12-30T01:24:14.603Z"
+  },
+  {
+    "id": "log-1767062859154",
+    "query": "我记得有一个 nv config 命令可以用来查 配置",
+    "responseTime": 35697,
+    "timestamp": "2025-12-30T02:47:39.154Z"
+  },
+  {
+    "id": "log-1767064527643",
+    "query": "如何配置MLAG？",
+    "responseTime": 28962,
+    "timestamp": "2025-12-30T03:15:27.643Z"
   }
 ]

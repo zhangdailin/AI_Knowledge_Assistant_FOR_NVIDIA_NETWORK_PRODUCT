@@ -7,7 +7,9 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
   MarkerType,
-  MiniMap
+  Position,
+  MiniMap,
+  ReactFlowInstance
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
@@ -43,6 +45,24 @@ const getNodeStyle = (layer: string) => {
     minWidth: '100px',
     textAlign: 'center' as const,
   };
+};
+
+const getHandlePositions = (layer: string, nodeId?: string) => {
+  const normalized = layer.toLowerCase();
+  const idUpper = (nodeId || '').toUpperCase();
+  const isCore = normalized === 'core' || normalized === 'csw' || normalized.includes('core') || idUpper.includes('IBCR') || idUpper.includes('CSW');
+  const isSpine = normalized === 'spine' || normalized === 'ssw' || normalized.includes('spine') || idUpper.includes('IBSP') || idUpper.includes('SSW');
+  const isLeaf = normalized === 'leaf' || normalized === 'asw' || normalized === 'lsw' || normalized.includes('leaf') || idUpper.includes('IBLF') || idUpper.includes('ASW') || idUpper.includes('LSW');
+  if (isCore) {
+    return { sourcePosition: Position.Bottom, targetPosition: Position.Bottom };
+  }
+  if (isSpine) {
+    return { sourcePosition: Position.Top, targetPosition: Position.Bottom };
+  }
+  if (isLeaf) {
+    return { sourcePosition: Position.Top, targetPosition: Position.Top };
+  }
+  return {};
 };
 
 type LayerDetectionMethod = 'auto' | 'manual';
@@ -104,12 +124,11 @@ const TopologyRestoreTool: React.FC = () => {
   const bundleMapRef = useRef<Map<string, any>>(new Map());
   const expandedBundlesRef = useRef<Set<string>>(new Set());
 
-  // Configuration state
-  const [config, setConfig] = useState<TopologyConfig>({
+  // Configuration: keep topology detection smart and minimal
+  const config: TopologyConfig = {
     layerDetection: 'auto',
     podExtraction: { method: 'regex', pattern: 'POD\\d+' }
-  });
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  };
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -134,6 +153,7 @@ const TopologyRestoreTool: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const reactFlowInstanceRef = useRef<ReactFlowInstance | null>(null);
 
   // 缓存节点 ID 到 Layer 的映射，用于快速查找对端设备层级
   const nodeLayerMap = useMemo(() => {
@@ -395,7 +415,7 @@ const TopologyRestoreTool: React.FC = () => {
     const layerGap = 200; // 层级间距
     const nodeGap = 150; // Core 层节点间距
     const spineNodeGap = 130; // Spine 层节点间距
-    const leafNodeGap = 120; // Leaf 层节点间距
+    const leafNodeGap = 170; // Leaf 层节点间距
 
     // 动态计算中心 X 坐标（用于水平居中）
     const centerX = maxCount > 0 ? ((maxCount - 1) * nodeGap) / 2 : 0;
@@ -415,7 +435,9 @@ const TopologyRestoreTool: React.FC = () => {
 
       // POD 过滤
       if (pod !== 'ALL') {
-        filteredNodes = nodeList.filter((n: any) => n.pod === pod || n.id?.includes(pod) || !n.pod);
+        filteredNodes = nodeList.filter((n: any) =>
+          n.pod === pod || n.pod === 'ALL' || n.id?.includes(pod) || !n.pod
+        );
       }
 
       // Rail 过滤（IB 网络）
@@ -425,6 +447,17 @@ const TopologyRestoreTool: React.FC = () => {
           if (nodeRail) return nodeRail === rail;
           return layer === 'core';
         });
+      }
+
+      const expandRoceLeafSpacing = networkType === 'roce' && (layer === 'asw' || layer === 'lsw');
+      let presetCenterX: number | null = null;
+      if (expandRoceLeafSpacing) {
+        const presetXs = filteredNodes
+          .map((n: any) => (n.position?.x ?? n.x))
+          .filter((x: any) => typeof x === 'number') as number[];
+        if (presetXs.length > 0) {
+          presetCenterX = presetXs.reduce((sum, x) => sum + x, 0) / presetXs.length;
+        }
       }
 
       // 为该层的节点计算坐标
@@ -447,7 +480,9 @@ const TopologyRestoreTool: React.FC = () => {
         const xPos = nodeIdx * xGap - layerCenterX + centerX;
         const presetPosition = node.position ||
           (typeof node.x === 'number' && typeof node.y === 'number' ? { x: node.x, y: node.y } : null);
-        const position = presetPosition || { x: xPos, y: yPos };
+        const position = presetPosition && expandRoceLeafSpacing && typeof presetCenterX === 'number'
+          ? { x: presetCenterX + (presetPosition.x - presetCenterX) * 1.35, y: presetPosition.y }
+          : (presetPosition || { x: xPos, y: yPos });
 
         nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
@@ -469,6 +504,7 @@ const TopologyRestoreTool: React.FC = () => {
               </div>
             )
           },
+          ...getHandlePositions(layer, node.id),
           style: { background: 'transparent', border: 'none', padding: 0 }
         };
 
@@ -479,26 +515,58 @@ const TopologyRestoreTool: React.FC = () => {
     // 构建边
     const nodeIds = new Set(newNodes.map(n => n.id));
     const edgeInfoMap = new Map<string, any>();
+    const getLayerRank = (layer?: string) => {
+      const normalized = (layer || '').toLowerCase();
+      const ranks: Record<string, number> = {
+        core: 0, csw: 0,
+        spine: 1, ssw: 1,
+        leaf: 2, asw: 2,
+        lsw: 3,
+        oob: 4,
+        soob: 5,
+        other: 6,
+        unknown: 7
+      };
+      return ranks[normalized] ?? null;
+    };
 
     (connections || []).forEach((conn: any, idx: number) => {
       if (nodeIds.has(conn.source) && nodeIds.has(conn.target)) {
+        const sourceInfo = nodeInfoMap.get(conn.source);
+        const targetInfo = nodeInfoMap.get(conn.target);
+        let sourceId = conn.source;
+        let targetId = conn.target;
+        let srcPort = conn.srcPort;
+        let dstPort = conn.dstPort;
+
+        const sourceRank = getLayerRank(sourceInfo?.layer);
+        const targetRank = getLayerRank(targetInfo?.layer);
+        const shouldSwap = sourceRank !== null && targetRank !== null && sourceRank > targetRank;
+
+        if (shouldSwap) {
+          sourceId = conn.target;
+          targetId = conn.source;
+          srcPort = conn.dstPort;
+          dstPort = conn.srcPort;
+        }
+
         const edgeId = `edge-${idx}`;
         edgeInfoMap.set(edgeId, {
           id: edgeId,
-          source: conn.source,
-          target: conn.target,
-          srcPort: conn.srcPort,
-          dstPort: conn.dstPort,
-          sourceNode: nodeInfoMap.get(conn.source),
-          targetNode: nodeInfoMap.get(conn.target)
+          source: sourceId,
+          target: targetId,
+          srcPort,
+          dstPort,
+          sourceNode: nodeInfoMap.get(sourceId),
+          targetNode: nodeInfoMap.get(targetId)
         });
 
         const isSelected = selectedEdgeInfo?.id === edgeId;
         newEdges.push({
           id: edgeId,
-          source: conn.source,
-          target: conn.target,
-          label: conn.srcPort && conn.dstPort ? `${conn.srcPort}-${conn.dstPort}` : undefined,
+          source: sourceId,
+          target: targetId,
+          label: srcPort && dstPort ? `${srcPort}-${dstPort}` : undefined,
           labelStyle: { fontSize: '8px', fill: '#666', backgroundColor: '#fff', padding: '2px 4px' },
           style: {
             stroke: isSelected ? '#3b82f6' : '#999',
@@ -771,6 +839,13 @@ const TopologyRestoreTool: React.FC = () => {
     setSelectedEdgeInfo(null);
   };
 
+  useEffect(() => {
+    if (renderMode !== 'reactflow') return;
+    if (!reactFlowInstanceRef.current) return;
+    if (nodes.length === 0) return;
+    reactFlowInstanceRef.current.fitView({ padding: 0.2, duration: 0 });
+  }, [nodes.length, edges.length, renderMode]);
+
   return (
     <div
       className="min-h-screen p-6"
@@ -821,16 +896,10 @@ const TopologyRestoreTool: React.FC = () => {
         </p>
       </div>
 
-      {/* 高级配置 - 层级检测 */}
+      {/* 拓扑检测配置 */}
       <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold text-[var(--ink)]">拓扑检测配置</h3>
-          <button
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="rounded-md border border-[var(--line)] bg-[var(--panelMuted)] px-3 py-1 text-xs text-[var(--muted)] hover:bg-white"
-          >
-            {showAdvanced ? '隐藏' : '显示'} 高级选项
-          </button>
         </div>
 
         {/* 性能优化选项 */}
@@ -905,179 +974,18 @@ const TopologyRestoreTool: React.FC = () => {
         </div>
         <div className="mb-4 pb-4 border-b border-[var(--line)]">
           <label className="block text-sm font-medium text-[var(--ink)] mb-2">层级检测方式</label>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="layerDetection"
-                value="auto"
-                checked={config.layerDetection === 'auto'}
-                onChange={() => setConfig({ ...config, layerDetection: 'auto' })}
-                className="w-4 h-4 text-[var(--accent)]"
-              />
-              <span className="text-sm">自动识别 (推荐)</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="layerDetection"
-                value="manual"
-                checked={config.layerDetection === 'manual'}
-                onChange={() => setConfig({ ...config, layerDetection: 'manual' })}
-                className="w-4 h-4 text-[var(--accent)]"
-              />
-              <span className="text-sm">手动配置</span>
-            </label>
-          </div>
+          <div className="text-sm text-[var(--muted)]">自动识别（根据设备层级自适应）</div>
           <p className="text-xs text-[var(--muted)] mt-1">
-            自动方式通过拓扑度数分析识别Core/Spine/Leaf层级，对绝大多数数据中心有效
+            自动方式通过拓扑度数分析识别 Core/Spine/Leaf 层级，对绝大多数数据中心有效
           </p>
-
-          {/* 手动配置 - 隐藏在高级选项中 */}
-          {config.layerDetection === 'manual' && showAdvanced && (
-            <div className="mt-3 p-3 bg-[var(--panelMuted)] rounded border border-[var(--line)]">
-              <p className="text-xs font-medium text-[var(--muted)] mb-2">设备识别模式 (正则表达式)</p>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="text-xs text-[var(--muted)]">Core 设备</label>
-                  <input
-                    type="text"
-                    placeholder="如: IBCR|CORE"
-                    value={config.manualLayers?.corePattern || ''}
-                    onChange={(e) =>
-                      setConfig({
-                        ...config,
-                        manualLayers: { ...config.manualLayers, corePattern: e.target.value }
-                      })
-                    }
-                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted)]">Spine 设备</label>
-                  <input
-                    type="text"
-                    placeholder="如: IBSP|SPINE"
-                    value={config.manualLayers?.spinePattern || ''}
-                    onChange={(e) =>
-                      setConfig({
-                        ...config,
-                        manualLayers: { ...config.manualLayers, spinePattern: e.target.value }
-                      })
-                    }
-                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted)]">Leaf 设备</label>
-                  <input
-                    type="text"
-                    placeholder="如: IBLF|LEAF"
-                    value={config.manualLayers?.leafPattern || ''}
-                    onChange={(e) =>
-                      setConfig({
-                        ...config,
-                        manualLayers: { ...config.manualLayers, leafPattern: e.target.value }
-                      })
-                    }
-                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded mt-1"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* POD 分组方式 */}
         <div>
           <label className="block text-sm font-medium text-[var(--ink)] mb-2">POD 分组方式</label>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="podExtraction"
-                value="regex"
-                checked={config.podExtraction.method === 'regex'}
-                onChange={() =>
-                  setConfig({
-                    ...config,
-                    podExtraction: { method: 'regex', pattern: config.podExtraction.pattern || 'POD\\d+' }
-                  })
-                }
-                className="w-4 h-4 text-[var(--accent)]"
-              />
-              <label className="text-sm text-[var(--ink)]">正则表达式匹配</label>
-              {config.podExtraction.method === 'regex' && (
-                <input
-                  type="text"
-                  placeholder="如: POD\\d+"
-                  value={config.podExtraction.pattern || ''}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      podExtraction: { ...config.podExtraction, pattern: e.target.value }
-                    })
-                  }
-                  className="ml-2 px-2 py-1 text-xs border border-gray-300 rounded flex-1"
-                />
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="podExtraction"
-                value="prefix"
-                checked={config.podExtraction.method === 'prefix'}
-                onChange={() =>
-                  setConfig({
-                    ...config,
-                    podExtraction: { method: 'prefix', prefixLength: config.podExtraction.prefixLength || 2 }
-                  })
-                }
-                className="w-4 h-4 text-[var(--accent)]"
-              />
-              <label className="text-sm text-[var(--ink)]">前缀匹配 (分隔符: -)</label>
-              {config.podExtraction.method === 'prefix' && (
-                <input
-                  type="number"
-                  min="1"
-                  max="5"
-                  placeholder="2"
-                  value={config.podExtraction.prefixLength || 2}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      podExtraction: {
-                        ...config.podExtraction,
-                        prefixLength: parseInt(e.target.value) || 2
-                      }
-                    })
-                  }
-                  className="ml-2 px-2 py-1 text-xs border border-gray-300 rounded w-16"
-                />
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="podExtraction"
-                value="none"
-                checked={config.podExtraction.method === 'none'}
-                onChange={() =>
-                  setConfig({
-                    ...config,
-                    podExtraction: { method: 'none' }
-                  })
-                }
-                className="w-4 h-4 text-[var(--accent)]"
-              />
-              <label className="text-sm text-[var(--ink)]">无分组 (显示全部设备)</label>
-            </div>
-          </div>
+          <div className="text-sm text-[var(--muted)]">自动按 POD 标识分组</div>
           <p className="text-xs text-[var(--muted)] mt-2">
-            正则表达式：按照指定模式匹配 POD 标识 | 前缀匹配：按分隔符分割后取前 N 段
+            系统会基于设备命名中的 POD 标识进行分组展示
           </p>
         </div>
       </div>
@@ -1297,11 +1205,14 @@ const TopologyRestoreTool: React.FC = () => {
                   }
 
                   // 交互优化: 点击 Spine 节点时，自动显示 Core 层，并只显示连接的 Core 设备
-                  if (networkType === 'ib' && rawLayer === 'spine') {
+                  if (networkType === 'ib' && (rawLayer === 'spine' || rawLayer === 'ssw')) {
                     setFocusedSpineId(node.id);
                     // 1. 自动开启 Core 层
-                    if (!layerVisibility.core) {
-                      setLayerVisibility(prev => ({ ...prev, core: true }));
+                    const coreLayerKey = restoreResult?.nodesByLayer?.core
+                      ? 'core'
+                      : (restoreResult?.nodesByLayer?.csw ? 'csw' : 'core');
+                    if (!layerVisibility[coreLayerKey]) {
+                      setLayerVisibility(prev => ({ ...prev, [coreLayerKey]: true }));
                       setMessage(`已显示连接到 ${node.id} 的 Core 设备`);
                     }
 
@@ -1315,12 +1226,14 @@ const TopologyRestoreTool: React.FC = () => {
 
                           // 确认对端是 Core 节点
                           const peerId = edge.source === node.id ? edge.target : edge.source;
-                          const isPeerCore = peerId.includes('IBCR') || peerId.includes('CORE'); // 简单判定
+                          const peerLayer = nodeLayerMap.get(peerId)?.toLowerCase();
+                          const isPeerCore = peerLayer === 'core' || peerLayer === 'csw'
+                            || peerId.includes('IBCR') || peerId.includes('CORE');
                           return isPeerCore;
                         })
                         .map((edge: any) => edge.source === node.id ? edge.target : edge.source);
 
-                      setActiveCoreFilter(connectedCoreIds);
+                      setActiveCoreFilter(connectedCoreIds.length > 0 ? connectedCoreIds : null);
                     }
                   } else {
                     // 点击其他节点 (如 Leaf 或 Core)，清除 Core 过滤器
@@ -1337,10 +1250,14 @@ const TopologyRestoreTool: React.FC = () => {
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
+                onInit={(instance) => {
+                  reactFlowInstanceRef.current = instance;
+                }}
                 onNodeClick={handleNodeClick}
                 onEdgeClick={handleEdgeClick}
                 onPaneClick={handleCanvasClick}
                 fitView
+                wheelSensitivity={networkType === 'roce' ? 0.8 : 0.4}
                 attributionPosition="bottom-left"
                 onlyRenderVisibleElements={true}
                 selectNodesOnDrag={false}
@@ -1476,13 +1393,17 @@ const TopologyRestoreTool: React.FC = () => {
                           <div className="space-y-4">
                             {uplinks.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-bold text-[var(--accent)] uppercase mb-1">上行连接 (Uplinks)</p>
+                                <p className="text-[10px] font-bold text-[var(--accent)] uppercase mb-1">
+                                  上行连接 (Uplinks) · {uplinks.length}
+                                </p>
                                 {uplinks.map((e, i) => renderEdgeItem(e, i, true))}
                               </div>
                             )}
                             {downlinks.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-bold text-[var(--muted)] uppercase mb-1">下行连接 (Downlinks)</p>
+                                <p className="text-[10px] font-bold text-[var(--muted)] uppercase mb-1">
+                                  下行连接 (Downlinks) · {downlinks.length}
+                                </p>
                                 {downlinks.slice(0, 40).map((e, i) => renderEdgeItem(e, i, false))}
                                 {downlinks.length > 40 && <p className="text-[10px] text-[var(--muted)] text-center">... 还有 {downlinks.length - 40} 条连接</p>}
                               </div>

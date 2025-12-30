@@ -21,6 +21,7 @@ const ChatInterface: React.FC = () => {
     sendMessage,
     createConversation,
     deepThinking,
+    setDeepThinking,
     conversations,
     selectConversation,
     loadConversations,
@@ -109,6 +110,11 @@ const ChatInterface: React.FC = () => {
       e.preventDefault();
       handleSubmit(e as any);
     }
+  };
+
+  const handleToggleDeepThinking = () => {
+    if (isLoading || isSending) return;
+    setDeepThinking(!deepThinking);
   };
 
   // 自动调整textarea高度
@@ -349,7 +355,7 @@ const ChatInterface: React.FC = () => {
                         </span>
                       )}
 
-                      {message.role === 'assistant' && message.metadata?.deepThinking && (
+                      {message.role === 'assistant' && message.metadata?.deepThinking === true && (
                         <span className="flex items-center gap-1 text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
                           <Brain className="w-3 h-3" />
                           深度思考
@@ -414,14 +420,21 @@ const ChatInterface: React.FC = () => {
         <div className="px-6 pb-6 pt-3 bg-gradient-to-t from-gray-100 to-transparent">
           <form onSubmit={handleSubmit} className="max-w-4xl mx-auto relative">
             {/* 深度思考标签 */}
-            {deepThinking && (
-              <div className="absolute -top-8 left-4 flex items-center gap-3">
-                <span className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 text-indigo-600 border border-indigo-200/50">
-                  <Brain className="w-3.5 h-3.5" />
-                  深度思考已启用
-                </span>
-              </div>
-            )}
+            <div className="absolute -top-8 left-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleToggleDeepThinking}
+                disabled={isLoading || isSending}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full border transition-all ${deepThinking
+                    ? 'bg-gradient-to-r from-indigo-500/10 to-purple-500/10 text-indigo-600 border-indigo-200/50'
+                    : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                  } ${isLoading || isSending ? 'opacity-60 cursor-not-allowed' : 'hover:border-indigo-200'}`}
+                title={deepThinking ? '点击关闭深度思考' : '点击启用深度思考'}
+              >
+                <Brain className="w-3.5 h-3.5" />
+                {deepThinking ? '深度思考已启用' : '深度思考'}
+              </button>
+            </div>
 
             <div className="flex items-end bg-white rounded-2xl shadow-xl border border-gray-200/50 px-4 py-3 transition-all hover:shadow-2xl hover:border-indigo-200/50 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-500/10">
               <textarea
