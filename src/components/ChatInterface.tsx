@@ -21,7 +21,6 @@ const ChatInterface: React.FC = () => {
     sendMessage,
     createConversation,
     deepThinking,
-    setDeepThinking,
     conversations,
     selectConversation,
     loadConversations,
@@ -380,10 +379,10 @@ const ChatInterface: React.FC = () => {
                   <div className="flex flex-col gap-2 max-w-[85%] w-full">
                     {/* 状态栏：深度思考中 + 停止按钮 */}
                     <div className="flex items-center gap-3 text-sm text-gray-500 pl-1">
-                      <div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100 shadow-sm">
-                        <Brain className="w-4 h-4 animate-pulse" />
-                        <span className="font-medium">深度思考中...</span>
-                      </div>
+                    <div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100 shadow-sm">
+                      <Brain className="w-4 h-4 animate-pulse" />
+                      <span className="font-medium">{deepThinking ? '深度思考中...' : '思考中...'}</span>
+                    </div>
                       <button
                         onClick={handleStop}
                         className="flex items-center gap-1 px-3 py-1 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
@@ -415,12 +414,14 @@ const ChatInterface: React.FC = () => {
         <div className="px-6 pb-6 pt-3 bg-gradient-to-t from-gray-100 to-transparent">
           <form onSubmit={handleSubmit} className="max-w-4xl mx-auto relative">
             {/* 深度思考标签 */}
-            <div className="absolute -top-8 left-4 flex items-center gap-3">
-              <span className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 text-indigo-600 border border-indigo-200/50">
-                <Brain className="w-3.5 h-3.5" />
-                深度思考已启用
-              </span>
-            </div>
+            {deepThinking && (
+              <div className="absolute -top-8 left-4 flex items-center gap-3">
+                <span className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 text-indigo-600 border border-indigo-200/50">
+                  <Brain className="w-3.5 h-3.5" />
+                  深度思考已启用
+                </span>
+              </div>
+            )}
 
             <div className="flex items-end bg-white rounded-2xl shadow-xl border border-gray-200/50 px-4 py-3 transition-all hover:shadow-2xl hover:border-indigo-200/50 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-500/10">
               <textarea

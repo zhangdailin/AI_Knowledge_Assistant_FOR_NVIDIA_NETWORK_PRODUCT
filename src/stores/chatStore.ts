@@ -90,7 +90,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentConversation: null,
   messages: [],
   isLoading: false,
-  deepThinking: true,
+  deepThinking: false,
   abortController: null,
 
   loadConversations: (userId: string) => {

@@ -3,6 +3,7 @@ import { Settings, Zap, Search, Database, Save, Check, RotateCcw, Info } from 'l
 
 interface RetrievalConfig {
     searchCacheSize: number;
+    searchCacheTTL: number;
     chunkCacheTTL: number;
     chunkCacheMaxEntries: number;
     searchLimit: number;
@@ -15,6 +16,7 @@ interface RetrievalConfig {
 
 const defaultConfig: RetrievalConfig = {
     searchCacheSize: 200,
+    searchCacheTTL: 30000,
     chunkCacheTTL: 30000,
     chunkCacheMaxEntries: 20,
     searchLimit: 30,
@@ -210,6 +212,15 @@ export default function RetrievalSettings() {
                             min={50}
                             max={500}
                             unit="条"
+                        />
+                        <ConfigItem
+                            label="搜索缓存时间"
+                            description="搜索结果的有效时间，过期后会重新检索"
+                            value={config.searchCacheTTL / 1000}
+                            onChange={(v) => updateConfig('searchCacheTTL', v * 1000)}
+                            min={5}
+                            max={300}
+                            unit="秒"
                         />
                         <ConfigItem
                             label="Chunk 缓存时间"

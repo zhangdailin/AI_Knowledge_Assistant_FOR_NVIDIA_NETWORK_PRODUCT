@@ -86,16 +86,6 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  // 计算每个分类的文档数量
-  const documentCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    documents.forEach(doc => {
-      const catId = doc.categoryId || 'default';
-      counts[catId] = (counts[catId] || 0) + 1;
-    });
-    return counts;
-  }, [documents]);
-
   // 轮询逻辑：如果有文档正在处理中，每3秒刷新一次状态
   // 此外，如果发现有文档 Embedding 未完成（但状态是 ready），也进行轮询，以便及时更新进度
   useEffect(() => {
@@ -169,7 +159,7 @@ const KnowledgeBase: React.FC = () => {
         const file = files[i];
         try {
           // 直接上传到后台处理，不再在前端解析
-          await unifiedStorageManager.uploadDocument(file, user.id, 'default');
+          await unifiedStorageManager.uploadDocument(file, user.id, selectedCategoryId || 'default');
           successCount++;
         } catch (error) {
           failureCount++;
@@ -204,8 +194,10 @@ const KnowledgeBase: React.FC = () => {
     let markdown = `# ${doc.filename}\n\n`;
     markdown += `**上传时间**: ${new Date(doc.uploadedAt).toLocaleString()}\n\n`;
     markdown += `**文件大小**: ${formatFileSize(doc.fileSize)}\n\n`;
-    if (doc.category) {
-      markdown += `**分类**: ${doc.category}\n\n`;
+    const categoryName = doc.categoryId ? getCategoryNameById(doc.categoryId, categories) : null;
+    const categoryLabel = categoryName || doc.category;
+    if (categoryLabel) {
+      markdown += `**分类**: ${categoryLabel}\n\n`;
     }
     markdown += `---\n\n`;
 
@@ -350,13 +342,46 @@ const KnowledgeBase: React.FC = () => {
     return ids;
   };
 
+  const getCategoryNameById = (categoryId: string, cats: Category[]): string | null => {
+    for (const node of cats) {
+      if (node.id === categoryId) return node.name;
+      if (node.children) {
+        const found = getCategoryNameById(categoryId, node.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const getCategoryIdByName = (name: string, cats: Category[]): string | null => {
+    for (const node of cats) {
+      if (node.name === name) return node.id;
+      if (node.children) {
+        const found = getCategoryIdByName(name, node.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // 计算每个分类的文档数量
+  const documentCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    documents.forEach(doc => {
+      const catId = doc.categoryId || (doc.category ? getCategoryIdByName(doc.category, categories) : null) || 'default';
+      counts[catId] = (counts[catId] || 0) + 1;
+    });
+    return counts;
+  }, [documents, categories]);
+
   const filteredDocuments = useMemo(() => {
     return documents.filter(doc => {
+      const preview = doc.contentPreview || '';
       const matchesSearch = doc.filename.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        doc.contentPreview.toLowerCase().includes(searchTerm.toLowerCase());
+        preview.toLowerCase().includes(searchTerm.toLowerCase());
       if (!selectedCategoryId) return matchesSearch;
       const allowedIds = getCategoryAndChildrenIds(selectedCategoryId, categories);
-      const docCatId = doc.categoryId || 'default';
+      const docCatId = doc.categoryId || (doc.category ? getCategoryIdByName(doc.category, categories) : null) || 'default';
       return matchesSearch && allowedIds.includes(docCatId);
     });
   }, [documents, searchTerm, selectedCategoryId, categories]);
@@ -493,18 +518,21 @@ const KnowledgeBase: React.FC = () => {
                   <div className="p-4 max-h-64 overflow-y-auto">
                     {/* 递归渲染分类列表 */}
                     {(() => {
+                      const currentCategoryId = (movingDoc.categoryId && getCategoryNameById(movingDoc.categoryId, categories))
+                        ? movingDoc.categoryId
+                        : (movingDoc.category ? getCategoryIdByName(movingDoc.category, categories) : null) || 'default';
                       const renderCategoryList = (nodes: Category[], level = 0): React.ReactNode => {
                         return nodes.map(node => (
                           <div key={node.id}>
                             <button
                               onClick={() => handleMoveDocument(node.id)}
-                              className={`w-full text-left px-3 py-2 rounded-lg hover:bg-purple-50 text-sm flex items-center gap-2 ${(movingDoc.categoryId || 'default') === node.id ? 'bg-purple-100 text-purple-700' : 'text-gray-700'
+                              className={`w-full text-left px-3 py-2 rounded-lg hover:bg-purple-50 text-sm flex items-center gap-2 ${currentCategoryId === node.id ? 'bg-purple-100 text-purple-700' : 'text-gray-700'
                                 }`}
                               style={{ paddingLeft: `${12 + level * 16}px` }}
                             >
                               <FolderOpen className="w-4 h-4" />
                               {node.name}
-                              {(movingDoc.categoryId || 'default') === node.id && (
+                              {currentCategoryId === node.id && (
                                 <span className="text-xs text-gray-400 ml-auto">(当前)</span>
                               )}
                             </button>
@@ -608,7 +636,7 @@ const KnowledgeBase: React.FC = () => {
                         </button>
                       </div>
 
-                      <p className="text-xs text-gray-600 line-clamp-2 mb-3">{doc.contentPreview}</p>
+                      <p className="text-xs text-gray-600 line-clamp-2 mb-3">{doc.contentPreview || ''}</p>
 
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-gray-400">{new Date(doc.uploadedAt).toLocaleDateString()}</span>

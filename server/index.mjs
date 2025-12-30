@@ -38,6 +38,17 @@ function applySearchCacheSize(size) {
   }
 }
 
+function applySearchCacheTTL(ttlMs) {
+  const parsed = Number(ttlMs);
+  searchCache.setTTL(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
+}
+
+function clearSearchCache() {
+  searchCache.clear();
+}
+
+storage.setSearchCacheInvalidator(clearSearchCache);
+
 
 // RRF 融合算法 (参数可配置)
 function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
@@ -130,6 +141,46 @@ function fixFilename(filename) {
     console.warn(`[fixFilename] 转换失败，使用原始文件名: ${filename}`, e.message);
   }
   return filename;
+}
+
+function findCategoryById(nodes, categoryId) {
+  for (const node of nodes) {
+    if (node.id === categoryId) return node;
+    if (node.children) {
+      const found = findCategoryById(node.children, categoryId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findCategoryByName(nodes, name) {
+  for (const node of nodes) {
+    if (node.name === name) return node;
+    if (node.children) {
+      const found = findCategoryByName(node.children, name);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function resolveCategoryInfo(categoryValue, categoryTree) {
+  const nodes = Array.isArray(categoryTree) ? categoryTree : [];
+  const defaultNode = findCategoryById(nodes, 'default');
+  const defaultName = defaultNode?.name || '默认分类';
+
+  if (!categoryValue) {
+    return { id: 'default', name: defaultName };
+  }
+
+  const byId = findCategoryById(nodes, categoryValue);
+  if (byId) return { id: byId.id, name: byId.name };
+
+  const byName = findCategoryByName(nodes, categoryValue);
+  if (byName) return { id: byName.id, name: byName.name };
+
+  return { id: 'default', name: defaultName };
 }
 
 // 异步处理文件上传
@@ -263,12 +314,16 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
     }
 
     // 1. 创建文档记录 (status: processing)
+    const categoriesData = await storage.getCategories();
+    const resolvedCategory = resolveCategoryInfo(category, categoriesData.tree || []);
+
     const docData = {
       userId,
       filename: fixedFilename,
       fileType: file.mimetype,
       fileSize: file.size,
-      category: category || 'default',
+      categoryId: resolvedCategory.id,
+      category: resolvedCategory.name,
       contentPreview: '处理中...', // 初始预览
       uploadedAt: new Date().toISOString(),
       status: 'processing'
@@ -372,13 +427,26 @@ app.get('/api/documents/:id', asyncHandler(async (req, res) => {
 
 // 创建文档
 app.post('/api/documents', asyncHandler(async (req, res) => {
-  const document = await storage.createDocument(req.body);
+  const categoriesData = await storage.getCategories();
+  const resolvedCategory = resolveCategoryInfo(req.body?.categoryId || req.body?.category, categoriesData.tree || []);
+  const document = await storage.createDocument({
+    ...req.body,
+    categoryId: resolvedCategory.id,
+    category: resolvedCategory.name
+  });
   res.json({ ok: true, document });
 }, '创建文档'));
 
 // 更新文档
 app.put('/api/documents/:id', asyncHandler(async (req, res) => {
-  const document = await storage.updateDocument(req.params.id, req.body);
+  const updates = { ...req.body };
+  if ('categoryId' in updates || 'category' in updates) {
+    const categoriesData = await storage.getCategories();
+    const resolvedCategory = resolveCategoryInfo(updates.categoryId || updates.category, categoriesData.tree || []);
+    updates.categoryId = resolvedCategory.id;
+    updates.category = resolvedCategory.name;
+  }
+  const document = await storage.updateDocument(req.params.id, updates);
   if (!document) {
     return res.status(404).json({ ok: false, error: '文档不存在' });
   }
@@ -391,11 +459,16 @@ app.put('/api/documents/:id/category', asyncHandler(async (req, res) => {
   if (!categoryId) {
     return res.status(400).json({ ok: false, error: '缺少 categoryId' });
   }
-  const document = await storage.updateDocument(req.params.id, { categoryId });
+  const categoriesData = await storage.getCategories();
+  const resolvedCategory = resolveCategoryInfo(categoryId, categoriesData.tree || []);
+  const document = await storage.updateDocument(req.params.id, {
+    categoryId: resolvedCategory.id,
+    category: resolvedCategory.name
+  });
   if (!document) {
     return res.status(404).json({ ok: false, error: '文档不存在' });
   }
-  console.log(`[API] 文档 ${req.params.id} 移动到分类 ${categoryId}`);
+  console.log(`[API] 文档 ${req.params.id} 移动到分类 ${resolvedCategory.id}`);
   res.json({ ok: true, document });
 }, '移动文档'));
 
@@ -463,14 +536,17 @@ app.put('/api/chunks/:id/embedding', asyncHandler(async (req, res) => {
 app.get('/api/chunks/search', async (req, res) => {
   try {
     const { q, limit, categoryId } = req.query;
-    if (!q) return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
+    const query = typeof q === 'string' ? q.trim() : '';
+    if (!query) return res.status(400).json({ ok: false, error: '缺少查询参数 q' });
 
     // 从配置读取检索参数
     const settings = await storage.getSettings();
     const retrievalConfig = settings.retrieval || {};
     const searchLimit = parseInt(limit) || retrievalConfig.searchLimit || 30;
     const rerankTopN = retrievalConfig.rerankTopN || 10;
+    const searchCacheTTL = retrievalConfig.searchCacheTTL ?? 30000;
     applySearchCacheSize(retrievalConfig.searchCacheSize);
+    applySearchCacheTTL(searchCacheTTL);
 
     // 展开分类：如果指定了 categoryId，获取该分类及其子分类的所有 ID
     let categoryIds = null;
@@ -482,11 +558,12 @@ app.get('/api/chunks/search', async (req, res) => {
 
 
     const cacheKey = JSON.stringify({
-      q,
+      q: query,
       limit: searchLimit,
       categoryId: categoryId || 'all',
       embeddingModel: settings?.modelSelection?.embedding || 'default',
       rerankModel: settings?.modelSelection?.reranking || 'default',
+      searchCacheTTL,
       rrfK: retrievalConfig.rrfK ?? 'default',
       keywordWeight: retrievalConfig.keywordWeight ?? 'default',
       vectorWeight: retrievalConfig.vectorWeight ?? 'default',
@@ -499,10 +576,10 @@ app.get('/api/chunks/search', async (req, res) => {
     const startTime = Date.now();
 
     // 1. 并行执行：关键词搜索 + 向量生成（带分类优先加分）
-    const keywordSearchPromise = storage.searchChunks(q, searchLimit, categoryIds);
+    const keywordSearchPromise = storage.searchChunks(query, searchLimit, categoryIds);
     const vectorSearchPromise = (async () => {
       try {
-        const embedding = await embedText(q);
+        const embedding = await embedText(query);
         if (embedding) return await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
       } catch (e) { }
       return [];
@@ -513,14 +590,14 @@ app.get('/api/chunks/search', async (req, res) => {
       vectorSearchPromise
     ]);
 
-    console.log(`[Search] Query: "${q}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
+    console.log(`[Search] Query: "${query}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
 
     // 2. 结果融合 (传入配置参数)
-    let finalResults = fuseResults(keywordResults, vectorResults, q, searchLimit, retrievalConfig);
+    let finalResults = fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
 
     // 3. Reranking (使用配置的 topN)
     if (finalResults.length > 0) {
-      const rerankedResults = await rerankDocuments(q, finalResults, rerankTopN);
+      const rerankedResults = await rerankDocuments(query, finalResults, rerankTopN);
       finalResults = rerankedResults.length > 0 ? rerankedResults : finalResults;
     }
 
@@ -639,6 +716,7 @@ app.put('/api/settings', async (req, res) => {
     const settings = await storage.updateSettings(req.body);
     await storage.reloadCacheConfig();
     applySearchCacheSize(settings?.retrieval?.searchCacheSize);
+    applySearchCacheTTL(settings?.retrieval?.searchCacheTTL ?? 30000);
     res.json({ ok: true, settings });
   } catch (error) {
     console.error('更新设置失败:', error);

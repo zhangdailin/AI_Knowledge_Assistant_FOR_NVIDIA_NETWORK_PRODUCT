@@ -21,6 +21,7 @@ const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.json');
 
 // 初始化标记
 let isInitialized = false;
+let searchCacheInvalidator = null;
 
 async function initStorage() {
   if (isInitialized) return;
@@ -78,6 +79,7 @@ export async function createDocument(documentData) {
   };
   documents.push(newDocument);
   await writeJSON(DOCUMENTS_FILE, documents);
+  if (searchCacheInvalidator) searchCacheInvalidator('createDocument');
   return newDocument;
 }
 
@@ -87,6 +89,7 @@ export async function updateDocument(documentId, updates) {
   if (index === -1) return null;
   documents[index] = { ...documents[index], ...updates };
   await writeJSON(DOCUMENTS_FILE, documents);
+  if (searchCacheInvalidator) searchCacheInvalidator('updateDocument');
   return documents[index];
 }
 
@@ -101,6 +104,8 @@ export async function deleteDocument(documentId) {
       await fs.unlink(path.join(CHUNKS_DIR, `${documentId}.json`));
     } catch { }
 
+    invalidateChunkCache(`${documentId}.json`);
+    if (searchCacheInvalidator) searchCacheInvalidator('deleteDocument');
     return filtered.length < documents.length;
   } catch (error) {
     console.error(`[storage] 删除文档失败:`, error);
@@ -190,6 +195,8 @@ export async function createChunks(chunksData) {
       }));
       existing.push(...newChunks);
       await writeJSON(filePath, existing);
+      invalidateChunkCache(`${docId}.json`);
+      if (searchCacheInvalidator) searchCacheInvalidator('createChunks');
       result.push(...newChunks);
     } finally {
       release();
@@ -228,6 +235,8 @@ export async function updateChunkEmbedding(chunkId, embedding) {
         if (currentIndex !== -1) {
           currentChunks[currentIndex] = { ...currentChunks[currentIndex], embedding };
           await writeJSON(filePath, currentChunks);
+          invalidateChunkCache(file);
+          if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbedding');
           return true;
         }
       } finally {
@@ -262,6 +271,8 @@ export async function updateChunkEmbeddings(updates, documentId) {
 
       if (updated > 0) {
         await writeJSON(filePath, chunks);
+        invalidateChunkCache(`${documentId}.json`);
+        if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbeddings');
       }
       return { success: updated, failed: updates.length - updated };
     } catch (e) {
@@ -381,6 +392,14 @@ export async function reloadCacheConfig() {
   pruneChunkCache();
 }
 
+export function setSearchCacheInvalidator(fn) {
+  searchCacheInvalidator = typeof fn === 'function' ? fn : null;
+}
+
+function invalidateChunkCache(file) {
+  chunkCache.delete(file);
+}
+
 // 初始化时加载配置
 loadCacheConfig();
 
@@ -414,6 +433,24 @@ async function getChunksFromFile(file) {
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function collectCategoryMaps(nodes, idSet, nameToId) {
+  for (const node of nodes) {
+    idSet.add(node.id);
+    nameToId.set(node.name, node.id);
+    if (node.children) collectCategoryMaps(node.children, idSet, nameToId);
+  }
+}
+
+function resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId) {
+  if (doc.categoryId) {
+    if (categoryIdSet.has(doc.categoryId)) return doc.categoryId;
+    if (categoryNameToId.has(doc.categoryId)) return categoryNameToId.get(doc.categoryId);
+  }
+  if (doc.category && categoryIdSet.has(doc.category)) return doc.category;
+  if (doc.category && categoryNameToId.has(doc.category)) return categoryNameToId.get(doc.category);
+  return 'default';
 }
 
 export async function searchChunks(query, limit = 30, categoryIds = null) {
@@ -458,6 +495,10 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
   const documents = await getAllDocuments();
   const docMap = new Map(documents.map(d => [d.id, d]));
+  const categoriesData = await getCategories();
+  const categoryIdSet = new Set();
+  const categoryNameToId = new Map();
+  collectCategoryMaps(categoriesData.tree || [], categoryIdSet, categoryNameToId);
 
   const results = [];
 
@@ -478,7 +519,7 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
       // 分类优先加分：如果指定了分类，匹配分类的文档获得加分
       if (categoryIds && categoryIds.length > 0) {
-        const docCatId = doc.categoryId || 'default';
+        const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
         if (categoryIds.includes(docCatId)) {
           categoryScoreBonus = 6; // 分类匹配加分
         }
@@ -592,6 +633,10 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
   // 获取文档映射用于分类匹配
   const documents = await getAllDocuments();
   const docMap = new Map(documents.map(d => [d.id, d]));
+  const categoriesData = await getCategories();
+  const categoryIdSet = new Set();
+  const categoryNameToId = new Map();
+  collectCategoryMaps(categoriesData.tree || [], categoryIdSet, categoryNameToId);
 
   // 第一步：从所有文件中收集所有chunks
   for (const file of files) {
@@ -614,7 +659,7 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
 
         // 分类优先加分：如果指定了分类，匹配分类的结果获得加分
         if (categoryIds && categoryIds.length > 0 && doc) {
-          const docCatId = doc.categoryId || 'default';
+          const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
           if (categoryIds.includes(docCatId)) {
             score += 0.05; // 分类匹配加分（向量分数范围 0-1）
           }
@@ -814,15 +859,18 @@ export async function addCategory(parentId, category) {
   }
 
   await saveCategories(categories);
+  if (searchCacheInvalidator) searchCacheInvalidator('addCategory');
   return newCat;
 }
 
 export async function updateCategory(categoryId, updates) {
   const categories = await getCategories();
+  let previousName = null;
 
   const update = (nodes) => {
     for (const node of nodes) {
       if (node.id === categoryId) {
+        previousName = node.name;
         Object.assign(node, updates);
         return true;
       }
@@ -833,6 +881,26 @@ export async function updateCategory(categoryId, updates) {
   update(categories.tree);
 
   await saveCategories(categories);
+
+  if (previousName) {
+    const documents = await getAllDocuments();
+    const updatedDocuments = documents.map(doc => {
+      const matchesId = doc.categoryId === categoryId;
+      const matchesName = doc.category === previousName;
+      const matchesLegacyId = doc.categoryId === previousName;
+      if (matchesId || matchesName || matchesLegacyId) {
+        return {
+          ...doc,
+          categoryId,
+          category: updates.name || doc.category || previousName
+        };
+      }
+      return doc;
+    });
+    await writeJSON(DOCUMENTS_FILE, updatedDocuments);
+  }
+
+  if (searchCacheInvalidator) searchCacheInvalidator('updateCategory');
   return categories;
 }
 
@@ -840,10 +908,12 @@ export async function deleteCategory(categoryId) {
   if (categoryId === 'default') return false;
 
   const categories = await getCategories();
+  let removedName = null;
 
   const remove = (nodes, parent) => {
     for (let i = 0; i < nodes.length; i++) {
       if (nodes[i].id === categoryId) {
+        removedName = nodes[i].name;
         nodes.splice(i, 1);
         return true;
       }
@@ -857,14 +927,19 @@ export async function deleteCategory(categoryId) {
 
   // 将该分类下的文档移到默认分类
   const documents = await getAllDocuments();
+  const defaultName = DEFAULT_CATEGORIES.tree[0]?.name || '默认分类';
   const updated = documents.map(doc => {
-    if (doc.categoryId === categoryId) {
-      return { ...doc, categoryId: 'default', categoryPath: ['default'] };
+    const matchesId = doc.categoryId === categoryId;
+    const matchesName = removedName && doc.category === removedName;
+    const matchesLegacyId = removedName && doc.categoryId === removedName;
+    if (matchesId || matchesName || matchesLegacyId) {
+      return { ...doc, categoryId: 'default', category: defaultName, categoryPath: ['default'] };
     }
     return doc;
   });
   await writeJSON(DOCUMENTS_FILE, updated);
 
+  if (searchCacheInvalidator) searchCacheInvalidator('deleteCategory');
   return true;
 }
 

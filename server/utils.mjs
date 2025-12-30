@@ -71,18 +71,23 @@ export function createError(message, statusCode = 500, userMessage = null) {
  * 用于缓存搜索结果等数据
  */
 export class SimpleLRUCache {
-    constructor(maxSize = 100) {
+    constructor(maxSize = 100, ttlMs = null) {
         this.maxSize = maxSize;
+        this.ttlMs = ttlMs;
         this.cache = new Map();
     }
 
     get(key) {
         if (!this.cache.has(key)) return null;
-        const val = this.cache.get(key);
+        const entry = this.cache.get(key);
+        if (this.ttlMs && Date.now() - entry.timestamp > this.ttlMs) {
+            this.cache.delete(key);
+            return null;
+        }
         // LRU: 移动到最后
         this.cache.delete(key);
-        this.cache.set(key, val);
-        return val;
+        this.cache.set(key, entry);
+        return entry.value;
     }
 
     set(key, value) {
@@ -93,7 +98,7 @@ export class SimpleLRUCache {
             const firstKey = this.cache.keys().next().value;
             this.cache.delete(firstKey);
         }
-        this.cache.set(key, value);
+        this.cache.set(key, { value, timestamp: Date.now() });
     }
 
     setMaxSize(maxSize) {
@@ -101,6 +106,21 @@ export class SimpleLRUCache {
         while (this.cache.size > this.maxSize) {
             const firstKey = this.cache.keys().next().value;
             this.cache.delete(firstKey);
+        }
+    }
+
+    setTTL(ttlMs) {
+        this.ttlMs = ttlMs;
+        this.pruneExpired();
+    }
+
+    pruneExpired() {
+        if (!this.ttlMs) return;
+        const now = Date.now();
+        for (const [key, entry] of this.cache.entries()) {
+            if (now - entry.timestamp > this.ttlMs) {
+                this.cache.delete(key);
+            }
         }
     }
 
