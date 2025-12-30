@@ -159,20 +159,22 @@ export function bundleEdges(
   }
 
   // 统计信息
+  // 计算实际可见边数量（聚合边 + 未聚合的原始边）
+  const visibleEdgeCount = bundledEdges.filter(e =>
+    e.data?.type === 'bundle' || (!e.data?.bundleId && !e.data?.hidden)
+  ).length;
   const stats = {
     originalCount: edges.length,
-    bundledCount: bundledEdges.filter(e => e.data?.type === 'bundle').length,
+    bundledCount: bundleMap.size,
     bundleCount: bundleMap.size,
-    reduction: `${(
-      ((edges.length - bundledEdges.filter(e => e.data?.type !== 'bundle').length) /
-        edges.length) *
-      100
-    ).toFixed(1)}%`
+    reduction: edges.length > 0
+      ? `${(((edges.length - visibleEdgeCount) / edges.length) * 100).toFixed(1)}%`
+      : '0%'
   };
 
   console.log('[EdgeBundling]', {
     originalEdges: edges.length,
-    resultEdges: bundledEdges.length,
+    visibleEdges: visibleEdgeCount,
     bundleCount: bundleMap.size,
     reduction: stats.reduction
   });

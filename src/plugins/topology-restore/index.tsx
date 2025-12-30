@@ -159,8 +159,8 @@ const TopologyRestoreTool: React.FC = () => {
   const nodeLayerMap = useMemo(() => {
     const map = new Map<string, string>();
     if (restoreResult?.nodesByLayer) {
-      Object.entries(restoreResult.nodesByLayer).forEach(([layer, nodes]: [string, any[]]) => {
-        nodes.forEach(n => map.set(n.id, layer));
+      Object.entries(restoreResult.nodesByLayer).forEach(([layer, layerNodes]: [string, any[]]) => {
+        layerNodes.forEach(n => map.set(n.id, layer));
       });
     }
     return map;
@@ -180,12 +180,23 @@ const TopologyRestoreTool: React.FC = () => {
   }, [pods]);
 
   // Phase 2 V2: Auto-collapse large topologies (POD >= 5)
+  // 使用 ref 避免无限循环
+  const hasAutoSwitchedRef = useRef(false);
   useEffect(() => {
-    if (pods.length >= 5 && viewLevel === 'group') {
+    if (pods.length >= 5 && viewLevel === 'group' && !hasAutoSwitchedRef.current) {
       console.log(`[LOD] Auto-switching to overview for ${pods.length} PODs`);
-      applyViewLevel('overview');
+      hasAutoSwitchedRef.current = true;
+      setViewLevel('overview');
+      setCollapsedPods(new Set(pods));
+      setFocusedPod(null);
+      setMessage('已切换到概览视图');
     }
-  }, [pods.length, viewLevel, applyViewLevel]);
+  }, [pods.length, viewLevel]);
+
+  // 重置 auto-switch 标记当 pods 变化时
+  useEffect(() => {
+    hasAutoSwitchedRef.current = false;
+  }, [pods]);
 
   useEffect(() => {
     if (viewLevel === 'overview') {
@@ -408,7 +419,7 @@ const TopologyRestoreTool: React.FC = () => {
     const nodeInfoMap = new Map<string, any>();
 
     // 获取每层的所有设备，用于计算坐标
-    const allLayers = Object.values(nodesByLayer).map((nodes: any) => nodes.length);
+    const allLayers = Object.values(nodesByLayer).map((layerArr: any) => layerArr.length);
     const maxCount = Math.max(...allLayers, 0);
 
     // 布局参数（参考参考项目的优化方案）
@@ -487,6 +498,7 @@ const TopologyRestoreTool: React.FC = () => {
         nodeInfoMap.set(node.id, { ...node, layer });
         const isHighlighted = highlightedNodeId === node.id;
         const isSelected = selectedNodeInfo?.id === node.id;
+        const textLabel = node.label || node.id;
 
         const nodeData = {
           id: node.id,
@@ -500,9 +512,10 @@ const TopologyRestoreTool: React.FC = () => {
                 ...(isHighlighted ? { boxShadow: '0 0 20px rgba(255, 0, 0, 0.8)', border: '3px solid #ff0000' } : {})
               }}>
                 <div>{layer.toUpperCase()}</div>
-                <div style={{ fontSize: '8px', marginTop: '2px' }}>{node.label || node.id}</div>
+                <div style={{ fontSize: '8px', marginTop: '2px' }}>{textLabel}</div>
               </div>
-            )
+            ),
+            searchLabel: textLabel
           },
           ...getHandlePositions(layer, node.id),
           style: { background: 'transparent', border: 'none', padding: 0 }
@@ -635,8 +648,8 @@ const TopologyRestoreTool: React.FC = () => {
     setEdges
   ]);
 
-  const loadPodDetails = async (podName: string) => {
-    if (!file || loadedPods.has(podName)) return;
+  const loadPodDetails = async (podName: string): Promise<any> => {
+    if (!file || loadedPods.has(podName)) return null;
 
     setLoading(true);
     try {
@@ -654,6 +667,7 @@ const TopologyRestoreTool: React.FC = () => {
       const data = await res.json();
 
       if (data.ok) {
+        let updatedResult: any = null;
         setRestoreResult((prev: any) => {
           if (!prev) return prev;
           const newState = { ...prev };
@@ -668,6 +682,7 @@ const TopologyRestoreTool: React.FC = () => {
 
           // Merge Edges
           newState.connections = [...(newState.connections || []), ...(data.edges || [])];
+          updatedResult = newState;
           return newState;
         });
         setLoadedPods(prev => {
@@ -676,12 +691,14 @@ const TopologyRestoreTool: React.FC = () => {
           return next;
         });
         setMessage(`已加载 POD: ${podName} 数据`);
+        return updatedResult;
       } else {
         throw new Error(data.error);
       }
     } catch (err: any) {
       console.error('Failed to load POD:', err);
       setError(`加载 POD ${podName} 失败: ${err.message}`);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -690,12 +707,14 @@ const TopologyRestoreTool: React.FC = () => {
   const handlePodChange = async (pod: string) => {
     setSelectedPod(pod);
 
-    // Check Lazy Loading
+    // Check Lazy Loading - 使用返回值避免竞态条件
+    let dataToUse = restoreResult;
     if (lazyMode && pod !== 'ALL' && !loadedPods.has(pod)) {
-      await loadPodDetails(pod);
+      const loadedData = await loadPodDetails(pod);
+      if (loadedData) dataToUse = loadedData;
     }
 
-    if (restoreResult) buildTopology(restoreResult, pod, layerVisibility, selectedRail);
+    if (dataToUse) buildTopology(dataToUse, pod, layerVisibility, selectedRail);
   };
 
   const handleRailChange = (rail: string) => {
@@ -721,7 +740,7 @@ const TopologyRestoreTool: React.FC = () => {
     // 1. 本地搜索 (Local Search in visible nodes)
     const visibleNode = nodes.find(n =>
       n.id.toUpperCase().includes(upperSearch) ||
-      (typeof n.data?.label === 'string' && n.data.label.toUpperCase().includes(upperSearch))
+      (n.data?.searchLabel && n.data.searchLabel.toUpperCase().includes(upperSearch))
     );
 
     if (visibleNode) {
@@ -1265,7 +1284,17 @@ const TopologyRestoreTool: React.FC = () => {
                 minZoom={0.1}
               >
                 <Controls />
-                <MiniMap nodeColor={(node) => layerColors[node.id.split('-')[0]] || layerColors.unknown} style={{ background: '#f0f0f0' }} />
+                <MiniMap nodeColor={(node) => {
+                  // 从 nodeLayerMap 获取层级，或通过 ID 模式匹配
+                  const layer = nodeLayerMap.get(node.id);
+                  if (layer) return layerColors[layer] || layerColors.unknown;
+                  // 回退：通过 ID 模式匹配
+                  const id = node.id.toUpperCase();
+                  if (id.includes('IBCR') || id.includes('CORE') || id.includes('CSW')) return layerColors.core;
+                  if (id.includes('IBSP') || id.includes('SPINE') || id.includes('SSW')) return layerColors.spine;
+                  if (id.includes('IBLF') || id.includes('LEAF') || id.includes('ASW') || id.includes('LSW')) return layerColors.leaf;
+                  return layerColors.unknown;
+                }} style={{ background: '#f0f0f0' }} />
                 <Background color="#f0f0f0" gap={20} />
               </ReactFlow>
             )}

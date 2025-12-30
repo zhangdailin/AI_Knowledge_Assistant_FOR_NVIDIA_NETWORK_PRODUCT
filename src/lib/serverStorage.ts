@@ -5,6 +5,14 @@
 
 import { Document, Chunk } from './localStorage';
 
+// 自定义错误类型，用于区分网络错误和空结果
+export class StorageError extends Error {
+  constructor(message: string, public readonly isNetworkError: boolean = false) {
+    super(message);
+    this.name = 'StorageError';
+  }
+}
+
 function getApiServerUrl(): string {
   // 1. 优先使用用户在前端设置的自定义地址
   if (typeof window !== 'undefined') {
@@ -41,13 +49,15 @@ class ServerStorageManager {
     try {
       const res = await fetch(`${this.apiUrl}/api/documents`);
       if (!res.ok) {
-        throw new Error(`获取文档列表失败: ${res.statusText}`);
+        throw new StorageError(`获取文档列表失败: ${res.statusText}`, true);
       }
       const data = await res.json();
       return data.documents || [];
     } catch (error) {
       console.error('获取文档列表失败:', error);
-      return [];
+      // 重新抛出错误，让调用者决定如何处理
+      if (error instanceof StorageError) throw error;
+      throw new StorageError(error instanceof Error ? error.message : '网络错误', true);
     }
   }
 
@@ -56,13 +66,14 @@ class ServerStorageManager {
       const res = await fetch(`${this.apiUrl}/api/documents/${documentId}`);
       if (!res.ok) {
         if (res.status === 404) return null;
-        throw new Error(`获取文档失败: ${res.statusText}`);
+        throw new StorageError(`获取文档失败: ${res.statusText}`, true);
       }
       const data = await res.json();
       return data.document || null;
     } catch (error) {
       console.error('获取文档失败:', error);
-      return null;
+      if (error instanceof StorageError) throw error;
+      throw new StorageError(error instanceof Error ? error.message : '网络错误', true);
     }
   }
 

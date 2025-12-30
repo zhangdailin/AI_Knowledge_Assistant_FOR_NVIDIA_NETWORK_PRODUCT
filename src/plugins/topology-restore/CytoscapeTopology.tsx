@@ -8,8 +8,15 @@ import Cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { Layers, Zap, Maximize, Move } from 'lucide-react';
 
-// eslint-disable-next-line react-hooks/rules-of-hooks
-Cytoscape.use(coseBilkent);
+// 安全注册插件，避免重复注册
+try {
+  if (!(Cytoscape as any)._coseBilkentRegistered) {
+    Cytoscape.use(coseBilkent);
+    (Cytoscape as any)._coseBilkentRegistered = true;
+  }
+} catch (e) {
+  // 插件已注册，忽略错误
+}
 
 // Import Premium Styles
 import { getPremiumStyles, NEON_PALETTE } from './TopologyStyles';

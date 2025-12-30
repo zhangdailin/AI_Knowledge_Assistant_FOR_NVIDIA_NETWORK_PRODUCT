@@ -205,16 +205,34 @@ export async function createChunks(chunksData) {
   return result;
 }
 
-// 写入锁队列
+// 写入锁队列（带自动清理）
 const writeQueueLocks = new Map();
+const lockRefCounts = new Map();
+
 async function acquireWriteLock(filePath) {
-  if (!writeQueueLocks.has(filePath)) writeQueueLocks.set(filePath, Promise.resolve());
+  if (!writeQueueLocks.has(filePath)) {
+    writeQueueLocks.set(filePath, Promise.resolve());
+    lockRefCounts.set(filePath, 0);
+  }
+
+  lockRefCounts.set(filePath, (lockRefCounts.get(filePath) || 0) + 1);
   const currentLock = writeQueueLocks.get(filePath);
   let releaseLock;
   const nextLock = currentLock.then(() => new Promise(resolve => releaseLock = resolve));
   writeQueueLocks.set(filePath, nextLock);
   await currentLock;
-  return () => releaseLock && releaseLock();
+
+  return () => {
+    if (releaseLock) releaseLock();
+    // 清理：当没有等待的锁时，删除 Map 条目
+    const count = (lockRefCounts.get(filePath) || 1) - 1;
+    if (count <= 0) {
+      writeQueueLocks.delete(filePath);
+      lockRefCounts.delete(filePath);
+    } else {
+      lockRefCounts.set(filePath, count);
+    }
+  };
 }
 
 export async function updateChunkEmbedding(chunkId, embedding) {
@@ -224,24 +242,21 @@ export async function updateChunkEmbedding(chunkId, embedding) {
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const filePath = path.join(CHUNKS_DIR, file);
-    const chunks = await readJSON(filePath, []);
-    const index = chunks.findIndex(c => c.id === chunkId);
-    if (index !== -1) {
-      const release = await acquireWriteLock(filePath);
-      try {
-        // 重新读取以防并发
-        const currentChunks = await readJSON(filePath, []);
-        const currentIndex = currentChunks.findIndex(c => c.id === chunkId);
-        if (currentIndex !== -1) {
-          currentChunks[currentIndex] = { ...currentChunks[currentIndex], embedding };
-          await writeJSON(filePath, currentChunks);
-          invalidateChunkCache(file);
-          if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbedding');
-          return true;
-        }
-      } finally {
-        release();
+
+    // 先获取锁，再读取，避免 TOCTOU
+    const release = await acquireWriteLock(filePath);
+    try {
+      const chunks = await readJSON(filePath, []);
+      const index = chunks.findIndex(c => c.id === chunkId);
+      if (index !== -1) {
+        chunks[index] = { ...chunks[index], embedding };
+        await writeJSON(filePath, chunks);
+        invalidateChunkCache(file);
+        if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbedding');
+        return true;
       }
+    } finally {
+      release();
     }
   }
   return false;

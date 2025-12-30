@@ -34,6 +34,8 @@ import { chromium } from 'playwright';
 
 // 搜索结果缓存
 const searchCache = new SimpleLRUCache(200);
+// 请求合并 Map，防止缓存踩踏
+const pendingSearches = new Map();
 
 function applySearchCacheSize(size) {
   const parsed = Number(size);
@@ -109,17 +111,31 @@ function fuseResults(keywordResults, vectorResults, query, maxResults, config = 
 }
 
 const app = express();
-// 配置 CORS 允许前端跨域请求
+
+// CORS 白名单配置
+const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',')
+  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
+
 app.use(cors({
-  origin: true,  // 允许所有来源（生产环境可配置具体域名）
+  origin: (origin, callback) => {
+    // 允许无 origin 的请求（如服务器间调用）
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin) || process.env.NODE_ENV === 'development') {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS not allowed'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   optionsSuccessStatus: 200
 }));
-// 增加 payload 限制，防止大请求导致 OOM
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// 合理的 payload 限制
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -577,38 +593,59 @@ app.get('/api/chunks/search', async (req, res) => {
     const cached = searchCache.get(cacheKey);
     if (cached) return res.json({ ok: true, chunks: cached, _cached: true });
 
-    const startTime = Date.now();
-
-    // 1. 并行执行：关键词搜索 + 向量生成（带分类优先加分）
-    const keywordSearchPromise = storage.searchChunks(query, searchLimit, categoryIds);
-    const vectorSearchPromise = (async () => {
+    // 请求合并：如果相同查询正在进行，等待其完成
+    if (pendingSearches.has(cacheKey)) {
       try {
-        const embedding = await embedText(query);
-        if (embedding) return await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
-      } catch (e) { }
-      return [];
-    })();
-
-    const [keywordResults, vectorResults] = await Promise.all([
-      keywordSearchPromise,
-      vectorSearchPromise
-    ]);
-
-    console.log(`[Search] Query: "${query}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
-
-    // 2. 结果融合 (传入配置参数)
-    let finalResults = fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
-
-    // 3. Reranking (使用配置的 topN)
-    if (finalResults.length > 0) {
-      const rerankedResults = await rerankDocuments(query, finalResults, rerankTopN);
-      finalResults = rerankedResults.length > 0 ? rerankedResults : finalResults;
+        const result = await pendingSearches.get(cacheKey);
+        return res.json({ ok: true, chunks: result, _cached: true });
+      } catch (e) {
+        // 原请求失败，继续执行新请求
+      }
     }
 
-    // 4. 写入缓存
-    searchCache.set(cacheKey, finalResults);
+    const startTime = Date.now();
 
-    res.json({ ok: true, chunks: finalResults });
+    // 创建搜索 Promise 并注册到 pendingSearches
+    const searchPromise = (async () => {
+      // 1. 并行执行：关键词搜索 + 向量生成（带分类优先加分）
+      const keywordSearchPromise = storage.searchChunks(query, searchLimit, categoryIds);
+      const vectorSearchPromise = (async () => {
+        try {
+          const embedding = await embedText(query);
+          if (embedding) return await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
+        } catch (e) { }
+        return [];
+      })();
+
+      const [keywordResults, vectorResults] = await Promise.all([
+        keywordSearchPromise,
+        vectorSearchPromise
+      ]);
+
+      console.log(`[Search] Query: "${query}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
+
+      // 2. 结果融合 (传入配置参数)
+      let finalResults = fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
+
+      // 3. Reranking (使用配置的 topN)
+      if (finalResults.length > 0) {
+        const rerankedResults = await rerankDocuments(query, finalResults, rerankTopN);
+        finalResults = rerankedResults.length > 0 ? rerankedResults : finalResults;
+      }
+
+      return finalResults;
+    })();
+
+    pendingSearches.set(cacheKey, searchPromise);
+
+    try {
+      const finalResults = await searchPromise;
+      // 4. 写入缓存
+      searchCache.set(cacheKey, finalResults);
+      res.json({ ok: true, chunks: finalResults });
+    } finally {
+      pendingSearches.delete(cacheKey);
+    }
   } catch (error) {
     console.error('搜索 chunks 失败:', error);
     res.status(500).json({ ok: false, error: '搜索 chunks 失败' });
