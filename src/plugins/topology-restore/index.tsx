@@ -1257,7 +1257,6 @@ const TopologyRestoreTool: React.FC = () => {
                 onEdgeClick={handleEdgeClick}
                 onPaneClick={handleCanvasClick}
                 fitView
-                wheelSensitivity={networkType === 'roce' ? 0.8 : 0.4}
                 attributionPosition="bottom-left"
                 onlyRenderVisibleElements={true}
                 selectNodesOnDrag={false}
@@ -1479,3 +1478,4 @@ function extractRails(nodes: any[]): string[] {
 }
 
 export default TopologyRestoreTool;
+export { pluginMeta } from './plugin-meta';
