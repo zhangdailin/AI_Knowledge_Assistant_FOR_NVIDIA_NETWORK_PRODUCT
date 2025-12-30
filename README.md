@@ -84,21 +84,6 @@ npm run preview
 | `npm run test:ui` | Vitest UI |
 | `npm run test:benchmark` | 运行精度基准测试 |
 
-## 配置与密钥
-
-- `PORT`: 后端服务端口（默认 8787）
-- `NODE_ENV`: 开发模式下返回更详细的错误信息
-- API Key（如 SiliconFlow）通过应用设置存储管理，不再依赖环境变量
-
-## 项目文档
-
-- doc/QUICKSTART.md：接口状态查询精度提升快速指南
-- doc/TOPOLOGY_QUICKSTART.md：拓扑还原快速参考
-- doc/TOPOLOGY_TESTING.md：拓扑还原完整测试流程
-- doc/TOPOLOGY_NO_DISPLAY_DEBUG.md：拓扑不显示排查
-- doc/2025-12-30-refactoring-summary.md：配置重构与清理说明
-- doc/2025-12-30-工作汇总.md：今日工作记录
-
 ## License
 
 Private - All Rights Reserved
