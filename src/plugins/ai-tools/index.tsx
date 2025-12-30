@@ -51,7 +51,7 @@ const AITools: React.FC = () => {
   };
 
   return (
-    <div className="p-6 bg-gray-50 min-h-full">
+    <div className="admin-page">
       <div className="max-w-6xl mx-auto">
         {/* 标题 */}
         <div className="mb-6">
@@ -68,7 +68,7 @@ const AITools: React.FC = () => {
                 <button
                   key={plugin.id}
                   onClick={() => setActivePlugin(plugin.id)}
-                  className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:shadow-md hover:border-blue-300 transition-all text-left group"
+                  className="admin-card p-6 hover:shadow-md hover:border-blue-300 transition-all text-left group"
                 >
                   <div className="flex items-start gap-4">
                     <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center group-hover:bg-blue-500 transition-colors">
@@ -90,7 +90,7 @@ const AITools: React.FC = () => {
             })}
 
             {/* 更多工具占位 */}
-            <div className="bg-gray-100 rounded-xl p-6 border-2 border-dashed border-gray-300 flex items-center justify-center">
+            <div className="admin-card-muted p-6 border-2 border-dashed border-gray-300 flex items-center justify-center">
               <div className="text-center">
                 <Wrench className="w-8 h-8 text-gray-400 mx-auto mb-2" />
                 <p className="text-sm text-gray-500">更多工具开发中...</p>
@@ -104,7 +104,7 @@ const AITools: React.FC = () => {
           const activePluginData = plugins.find(p => p.id === activePlugin);
           const Icon = activePluginData ? getIcon(activePluginData.icon) : Search;
           return (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+            <div className="admin-card">
               {/* 插件头部 */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
                 <div className="flex items-center gap-3">

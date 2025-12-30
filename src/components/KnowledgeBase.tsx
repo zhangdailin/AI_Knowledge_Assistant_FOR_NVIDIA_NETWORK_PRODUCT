@@ -398,7 +398,7 @@ const KnowledgeBase: React.FC = () => {
   }
 
   return (
-    <div className="h-full bg-gray-50 p-6 overflow-auto">
+    <div className="admin-page overflow-auto">
       <div className="max-w-[1600px] mx-auto">
         {/* 标题栏 */}
         <div className="mb-6">
@@ -408,7 +408,7 @@ const KnowledgeBase: React.FC = () => {
 
         <div className="flex gap-4 h-[calc(100%-80px)]">
           {/* 左侧分类树 */}
-          <div className="w-56 flex-shrink-0 bg-white rounded-xl shadow-sm border border-gray-200 p-3 overflow-y-auto">
+          <div className="w-56 flex-shrink-0 admin-card p-3 overflow-y-auto">
             <h3 className="text-sm font-medium text-gray-700 mb-2">文档分类</h3>
             <CategoryTree
               categories={categories}
@@ -424,7 +424,7 @@ const KnowledgeBase: React.FC = () => {
           {/* 右侧主内容区 */}
           <div className="flex-1 min-w-0 flex flex-col">
             {/* 顶部工具栏 */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-4">
+            <div className="admin-card p-3 mb-4">
               <div className="flex items-center gap-3 flex-wrap">
                 {/* 搜索框 */}
                 <div className="relative flex-1 min-w-[200px]">
@@ -551,7 +551,7 @@ const KnowledgeBase: React.FC = () => {
             )}
 
             {/* 文档列表 */}
-            <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="flex-1 admin-card overflow-hidden">
               {filteredDocuments.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full py-16 text-gray-400">
                   <FolderOpen className="w-12 h-12 mb-3 opacity-50" />

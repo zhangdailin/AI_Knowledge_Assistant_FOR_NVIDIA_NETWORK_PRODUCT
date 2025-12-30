@@ -203,7 +203,7 @@ const ConversationHistory: React.FC = () => {
   };
 
   return (
-    <div className="h-full bg-gray-50 p-6 overflow-auto">
+    <div className="admin-page overflow-auto">
       <div className="max-w-4xl mx-auto">
         {/* 标题栏 */}
         <div className="mb-6">
@@ -243,7 +243,7 @@ const ConversationHistory: React.FC = () => {
             .map((conversation) => (
               <div
                 key={conversation.id}
-                className={`bg-white rounded-xl shadow-sm border p-4 hover:shadow-md transition-all cursor-pointer ${
+                className={`admin-card p-4 hover:shadow-md transition-all cursor-pointer ${
                   currentConversation?.id === conversation.id
                     ? 'border-blue-500 bg-blue-50'
                     : 'border-gray-200'

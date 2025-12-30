@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -57,4 +59,33 @@
   overflow-wrap: normal !important;
   word-wrap: normal !important;
   white-space: pre !important;
+}
+
+@layer components {
+  .admin-shell {
+    font-family: "IBM Plex Sans", "Noto Sans", "Segoe UI", sans-serif;
+    background:
+      radial-gradient(1200px circle at 10% -10%, rgba(14, 165, 233, 0.12) 0%, rgba(14, 165, 233, 0) 60%),
+      radial-gradient(900px circle at 90% 0%, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0) 55%),
+      #f7f8fb;
+    color: #0f172a;
+  }
+
+  .admin-page {
+    min-height: 100%;
+    padding: 24px;
+  }
+
+  .admin-card {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  }
+
+  .admin-card-muted {
+    background: rgba(248, 250, 252, 0.9);
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    border-radius: 16px;
+  }
 }

@@ -111,7 +111,7 @@ export default function RetrievalSettings() {
         step?: number;
         unit?: string;
     }) => (
-        <div className="p-4 bg-gray-50 rounded-xl">
+        <div className="p-4 admin-card-muted">
             <div className="flex items-center justify-between mb-2">
                 <label className="text-sm font-medium text-gray-900">{label}</label>
                 <div className="flex items-center gap-2">
@@ -142,14 +142,14 @@ export default function RetrievalSettings() {
 
     if (loading) {
         return (
-            <div className="p-6 bg-gray-50 min-h-full flex items-center justify-center">
+        <div className="admin-page flex items-center justify-center">
                 <div className="text-gray-500">加载中...</div>
             </div>
         );
     }
 
     return (
-        <div className="p-6 bg-gray-50 min-h-full">
+        <div className="admin-page">
             <div className="max-w-4xl mx-auto space-y-6">
                 {/* 标题栏 */}
                 <div className="flex items-center justify-between">
@@ -182,7 +182,7 @@ export default function RetrievalSettings() {
                 </div>
 
                 {/* 提示 */}
-                <div className="flex gap-4 p-4 bg-blue-50 rounded-xl">
+                <div className="flex gap-4 p-4 admin-card-muted">
                     <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                     <div>
                         <h4 className="text-sm font-medium text-blue-900">配置说明</h4>
@@ -193,7 +193,7 @@ export default function RetrievalSettings() {
                 </div>
 
                 {/* 缓存设置 */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div className="admin-card p-6">
                     <div className="flex items-center gap-3 mb-4">
                         <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
                             <Database className="w-5 h-5 text-purple-600" />
@@ -253,7 +253,7 @@ export default function RetrievalSettings() {
                 </div>
 
                 {/* 融合算法设置 */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div className="admin-card p-6">
                     <div className="flex items-center gap-3 mb-4">
                         <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
                             <Zap className="w-5 h-5 text-green-600" />
@@ -303,7 +303,7 @@ export default function RetrievalSettings() {
                 </div>
 
                 {/* Rerank 设置 */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div className="admin-card p-6">
                     <div className="flex items-center gap-3 mb-4">
                         <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
                             <Search className="w-5 h-5 text-orange-600" />

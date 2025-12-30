@@ -75,7 +75,7 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-6 space-y-6 animate-pulse">
+      <div className="admin-page space-y-6 animate-pulse">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map(i => (
             <div key={i} className="h-32 bg-gray-200 rounded-xl" />
@@ -92,7 +92,7 @@ const Dashboard: React.FC = () => {
   if (!stats) {
     // API 失败时显示错误状态
     return (
-      <div className="p-6 bg-gray-50 min-h-full">
+      <div className="admin-page">
         <div className="max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -171,7 +171,7 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="p-6 bg-gray-50 min-h-full">
+    <div className="admin-page">
       <div className="max-w-6xl mx-auto space-y-6">
       {/* 标题栏 */}
       <div className="flex items-center justify-between">
@@ -195,7 +195,7 @@ const Dashboard: React.FC = () => {
           return (
             <div
               key={index}
-              className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-shadow"
+              className="admin-card p-6 hover:shadow-md transition-shadow"
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -214,7 +214,7 @@ const Dashboard: React.FC = () => {
       {/* 图表区域 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 问答趋势 */}
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div className="admin-card p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold text-gray-900">问答趋势</h3>
             <span className="text-sm text-gray-500">最近7天</span>
@@ -245,7 +245,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* 热门问题 */}
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div className="admin-card p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold text-gray-900">热门问题</h3>
             <span className="text-sm text-gray-500">Top 5</span>
@@ -278,7 +278,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 文档分类统计 */}
-      <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+      <div className="admin-card p-6">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold text-gray-900">文档分类</h3>
         </div>

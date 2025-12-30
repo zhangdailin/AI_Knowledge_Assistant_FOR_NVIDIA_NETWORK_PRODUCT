@@ -144,7 +144,7 @@ export default function UserSettings() {
   );
 
   return (
-    <div className="p-6 bg-gray-50 min-h-full">
+    <div className="admin-page">
       <div className="max-w-5xl mx-auto space-y-6">
         {/* 标题栏 */}
         <div className="flex items-center justify-between">
@@ -169,7 +169,7 @@ export default function UserSettings() {
         </div>
 
         {/* 标签导航 */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-1">
+        <div className="admin-card p-1">
           <div className="flex gap-1 overflow-x-auto">
             {tabs.map(tab => {
               const Icon = tab.icon;
@@ -193,11 +193,11 @@ export default function UserSettings() {
         </div>
 
         {/* 内容区域 */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sm:p-8">
+        <div className="admin-card p-6 sm:p-8">
             {activeTab === 'profile' && (
               <div className="space-y-8">
                 {/* 用户头像卡片 */}
-                <div className="flex items-center gap-6 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl">
+                <div className="flex items-center gap-6 p-6 admin-card-muted">
                   <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg">
                     <User className="w-10 h-10 text-white" />
                   </div>
@@ -286,7 +286,7 @@ export default function UserSettings() {
                 </div>
 
                 {/* 提示 */}
-                <div className="flex gap-4 p-4 bg-blue-50 rounded-xl">
+                <div className="flex gap-4 p-4 admin-card-muted">
                   <Server className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-sm font-medium text-blue-900">API 配置已移动</h4>
@@ -366,7 +366,7 @@ export default function UserSettings() {
                 </div>
 
                 {/* 隐私提示 */}
-                <div className="flex gap-4 p-4 bg-blue-50 rounded-xl">
+                <div className="flex gap-4 p-4 admin-card-muted">
                   <Shield className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-sm font-medium text-blue-900">隐私保护</h4>
@@ -381,7 +381,7 @@ export default function UserSettings() {
             {activeTab === 'backup' && (
               <div className="space-y-8">
                 {/* 说明 */}
-                <div className="flex gap-4 p-4 bg-blue-50 rounded-xl">
+                <div className="flex gap-4 p-4 admin-card-muted">
                   <FileText className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-sm font-medium text-blue-900">数据备份</h4>
@@ -393,7 +393,7 @@ export default function UserSettings() {
 
                 {/* 导入导出 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="p-6 bg-gray-50 rounded-xl">
+                <div className="p-6 admin-card-muted">
                     <h4 className="text-lg font-semibold text-gray-900 mb-2">导出数据</h4>
                     <p className="text-sm text-gray-600 mb-4">将所有数据导出为 JSON 文件</p>
                     <button
@@ -413,7 +413,7 @@ export default function UserSettings() {
                     </button>
                   </div>
 
-                  <div className="p-6 bg-gray-50 rounded-xl">
+                <div className="p-6 admin-card-muted">
                     <h4 className="text-lg font-semibold text-gray-900 mb-2">导入数据</h4>
                     <p className="text-sm text-gray-600 mb-4">从 JSON 备份文件恢复数据</p>
                     <label className="w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-300 text-gray-600 rounded-xl hover:border-blue-400 hover:text-blue-600 cursor-pointer transition-all">
@@ -442,7 +442,7 @@ export default function UserSettings() {
                 </div>
 
                 {/* 警告 */}
-                <div className="flex gap-4 p-4 bg-amber-50 rounded-xl">
+                <div className="flex gap-4 p-4 admin-card-muted">
                   <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-sm font-medium text-amber-900">重要提醒</h4>

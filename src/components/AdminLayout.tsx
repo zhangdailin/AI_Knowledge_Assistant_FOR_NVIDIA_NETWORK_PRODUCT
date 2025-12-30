@@ -22,7 +22,7 @@ const AdminLayout: React.FC = () => {
   ];
 
   return (
-    <div className="h-screen bg-gray-50 flex overflow-hidden">
+    <div className="admin-shell h-screen flex overflow-hidden">
       {/* 侧边栏 */}
       <div
         className={`${collapsed ? 'w-20' : 'w-64'
@@ -115,7 +115,7 @@ const AdminLayout: React.FC = () => {
       {/* 主内容区 */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* 顶部栏 */}
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 flex-shrink-0">
+        <header className="h-16 bg-white/80 backdrop-blur border-b border-white/60 shadow-[0_6px_20px_rgba(15,23,42,0.06)] flex items-center justify-between px-6 flex-shrink-0">
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-semibold text-gray-900">
               {navItems.find(item => item.path === location.pathname)?.label || '管理后台'}
