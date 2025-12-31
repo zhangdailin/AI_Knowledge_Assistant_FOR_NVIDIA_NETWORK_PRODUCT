@@ -52,6 +52,63 @@ async function searchKnowledgeBase(query: string): Promise<Array<{ content: stri
   }
 }
 
+// 提取查询关键词（简单实现）
+function extractKeywords(query: string): string[] {
+  // 移除常见停用词
+  const stopWords = ['的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'];
+  const words = query.split(/[\s,，。！？、；：""''（）【】《》\[\]]+/).filter(w => w.length > 1 && !stopWords.includes(w));
+  return words;
+}
+
+// 多级检索策略
+async function multiLevelSearch(query: string): Promise<{
+  results: Array<{ content: string; score: number }>;
+  searchLevel: number;
+  hasRelevantKnowledge: boolean;
+}> {
+  console.log('[Search] 开始多级检索，查询:', query);
+
+  // 第一级：标准检索
+  let results = await searchKnowledgeBase(query);
+  const maxScore = results.reduce((max, r) => Math.max(max, r.score), 0);
+  const avgScore = results.length > 0
+    ? results.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, results.length)
+    : 0;
+
+  // 判断第一级是否成功
+  if (maxScore > 0.015 || (results.length >= 2 && avgScore > 0.01)) {
+    console.log('[Search] 第一级检索成功，最高分:', maxScore.toFixed(4));
+    return { results, searchLevel: 1, hasRelevantKnowledge: true };
+  }
+
+  console.log('[Search] 第一级检索分数较低，尝试第二级检索');
+
+  // 第二级：降低阈值，接受更低分数的结果
+  if (maxScore > 0.005 || (results.length >= 2 && avgScore > 0.003)) {
+    console.log('[Search] 第二级检索成功（降低阈值），最高分:', maxScore.toFixed(4));
+    return { results, searchLevel: 2, hasRelevantKnowledge: true };
+  }
+
+  console.log('[Search] 第二级检索失败，尝试第三级检索（关键词搜索）');
+
+  // 第三级：提取关键词，逐个搜索
+  const keywords = extractKeywords(query);
+  if (keywords.length > 0) {
+    console.log('[Search] 提取关键词:', keywords);
+    const keywordQuery = keywords.slice(0, 3).join(' '); // 取前3个关键词
+    const keywordResults = await searchKnowledgeBase(keywordQuery);
+    const keywordMaxScore = keywordResults.reduce((max, r) => Math.max(max, r.score), 0);
+
+    if (keywordMaxScore > 0.003 && keywordResults.length > 0) {
+      console.log('[Search] 第三级检索成功（关键词），最高分:', keywordMaxScore.toFixed(4));
+      return { results: keywordResults, searchLevel: 3, hasRelevantKnowledge: true };
+    }
+  }
+
+  console.log('[Search] 所有检索级别均未找到相关内容，使用 Gemini');
+  return { results: [], searchLevel: 4, hasRelevantKnowledge: false };
+}
+
 // SN-IBLF 工具调用
 async function callSnIblfTool(snList: string[]): Promise<any> {
   try {
@@ -181,23 +238,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
-      // Search knowledge base
-      const knowledgeResults = await searchKnowledgeBase(content);
+      // 使用多级检索策略搜索知识库
+      const searchResult = await multiLevelSearch(content);
+      const knowledgeResults = searchResult.results;
+      const hasRelevantKnowledge = searchResult.hasRelevantKnowledge;
+      const searchLevel = searchResult.searchLevel;
 
-      const maxKnowledgeScore = knowledgeResults.reduce((max, r) => Math.max(max, r.score), 0);
-
-      // 改进的相关性判断逻辑
-      // 1. 如果最高分 > 0.015，认为有相关内容
-      // 2. 如果有多个结果且平均分 > 0.01，也认为有相关内容
-      const avgScore = knowledgeResults.length > 0
-        ? knowledgeResults.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, knowledgeResults.length)
-        : 0;
-
-      const hasRelevantKnowledge = maxKnowledgeScore > 0.015 || (knowledgeResults.length >= 2 && avgScore > 0.01);
-
-      console.log('[Chat] 知识库搜索结果:', knowledgeResults.length, '条');
-      console.log('[Chat] 最高分:', maxKnowledgeScore.toFixed(4), '���均分:', avgScore.toFixed(4));
-      console.log('[Chat] 是否使用知识库:', hasRelevantKnowledge);
+      console.log('[Chat] 检索级别:', searchLevel, '结果数量:', knowledgeResults.length);
 
       // Build context from knowledge base
       let knowledgeContext = '';
@@ -205,7 +252,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (hasRelevantKnowledge) {
         // 取前5条最相关的内容，提供更丰富的上下文
-        knowledgeContext = '\n\n相关知识库内容：\n' +
+        const contextPrefix = searchLevel === 1
+          ? '相关知识库内容：'
+          : searchLevel === 2
+          ? '相关知识库内容（扩展搜索）：'
+          : '相关知识库内容（关键词匹配）：';
+
+        knowledgeContext = '\n\n' + contextPrefix + '\n' +
           knowledgeResults.slice(0, 5).map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
       } else {
         // 知识库没有相关内容，使用 Gemini
