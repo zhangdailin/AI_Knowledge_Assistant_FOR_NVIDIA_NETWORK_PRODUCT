@@ -154,5 +154,29 @@
     "query": "如何配置MLAG？",
     "responseTime": 42427,
     "timestamp": "2025-12-31T04:40:35.272Z"
+  },
+  {
+    "id": "log-1767212728709",
+    "query": "你好",
+    "responseTime": 4810,
+    "timestamp": "2025-12-31T20:25:28.709Z"
+  },
+  {
+    "id": "log-1767212785733",
+    "query": "如何配置MLAG？",
+    "responseTime": 32008,
+    "timestamp": "2025-12-31T20:26:25.733Z"
+  },
+  {
+    "id": "log-1767214647362",
+    "query": "如何配置MLAG？",
+    "responseTime": 29811,
+    "timestamp": "2025-12-31T20:57:27.362Z"
+  },
+  {
+    "id": "log-1767220552364",
+    "query": "如何配置MLAG？",
+    "responseTime": 30445,
+    "timestamp": "2025-12-31T22:35:52.364Z"
   }
 ]
