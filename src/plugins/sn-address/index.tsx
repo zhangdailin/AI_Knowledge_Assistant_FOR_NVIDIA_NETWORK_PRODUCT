@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Copy, Check, Network } from 'lucide-react';
 
+import { getApiServerUrl } from '../../utils/apiUtils';
 interface AddressInfo {
   sn: string;
   hostname: string;
@@ -19,13 +20,6 @@ interface QueryResult {
   notFound: string[];
 }
 
-function getApiServerUrl(): string {
-  const customUrl = localStorage.getItem('custom_api_server_url');
-  if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  return `${protocol}//${hostname}:8787`;
-}
 
 const SnAddressTool: React.FC = () => {
   const [input, setInput] = useState('');

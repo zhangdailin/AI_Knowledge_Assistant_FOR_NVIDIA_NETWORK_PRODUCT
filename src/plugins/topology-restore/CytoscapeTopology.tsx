@@ -8,15 +8,19 @@ import Cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { Layers, Zap, Maximize, Move } from 'lucide-react';
 
-// 安全注册插件，避免重复注册
-try {
-  if (!(Cytoscape as any)._coseBilkentRegistered) {
-    Cytoscape.use(coseBilkent);
-    (Cytoscape as any)._coseBilkentRegistered = true;
+function registerCoseBilkentPlugin() {
+  try {
+    const cytoscapeAny = Cytoscape as any;
+    if (!cytoscapeAny._coseBilkentRegistered) {
+      cytoscapeAny['use'](coseBilkent);
+      cytoscapeAny._coseBilkentRegistered = true;
+    }
+  } catch (e) {
+    // 插件已注册，忽略错误
   }
-} catch (e) {
-  // 插件已注册，忽略错误
 }
+
+registerCoseBilkentPlugin();
 
 // Import Premium Styles
 import { getPremiumStyles, NEON_PALETTE } from './TopologyStyles';
@@ -679,7 +683,8 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
         networkType,
         styles,
         onNodeClick,
-        onEdgeClick
+        onEdgeClick,
+        onViewLevelChange
     ]);
 
     /**
@@ -740,7 +745,7 @@ const CytoscapeTopology: React.FC<CytoscapeTopologyProps> = memo(({
             fit: true,
             padding: 50
         } as any).run();
-    }, [data]);
+    }, [data, networkType]);
 
     /**
      * 运行智能布局 (CoSE Bilkent)

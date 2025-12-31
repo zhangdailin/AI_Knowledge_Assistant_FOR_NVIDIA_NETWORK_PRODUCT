@@ -1,13 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { FileDown, Link as LinkIcon } from 'lucide-react';
 
-function getApiServerUrl(): string {
-  const customUrl = localStorage.getItem('custom_api_server_url');
-  if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  return `${protocol}//${hostname}:8787`;
-}
+import { getApiServerUrl } from '../../utils/apiUtils';
 
 const NvidiaDocPdfTool: React.FC = () => {
   const [url, setUrl] = useState('https://docs.nvidia.com/networking-ethernet-software/cumulus-linux-59/pdf/');

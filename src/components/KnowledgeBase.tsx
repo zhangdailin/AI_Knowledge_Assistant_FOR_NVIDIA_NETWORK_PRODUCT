@@ -10,6 +10,55 @@ import CategoryTree from './CategoryTree';
 
 type ViewMode = 'grid' | 'table';
 
+const getCategoryAndChildrenIds = (categoryId: string, cats: Category[]): string[] => {
+  const ids: string[] = [categoryId];
+
+  const collectDescendants = (node: Category) => {
+    node.children?.forEach(child => {
+      ids.push(child.id);
+      collectDescendants(child);
+    });
+  };
+
+  const findTarget = (nodes: Category[]): boolean => {
+    for (const node of nodes) {
+      if (node.id === categoryId) {
+        collectDescendants(node);
+        return true;
+      }
+      if (node.children && findTarget(node.children)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  findTarget(cats);
+  return ids;
+};
+
+const getCategoryNameById = (categoryId: string, cats: Category[]): string | null => {
+  for (const node of cats) {
+    if (node.id === categoryId) return node.name;
+    if (node.children) {
+      const found = getCategoryNameById(categoryId, node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
+const getCategoryIdByName = (name: string, cats: Category[]): string | null => {
+  for (const node of cats) {
+    if (node.name === name) return node.id;
+    if (node.children) {
+      const found = getCategoryIdByName(name, node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
 const KnowledgeBase: React.FC = () => {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -320,48 +369,6 @@ const KnowledgeBase: React.FC = () => {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  // 递归获取分类及其所有子分类的ID
-  const getCategoryAndChildrenIds = (categoryId: string, cats: Category[]): string[] => {
-    const ids: string[] = [categoryId];
-    const findChildren = (nodes: Category[]) => {
-      for (const node of nodes) {
-        if (node.id === categoryId) {
-          const collectIds = (n: Category) => {
-            ids.push(n.id);
-            n.children?.forEach(collectIds);
-          };
-          node.children?.forEach(collectIds);
-          return;
-        }
-        if (node.children) findChildren(node.children);
-      }
-    };
-    findChildren(cats);
-    return ids;
-  };
-
-  const getCategoryNameById = (categoryId: string, cats: Category[]): string | null => {
-    for (const node of cats) {
-      if (node.id === categoryId) return node.name;
-      if (node.children) {
-        const found = getCategoryNameById(categoryId, node.children);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  const getCategoryIdByName = (name: string, cats: Category[]): string | null => {
-    for (const node of cats) {
-      if (node.name === name) return node.id;
-      if (node.children) {
-        const found = getCategoryIdByName(name, node.children);
-        if (found) return found;
-      }
-    }
-    return null;
   };
 
   // 计算每个分类的文档数量

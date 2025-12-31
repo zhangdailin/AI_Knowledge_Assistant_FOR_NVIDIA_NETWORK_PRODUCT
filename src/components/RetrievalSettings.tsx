@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, Zap, Search, Database, Save, Check, RotateCcw, Info } from 'lucide-react';
 
+import { getApiServerUrl } from '../utils/apiUtils';
 interface RetrievalConfig {
     searchCacheSize: number;
     searchCacheTTL: number;
@@ -27,18 +28,6 @@ const defaultConfig: RetrievalConfig = {
     rerankTopN: 10
 };
 
-function getApiServerUrl(): string {
-    if (typeof window !== 'undefined') {
-        const customUrl = localStorage.getItem('custom_api_server_url');
-        if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-    }
-    const envUrl = import.meta.env.VITE_API_SERVER_URL;
-    if (envUrl) return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
-    if (typeof window !== 'undefined') {
-        return `${window.location.protocol}//${window.location.hostname}:8787`;
-    }
-    return 'http://localhost:8787';
-}
 
 export default function RetrievalSettings() {
     const [config, setConfig] = useState<RetrievalConfig>(defaultConfig);

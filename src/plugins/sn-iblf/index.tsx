@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Copy, Check } from 'lucide-react';
 
+import { getApiServerUrl } from '../../utils/apiUtils';
 interface Connection {
   iblf: string;
   gpuPort: string | null;
@@ -36,13 +37,6 @@ interface QueryResult {
   };
 }
 
-function getApiServerUrl(): string {
-  const customUrl = localStorage.getItem('custom_api_server_url');
-  if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  return `${protocol}//${hostname}:8787`;
-}
 
 const SnToIblfTool: React.FC = () => {
   const [input, setInput] = useState('');

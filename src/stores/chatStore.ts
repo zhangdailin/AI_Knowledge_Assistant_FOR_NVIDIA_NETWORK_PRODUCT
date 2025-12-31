@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { localStorageManager, Conversation, Message } from '../lib/localStorage';
 import { AI_MODEL_CONFIG, CONVERSATION_CONFIG } from '../lib/constants';
 import { extractSNs } from './toolStore';
+import { getApiServerUrl } from '../utils/apiUtils';
 
 interface ChatState {
   conversations: Conversation[];
@@ -21,22 +22,6 @@ interface ChatState {
   clearHistory: () => void;
 }
 
-function getApiServerUrl(): string {
-  if (typeof window !== 'undefined') {
-    const customUrl = localStorage.getItem('custom_api_server_url');
-    if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  }
-  const envUrl = import.meta.env.VITE_API_SERVER_URL;
-  if (envUrl) {
-    return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
-  }
-  if (typeof window !== 'undefined') {
-    const protocol = window.location.protocol;
-    const hostname = window.location.hostname;
-    return `${protocol}//${hostname}:8787`;
-  }
-  return 'http://localhost:8787';
-}
 
 async function searchKnowledgeBase(query: string): Promise<Array<{ content: string; score: number }>> {
   try {

@@ -11,6 +11,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Search, Copy, Check, Filter } from 'lucide-react';
+import { getApiServerUrl } from '../../utils/apiUtils';
 
 type NetworkFilter = 'all' | 'ib' | 'roce';
 
@@ -42,11 +43,6 @@ interface TopologyResult {
   totalConnections: number;
 }
 
-function getApiServerUrl(): string {
-  const customUrl = localStorage.getItem('custom_api_server_url');
-  if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  return `${window.location.protocol}//${window.location.hostname}:8787`;
-}
 
 // 设备类型颜色
 const layerColors: Record<string, string> = {

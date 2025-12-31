@@ -4,6 +4,7 @@
  */
 
 import { Document, Chunk } from './localStorage';
+import { getApiServerUrl } from '../utils/apiUtils';
 
 // 自定义错误类型，用于区分网络错误和空结果
 export class StorageError extends Error {
@@ -13,27 +14,6 @@ export class StorageError extends Error {
   }
 }
 
-function getApiServerUrl(): string {
-  // 1. 优先使用用户在前端设置的自定义地址
-  if (typeof window !== 'undefined') {
-    const customUrl = localStorage.getItem('custom_api_server_url');
-    if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  }
-
-  // 2. 其次使用环境变量
-  const envUrl = import.meta.env.VITE_API_SERVER_URL;
-  if (envUrl) {
-    return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
-  }
-  // 3. 如果没有环境变量，使用当前页面的 hostname 和默认端口
-  if (typeof window !== 'undefined') {
-    const protocol = window.location.protocol;
-    const hostname = window.location.hostname;
-    const port = '8787'; // 默认服务器端口
-    return `${protocol}//${hostname}:${port}`;
-  }
-  return 'http://localhost:8787';
-}
 
 class ServerStorageManager {
   private get apiUrl(): string {

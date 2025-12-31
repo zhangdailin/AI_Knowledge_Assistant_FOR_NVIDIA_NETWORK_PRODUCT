@@ -16,14 +16,10 @@ import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
 import { bundleEdges, collapseBundle, expandBundle } from '../../utils/edge-bundling';
 import CytoscapeTopology from './CytoscapeTopology';
 import useVirtualViewport from '../../hooks/useVirtualViewport';
+import { getApiServerUrl } from '../../utils/apiUtils';
 
 type NetworkType = 'ib' | 'roce';
 
-function getApiServerUrl(): string {
-  const customUrl = localStorage.getItem('custom_api_server_url');
-  if (customUrl) return customUrl.endsWith('/') ? customUrl.slice(0, -1) : customUrl;
-  return `${window.location.protocol}//${window.location.hostname}:8787`;
-}
 
 const layerColors: Record<string, string> = {
   core: '#e74c3c', spine: '#3498db', leaf: '#27ae60',
@@ -191,7 +187,7 @@ const TopologyRestoreTool: React.FC = () => {
       setFocusedPod(null);
       setMessage('已切换到概览视图');
     }
-  }, [pods.length, viewLevel]);
+  }, [pods, viewLevel]);
 
   // 重置 auto-switch 标记当 pods 变化时
   useEffect(() => {
