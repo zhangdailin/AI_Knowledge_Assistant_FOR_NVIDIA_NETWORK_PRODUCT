@@ -7,6 +7,22 @@ import MessageContent from './MessageContent';
 import SnIblfResultCard from '../plugins/sn-iblf/SnIblfResultCard';
 import { localStorageManager } from '../lib/localStorage';
 
+// 验证方法标签映射
+const getValidationMethodLabel = (method: string): string => {
+  const labels: Record<string, string> = {
+    'content-length': '基于内容长度',
+    'no-reference-few-commands': '无参考文档（少量命令）',
+    'no-reference-many-commands': '无参考文档（较多命令）',
+    'content-match-high': '高内容匹配度',
+    'content-match-medium': '中等内容匹配度',
+    'content-match-low': '低内容匹配度',
+    'full-validation-no-hallucination': '完整验证（无幻觉）',
+    'full-validation-few-hallucinations': '完整验证（少量幻觉）',
+    'full-validation-many-hallucinations': '完整验证（较多幻觉）'
+  };
+  return labels[method] || method;
+};
+
 const ChatInterface: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [isSending, setIsSending] = useState(false); // 新增：发送状态
@@ -202,7 +218,7 @@ const ChatInterface: React.FC = () => {
                     {(validationDetailModal.confidenceScore * 100).toFixed(0)}%
                   </span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
                   <div
                     className={`h-2 rounded-full transition-all ${
                       validationDetailModal.confidenceScore >= 0.7 ? 'bg-emerald-500' :
@@ -211,6 +227,14 @@ const ChatInterface: React.FC = () => {
                     style={{ width: `${validationDetailModal.confidenceScore * 100}%` }}
                   />
                 </div>
+                {validationDetailModal.validationMethod && (
+                  <div className="text-xs text-gray-500 mt-2">
+                    验证方式: {getValidationMethodLabel(validationDetailModal.validationMethod)}
+                    {!validationDetailModal.hasReferences && (
+                      <span className="ml-2 text-amber-600">⚠ 无参考文档</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* 命令统计 */}
