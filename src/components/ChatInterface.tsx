@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import MessageContent from './MessageContent';
 import SnIblfResultCard from '../plugins/sn-iblf/SnIblfResultCard';
+import ReferenceDocuments from './ReferenceDocuments';
 import { localStorageManager } from '../lib/localStorage';
 
 // 验证方法标签映射
@@ -601,6 +602,11 @@ const ChatInterface: React.FC = () => {
                           待改进
                         </button>
                       </div>
+                    )}
+
+                    {/* 参考文档展示 */}
+                    {message.role === 'assistant' && message.metadata?.references && message.metadata.references.length > 0 && (
+                      <ReferenceDocuments references={message.metadata.references} />
                     )}
                   </div>
 
