@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ThumbsUp, ThumbsDown, TrendingUp, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { getApiServerUrl } from '../utils/apiUtils';
 
 interface FeedbackEntry {
   id: string;
@@ -28,7 +29,7 @@ const FeedbackAnalytics: React.FC = () => {
   const fetchMetrics = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/metrics/feedback');
+      const response = await fetch(`${getApiServerUrl()}/api/metrics/feedback`);
       const data = await response.json();
 
       if (data.ok) {
