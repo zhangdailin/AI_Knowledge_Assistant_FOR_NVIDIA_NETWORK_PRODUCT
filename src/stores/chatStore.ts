@@ -26,19 +26,28 @@ interface ChatState {
 
 async function searchKnowledgeBase(query: string): Promise<Array<{ content: string; score: number }>> {
   try {
-    // 减少搜索数量，加快速度
-    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=5`);
+    // 增加搜索数量以获得更好的结果
+    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=10`);
     if (!res.ok) return [];
     const data = await res.json();
-    return (data.chunks || []).map((chunk: any) => {
+
+    const results = (data.chunks || []).map((chunk: any) => {
       const rrfScore = typeof chunk._score === 'number' ? chunk._score : 0;
       const rerankScore = typeof chunk.rerank_score === 'number' ? chunk.rerank_score : 0;
+      // 优先使用 rerank 分数，因为它通常更准确
+      const finalScore = rerankScore > 0 ? rerankScore : rrfScore;
       return {
         content: chunk.content,
-        score: Math.max(rrfScore, rerankScore)
+        score: finalScore,
+        rrfScore,
+        rerankScore
       };
     });
-  } catch {
+
+    // 按分数降序排序
+    return results.sort((a, b) => b.score - a.score);
+  } catch (error) {
+    console.error('[Search] 知识库搜索失败:', error);
     return [];
   }
 }
@@ -176,18 +185,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const knowledgeResults = await searchKnowledgeBase(content);
 
       const maxKnowledgeScore = knowledgeResults.reduce((max, r) => Math.max(max, r.score), 0);
-      // 判断是否有相关知识库内容（RRF分数阈值调高到0.02）
-      const hasRelevantKnowledge = maxKnowledgeScore > 0.02;
-      console.log('[Chat] 知识库搜索结果:', knowledgeResults.length, '条, 最高分:', maxKnowledgeScore);
+
+      // 改进的相关性判断逻辑
+      // 1. 如果最高分 > 0.015，认为有相关内容
+      // 2. 如果有多个结果且平均分 > 0.01，也认为有相关内容
+      const avgScore = knowledgeResults.length > 0
+        ? knowledgeResults.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, knowledgeResults.length)
+        : 0;
+
+      const hasRelevantKnowledge = maxKnowledgeScore > 0.015 || (knowledgeResults.length >= 2 && avgScore > 0.01);
+
+      console.log('[Chat] 知识库搜索结果:', knowledgeResults.length, '条');
+      console.log('[Chat] 最高分:', maxKnowledgeScore.toFixed(4), '���均分:', avgScore.toFixed(4));
+      console.log('[Chat] 是否使用知识库:', hasRelevantKnowledge);
 
       // Build context from knowledge base
       let knowledgeContext = '';
       let useGemini = false;
 
       if (hasRelevantKnowledge) {
-        // 只取前3条最相关的内容，减少 token 消耗
+        // 取前5条最相关的内容，提供更丰富的上下文
         knowledgeContext = '\n\n相关知识库内容：\n' +
-          knowledgeResults.slice(0, 3).map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
+          knowledgeResults.slice(0, 5).map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
       } else {
         // 知识库没有相关内容，使用 Gemini
         useGemini = true;
@@ -232,7 +251,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           temperature: deepThinking ? AI_MODEL_CONFIG.DEEP_THINKING_TEMPERATURE : AI_MODEL_CONFIG.DEFAULT_TEMPERATURE,
           useGemini,
           question: content,
-          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 3).map(r => r.content) : []
+          // 传递前5条参考文档用于验证，与上下文保持一致
+          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 5).map(r => r.content) : []
         }),
         signal: abortController.signal
       });
@@ -254,9 +274,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         metadata: {
           model: modelUsed,
           deepThinking,
-          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 3).map(r => ({
+          // 保存前5条参考文档，提供更完整的来源信息
+          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 5).map(r => ({
             title: '知识库',
-            content: r.content.substring(0, 200),
+            content: r.content.substring(0, 300), // 增加预览长度
             score: r.score
           })) : [],
           validation,
