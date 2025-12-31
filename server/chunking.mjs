@@ -142,7 +142,13 @@ function parseMarkdownTableRow(line) {
  * @param {number} childSize - section 内部切分大小（可选）
  * @returns {Array} chunks 数组
  */
-export function enhancedParentChildChunking(text, maxChunkSize = 3000, parentSize = null, childSize = null) {
+export function enhancedParentChildChunking(
+  text,
+  maxChunkSize = 3000,
+  parentSize = null,
+  childSize = null,
+  options = {}
+) {
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     console.warn('[Chunking] 输入文本为空');
     return [];
@@ -153,6 +159,11 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000, parentSiz
 
   const effectiveParentSize = normalizeChunkSize(parentSize, maxChunkSize);
   const effectiveChildSize = normalizeChunkSize(childSize, effectiveParentSize);
+  const chunkOptions = {
+    documentType: options.documentType || 'general',
+    includeSiblingMetadata: options.includeSiblingMetadata !== false,
+    includeSectionContext: options.includeSectionContext !== false
+  };
 
   try {
     // Step 0: 改进 Markdown 结构
@@ -168,8 +179,13 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000, parentSiz
     const semanticText = convertMarkdownTablesToSemantic(processedText);
 
     // Step 4: 按标题分割成 sections
-    const sections = splitBySections(semanticText);
+    let sections = splitBySections(semanticText);
+    sections = sections.map((section, index) => ({
+      ...section,
+      sectionId: section.sectionId || `section-${index}`
+    }));
     console.log(`[Chunking] 解析出 ${sections.length} 个 sections`);
+    const siblingMap = chunkOptions.includeSiblingMetadata ? buildSiblingMap(sections) : new Map();
 
     // Step 5: 生成 chunks
     const chunks = [];
@@ -181,12 +197,40 @@ export function enhancedParentChildChunking(text, maxChunkSize = 3000, parentSiz
 
       if (shouldSkipSection(content, section.breadcrumbs, 50)) continue;
 
+      const parentPath = section.breadcrumbs.slice(0, -1);
+      const currentHeader = section.breadcrumbs.length > 0
+        ? section.breadcrumbs[section.breadcrumbs.length - 1]
+        : null;
+      const siblingHeaders = chunkOptions.includeSiblingMetadata
+        ? Array.from(siblingMap.get(makeParentKey(parentPath)) || []).filter(h => h !== currentHeader)
+        : [];
+      const sectionMetadata = {
+        parentHeader: parentPath.length > 0 ? parentPath[parentPath.length - 1] : null,
+        siblingHeaders,
+        documentType: chunkOptions.documentType,
+        sectionId: section.sectionId,
+        sectionBreadcrumbs: section.breadcrumbs,
+        sectionDepth: section.breadcrumbs.length
+      };
+
       // 如果 section 内容不超过 parentSize，直接作为一个 chunk
       if (content.length <= effectiveParentSize) {
-        chunks.push(createChunk(content, section.breadcrumbs, chunkIndex++));
+        chunks.push(createChunk(content, section.breadcrumbs, chunkIndex++, {
+          ...sectionMetadata,
+          includeContext: chunkOptions.includeSectionContext
+        }));
       } else {
         // 内容太长，需要智能切分（但保护代码块）
-        const subChunks = splitLargeSection(content, section.breadcrumbs, effectiveChildSize, chunkIndex);
+        const subChunks = splitLargeSection(
+          content,
+          section.breadcrumbs,
+          effectiveChildSize,
+          chunkIndex,
+          {
+            ...sectionMetadata,
+            includeContext: chunkOptions.includeSectionContext
+          }
+        );
         chunks.push(...subChunks);
         chunkIndex += subChunks.length;
       }
@@ -318,10 +362,27 @@ function splitBySections(text) {
   return sections;
 }
 
+function buildSiblingMap(sections) {
+  const map = new Map();
+  sections.forEach(section => {
+    const parentKey = makeParentKey(section.breadcrumbs.slice(0, -1));
+    if (!map.has(parentKey)) map.set(parentKey, new Set());
+    const header = section.breadcrumbs[section.breadcrumbs.length - 1];
+    if (header) {
+      map.get(parentKey).add(header);
+    }
+  });
+  return map;
+}
+
+function makeParentKey(breadcrumbs = []) {
+  return breadcrumbs.join('>');
+}
+
 /**
  * 切分过大的 section（保护代码块）
  */
-function splitLargeSection(content, breadcrumbs, maxSize, startIndex) {
+function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetadata = {}) {
   const chunks = [];
 
   // 先按代码块分割
@@ -372,15 +433,15 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex) {
       if (part.content.length > maxSize) {
         // 先保存当前累积的内容
         if (currentChunk.trim()) {
-          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++));
+          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
           currentChunk = '';
         }
         // 代码块单独成 chunk（即使超长也不切）
-        chunks.push(createChunk(contextPrefix + part.content, breadcrumbs, chunkIndex++));
+        chunks.push(createChunk(contextPrefix + part.content, breadcrumbs, chunkIndex++, baseMetadata));
       } else if (currentChunk.length + part.content.length > maxSize) {
         // 加入代码块会超限，先保存当前内容
         if (currentChunk.trim()) {
-          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++));
+          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
         }
         currentChunk = part.content;
       } else {
@@ -396,14 +457,14 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex) {
         if (currentChunk.length + para.length + 2 > maxSize) {
           // 保存当前 chunk
           if (currentChunk.trim()) {
-            chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++));
+            chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
           }
 
           // 如果单个段落超长，强制切分
           if (para.length > maxSize) {
             const subParts = splitBysentences(para, maxSize);
             for (const subPart of subParts) {
-              chunks.push(createChunk(contextPrefix + subPart, breadcrumbs, chunkIndex++));
+              chunks.push(createChunk(contextPrefix + subPart, breadcrumbs, chunkIndex++, baseMetadata));
             }
             currentChunk = '';
           } else {
@@ -418,7 +479,7 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex) {
 
   // 保存最后的内容
   if (currentChunk.trim()) {
-    chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++));
+    chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
   }
 
   return chunks;
@@ -462,7 +523,7 @@ function splitBysentences(text, maxSize) {
 /**
  * 创建 chunk 对象
  */
-function createChunk(content, breadcrumbs, index) {
+function createChunk(content, breadcrumbs, index, extraMetadata = {}) {
   const id = `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
 
   return {
@@ -474,9 +535,22 @@ function createChunk(content, breadcrumbs, index) {
     metadata: {
       breadcrumbs: breadcrumbs || [],
       header: breadcrumbs.length > 0 ? breadcrumbs[breadcrumbs.length - 1] : null,
-      summary: generateSummary(content, breadcrumbs)
+      summary: generateSummary(content, breadcrumbs),
+      context: extraMetadata.includeContext ? buildContextSnippet(content) : undefined,
+      parentHeader: extraMetadata.parentHeader,
+      siblingHeaders: extraMetadata.siblingHeaders,
+      documentType: extraMetadata.documentType,
+      sectionId: extraMetadata.sectionId,
+      sectionBreadcrumbs: extraMetadata.sectionBreadcrumbs,
+      sectionDepth: extraMetadata.sectionDepth
     }
   };
+}
+
+function buildContextSnippet(content) {
+  if (!content) return '';
+  const trimmed = content.replace(/\s+/g, ' ').trim();
+  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
 }
 
 /**

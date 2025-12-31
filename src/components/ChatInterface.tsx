@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, Bot, User, Trash2, History, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard } from 'lucide-react';
+import { Send, Bot, User, Trash2, History, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard, ShieldCheck, AlertTriangle, ThumbsUp, ThumbsDown, Info } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import MessageContent from './MessageContent';
@@ -10,6 +10,7 @@ import { localStorageManager } from '../lib/localStorage';
 const ChatInterface: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [isSending, setIsSending] = useState(false); // 新增：发送状态
+  const [validationDetailModal, setValidationDetailModal] = useState<any>(null); // 验证详情弹窗
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -26,7 +27,8 @@ const ChatInterface: React.FC = () => {
     selectConversation,
     loadConversations,
     deleteConversation,
-    stopGeneration
+    stopGeneration,
+    submitFeedback
   } = useChatStore();
 
   // 初始化对话：加强版
@@ -117,6 +119,10 @@ const ChatInterface: React.FC = () => {
     setDeepThinking(!deepThinking);
   };
 
+  const handleFeedback = (messageId: string, verdict: 'up' | 'down') => {
+    submitFeedback(messageId, verdict);
+  };
+
   // 自动调整textarea高度
   useEffect(() => {
     if (textareaRef.current) {
@@ -160,6 +166,150 @@ const ChatInterface: React.FC = () => {
   };
 
   return (
+    <>
+      {/* 验证详情弹窗 */}
+      {validationDetailModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setValidationDetailModal(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                {validationDetailModal.isConsistent ? (
+                  <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                )}
+                答案验证详情
+              </h3>
+              <button
+                onClick={() => setValidationDetailModal(null)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* 置信度评分 */}
+              <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-700">置信度评分</span>
+                  <span className={`text-2xl font-bold ${
+                    validationDetailModal.confidenceScore >= 0.7 ? 'text-emerald-600' :
+                    validationDetailModal.confidenceScore >= 0.4 ? 'text-amber-600' : 'text-rose-600'
+                  }`}>
+                    {(validationDetailModal.confidenceScore * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${
+                      validationDetailModal.confidenceScore >= 0.7 ? 'bg-emerald-500' :
+                      validationDetailModal.confidenceScore >= 0.4 ? 'bg-amber-500' : 'bg-rose-500'
+                    }`}
+                    style={{ width: `${validationDetailModal.confidenceScore * 100}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* 命令统计 */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                  <div className="text-xs text-gray-500 mb-1">总命令数</div>
+                  <div className="text-xl font-bold text-gray-900">{validationDetailModal.totalCommands || 0}</div>
+                </div>
+                <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-200">
+                  <div className="text-xs text-emerald-600 mb-1">已验证</div>
+                  <div className="text-xl font-bold text-emerald-700">{validationDetailModal.verifiedCommands?.length || 0}</div>
+                </div>
+                <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                  <div className="text-xs text-amber-600 mb-1">待核实</div>
+                  <div className="text-xl font-bold text-amber-700">{validationDetailModal.hallucinations?.length || 0}</div>
+                </div>
+              </div>
+
+              {/* 已验证的命令 */}
+              {validationDetailModal.verifiedCommands && validationDetailModal.verifiedCommands.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    已验证命令 ({validationDetailModal.verifiedCommands.length})
+                  </h4>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {validationDetailModal.verifiedCommands.map((cmd: string, idx: number) => (
+                      <div key={idx} className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                        <code className="text-xs text-emerald-800 font-mono">{cmd}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 部分匹配的命令 */}
+              {validationDetailModal.partialMatches && validationDetailModal.partialMatches.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-blue-600" />
+                    部分匹配命令 ({validationDetailModal.partialMatches.length})
+                  </h4>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {validationDetailModal.partialMatches.map((item: any, idx: number) => (
+                      <div key={idx} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                        <code className="text-xs text-blue-800 font-mono">{item.command}</code>
+                        <span className="ml-2 text-xs text-blue-600">({(item.confidence * 100).toFixed(0)}% 匹配)</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 待核实的命令 */}
+              {validationDetailModal.hallucinations && validationDetailModal.hallucinations.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    待核实命令 ({validationDetailModal.hallucinations.length})
+                  </h4>
+                  <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg border border-amber-200">
+                    这些命令未在参考文档中找到，可能需要人工核实其准确性
+                  </p>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {validationDetailModal.hallucinations.map((cmd: string, idx: number) => (
+                      <div key={idx} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        <code className="text-xs text-amber-800 font-mono">{cmd}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 警告信息 */}
+              {validationDetailModal.warnings && validationDetailModal.warnings.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-700">注意事项</h4>
+                  <ul className="space-y-1">
+                    {validationDetailModal.warnings.map((warning: string, idx: number) => (
+                      <li key={idx} className="text-xs text-gray-600 flex items-start gap-2">
+                        <span className="text-amber-500 mt-0.5">⚠</span>
+                        {warning}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* 分析时间 */}
+              {validationDetailModal.analyzedAt && (
+                <div className="text-xs text-gray-400 text-center pt-2 border-t border-gray-100">
+                  分析时间: {new Date(validationDetailModal.analyzedAt).toLocaleString('zh-CN')}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     <div className="flex h-screen bg-gradient-to-br from-slate-50 to-gray-100">
       {/* 左侧边栏 - 深色主题 */}
       <div className="w-72 bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col h-screen">
@@ -362,10 +512,72 @@ const ChatInterface: React.FC = () => {
                         </span>
                       )}
 
+                      {message.role === 'assistant' && message.metadata?.validation && (
+                        <button
+                          type="button"
+                          onClick={() => setValidationDetailModal(message.metadata.validation)}
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs cursor-pointer hover:shadow-md transition-all ${
+                            message.metadata.validation.isConsistent
+                              ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                              : 'text-amber-600 border-amber-200 bg-amber-50 hover:bg-amber-100'
+                          }`}
+                        >
+                          {message.metadata.validation.isConsistent ? (
+                            <ShieldCheck className="w-3 h-3" />
+                          ) : (
+                            <AlertTriangle className="w-3 h-3" />
+                          )}
+                          置信度 {(((message.metadata.validation.confidenceScore ?? 0) * 100)).toFixed(0)}%
+                          <Info className="w-3 h-3 ml-0.5 opacity-60" />
+                        </button>
+                      )}
+
+                      {message.role === 'assistant' &&
+                        message.metadata?.validation?.hallucinations &&
+                        message.metadata.validation.hallucinations.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setValidationDetailModal(message.metadata.validation)}
+                            className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 hover:bg-amber-100 hover:shadow-md transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            待核实命令 {message.metadata.validation.hallucinations.length} 条
+                            <Info className="w-3 h-3 opacity-60" />
+                          </button>
+                        )}
+
                       <span className="opacity-0 group-hover:opacity-100 transition-opacity">
                         {new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
+
+                    {message.role === 'assistant' && (
+                      <div className={`flex items-center gap-2 mt-2 ${message.metadata?.feedback ? 'text-gray-500' : 'text-gray-400'}`}>
+                        <button
+                          type="button"
+                          onClick={() => handleFeedback(message.id, 'up')}
+                          className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full border transition-colors ${
+                            message.metadata?.feedback === 'up'
+                              ? 'border-emerald-200 text-emerald-600 bg-emerald-50'
+                              : 'border-gray-200 hover:border-emerald-200 hover:text-emerald-600 hover:bg-emerald-50'
+                          }`}
+                        >
+                          <ThumbsUp className="w-3.5 h-3.5" />
+                          有帮助
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleFeedback(message.id, 'down')}
+                          className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full border transition-colors ${
+                            message.metadata?.feedback === 'down'
+                              ? 'border-rose-200 text-rose-600 bg-rose-50'
+                              : 'border-gray-200 hover:border-rose-200 hover:text-rose-600 hover:bg-rose-50'
+                          }`}
+                        >
+                          <ThumbsDown className="w-3.5 h-3.5" />
+                          待改进
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {message.role === 'user' && (
@@ -473,6 +685,7 @@ const ChatInterface: React.FC = () => {
         </div>
       </div>
     </div>
+    </>
   );
 };
 

@@ -18,6 +18,7 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const CHUNKS_DIR = path.join(DATA_DIR, 'chunks');
 const QUERY_LOGS_FILE = path.join(DATA_DIR, 'query_logs.json');
 const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.json');
+const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.json');
 
 // 初始化标记
 let isInitialized = false;
@@ -820,6 +821,36 @@ export async function getQueryStats() {
     avgResponseTime: parseFloat(avgResponseTime),
     recentQueries,
     topQuestions
+  };
+}
+
+// ========== 反馈与指标 ==========
+
+export async function addFeedbackEntry(entry) {
+  await initStorage();
+  const feedback = await readJSON(FEEDBACK_FILE, []);
+  feedback.push(entry);
+  if (feedback.length > 2000) {
+    feedback.splice(0, feedback.length - 2000);
+  }
+  await writeJSON(FEEDBACK_FILE, feedback);
+  return entry;
+}
+
+export async function getFeedbackMetrics() {
+  await initStorage();
+  const feedback = await readJSON(FEEDBACK_FILE, []);
+  const total = feedback.length;
+  const positive = feedback.filter(item => item.verdict === 'up').length;
+  const negative = feedback.filter(item => item.verdict === 'down').length;
+  const recent = feedback.slice(-10).reverse();
+
+  return {
+    total,
+    positive,
+    negative,
+    positivityRate: total > 0 ? positive / total : 0,
+    recent
   };
 }
 

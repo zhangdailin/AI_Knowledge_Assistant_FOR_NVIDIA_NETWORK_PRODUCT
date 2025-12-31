@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -n \"import.*getApiServerUrl\" src/components/Dashboard.tsx src/components/RetrievalSettings.tsx src/stores/chatStore.ts src/plugins/*/index.tsx)"
+      "Bash(grep -n \"import.*getApiServerUrl\" src/components/Dashboard.tsx src/components/RetrievalSettings.tsx src/stores/chatStore.ts src/plugins/*/index.tsx)",
+      "Bash(npm run build:*)",
+      "Bash(git add:*)"
     ]
   }
 }

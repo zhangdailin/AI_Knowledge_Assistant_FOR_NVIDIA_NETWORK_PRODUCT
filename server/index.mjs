@@ -24,6 +24,7 @@ try {
 import mammoth from 'mammoth';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as chunking from './chunking.mjs';
+import { validateAnswerConsistency } from './answerValidation.mjs';
 import * as topology from './topology.mjs';
 import { analyzeRoCETopology } from './roce-topology.mjs';
 import { inferLayersFromTopology } from './topology-inference.mjs';
@@ -31,6 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { addFeedbackEntry, getFeedbackMetrics } from './storage.mjs';
 
 // 搜索结果缓存
 const searchCache = new SimpleLRUCache(200);
@@ -259,7 +261,9 @@ async function processUploadedFile(documentId, file) {
     }
 
     const chunkStartTime = Date.now();
-    const chunks = chunking.enhancedParentChildChunking(text, maxChunkSize);
+    const chunks = chunking.enhancedParentChildChunking(text, maxChunkSize, null, null, {
+      documentType: document?.category || document?.categoryId || 'general'
+    });
     const chunkTime = Date.now() - chunkStartTime;
 
     // 详细统计
@@ -1716,7 +1720,18 @@ app.get('/api/nvidia-doc-pdf/tasks/:taskId/download', async (req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages, model, max_tokens, temperature, useGemini } = req.body;
+    const {
+      messages = [],
+      model,
+      max_tokens,
+      temperature,
+      useGemini,
+      references = [],
+      question
+    } = req.body;
+    const latestUserMessage = question ||
+      [...messages].reverse().find(msg => msg.role === 'user')?.content ||
+      '';
 
     // 如果指定使用 Gemini 或知识库无内容
     if (useGemini) {
@@ -1750,7 +1765,9 @@ app.post('/api/chat', async (req, res) => {
         }
 
         const data = await response.json();
-        return res.json({ ok: true, ...data, source: 'gemini' });
+        const answerText = data.choices?.[0]?.message?.content || '';
+        const validation = validateAnswerConsistency(answerText, references, latestUserMessage);
+        return res.json({ ok: true, ...data, source: 'gemini', validation });
       } catch (geminiError) {
         console.error('[Chat] Gemini failed, falling back to SiliconFlow:', geminiError.message);
         // Gemini 失败，回退到 SiliconFlow
@@ -1789,9 +1806,44 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const data = await response.json();
-    res.json({ ok: true, ...data, source: 'siliconflow' });
+    const answerText = data.choices?.[0]?.message?.content || '';
+    const validation = validateAnswerConsistency(answerText, references, latestUserMessage);
+    res.json({ ok: true, ...data, source: 'siliconflow', validation });
   } catch (error) {
     console.error('[Chat] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const { messageId, verdict, question, answer, conversationId, confidenceScore } = req.body;
+    if (!messageId || !verdict) {
+      return res.status(400).json({ ok: false, error: '缺少必需字段' });
+    }
+    const entry = await addFeedbackEntry({
+      id: `feedback-${Date.now()}`,
+      messageId,
+      verdict,
+      question: question || '',
+      answer: answer || '',
+      conversationId: conversationId || '',
+      confidenceScore: typeof confidenceScore === 'number' ? confidenceScore : null,
+      timestamp: new Date().toISOString()
+    });
+    res.json({ ok: true, entry });
+  } catch (error) {
+    console.error('[Feedback] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/metrics/feedback', async (req, res) => {
+  try {
+    const metrics = await getFeedbackMetrics();
+    res.json({ ok: true, metrics });
+  } catch (error) {
+    console.error('[Feedback] Metrics error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 });

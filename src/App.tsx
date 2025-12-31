@@ -12,6 +12,7 @@ import AITools from './plugins/ai-tools';
 import Dashboard from './components/Dashboard';
 import ModelSettings from './components/ModelSettings';
 import RetrievalSettings from './components/RetrievalSettings';
+import FeedbackAnalytics from './components/FeedbackAnalytics';
 
 function App() {
   const { isAuthenticated, checkAuth, user } = useAuthStore();
@@ -112,6 +113,14 @@ function App() {
               element={
                 <div className="h-full overflow-auto">
                   <RetrievalSettings />
+                </div>
+              }
+            />
+            <Route
+              path="feedback"
+              element={
+                <div className="h-full overflow-auto">
+                  <FeedbackAnalytics />
                 </div>
               }
             />

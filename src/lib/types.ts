@@ -33,6 +33,15 @@ export interface MessageMetadata {
     content: string;
     score: number;
   }>;
+  validation?: {
+    isConsistent: boolean;
+    confidenceScore: number;
+    totalCommands?: number;
+    verifiedCommands?: string[];
+    hallucinations?: string[];
+    warnings?: string[];
+    analyzedAt?: string;
+  };
   deepThinking?: boolean;
   fallbackToQwen?: boolean;
   hint?: boolean;

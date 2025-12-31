@@ -20,6 +20,7 @@ interface ChatState {
   setDeepThinking: (value: boolean) => void;
   stopGeneration: () => void;
   clearHistory: () => void;
+  submitFeedback: (messageId: string, verdict: 'up' | 'down') => Promise<void>;
 }
 
 
@@ -229,7 +230,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ],
           max_tokens: AI_MODEL_CONFIG.MAX_TOKENS,
           temperature: deepThinking ? AI_MODEL_CONFIG.DEEP_THINKING_TEMPERATURE : AI_MODEL_CONFIG.DEFAULT_TEMPERATURE,
-          useGemini
+          useGemini,
+          question: content,
+          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 3).map(r => r.content) : []
         }),
         signal: abortController.signal
       });
@@ -242,6 +245,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const data = await response.json();
       const assistantContent = data.choices?.[0]?.message?.content || '抱歉，我无法生成回复。';
       const modelUsed = data.source === 'gemini' ? 'Gemini' : (data.model || '已配置模型');
+      const validation = data.validation;
 
       const assistantMessage = localStorageManager.addMessage({
         conversationId: currentConversation.id,
@@ -255,6 +259,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: r.content.substring(0, 200),
             score: r.score
           })) : [],
+          validation,
+          relatedMessageId: userMessage.id,
           // 添加工具调用结果
           toolResults: snIblfResult ? {
             snIblf: {
@@ -309,5 +315,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentConversation: null,
       messages: []
     });
+  },
+
+  submitFeedback: async (messageId: string, verdict: 'up' | 'down') => {
+    const { messages, currentConversation } = get();
+    const target = messages.find(msg => msg.id === messageId && msg.role === 'assistant');
+    if (!target) return;
+
+    const relatedMessageId = target.metadata?.relatedMessageId;
+    let relatedQuestion = '';
+    if (relatedMessageId) {
+      relatedQuestion = messages.find(msg => msg.id === relatedMessageId)?.content || '';
+    } else {
+      const index = messages.findIndex(msg => msg.id === target.id);
+      if (index > 0) {
+        for (let i = index - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') {
+            relatedQuestion = messages[i].content;
+            break;
+          }
+        }
+      }
+    }
+
+    const payload = {
+      messageId,
+      verdict,
+      question: relatedQuestion,
+      answer: target.content,
+      conversationId: currentConversation?.id || target.conversationId,
+      confidenceScore: target.metadata?.validation?.confidenceScore ?? null
+    };
+
+    try {
+      await fetch(`${getApiServerUrl()}/api/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      console.error('Feedback submit failed:', error);
+    }
+
+    localStorageManager.updateMessageMetadata(messageId, { feedback: verdict });
+    set(state => ({
+      messages: state.messages.map(msg =>
+        msg.id === messageId
+          ? {
+              ...msg,
+              metadata: {
+                ...msg.metadata,
+                feedback: verdict
+              }
+            }
+          : msg
+      )
+    }));
   }
 }));

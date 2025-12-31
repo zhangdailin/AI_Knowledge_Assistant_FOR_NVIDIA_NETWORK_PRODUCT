@@ -194,6 +194,22 @@ class LocalStorageManager {
     return messages ? JSON.parse(messages) : [];
   }
 
+  updateMessageMetadata(messageId: string, updates: Partial<MessageMetadata>) {
+    const messages = this.getAllMessages();
+    const index = messages.findIndex((msg: Message) => msg.id === messageId);
+    if (index === -1) return null;
+    const updated: Message = {
+      ...messages[index],
+      metadata: {
+        ...messages[index].metadata,
+        ...updates
+      }
+    };
+    messages[index] = updated;
+    localStorage.setItem(this.MESSAGES_KEY, JSON.stringify(messages));
+    return updated;
+  }
+
   // 用户设置管理
   getUserSettings(userId: string): any {
     const settings = localStorage.getItem(this.USER_SETTINGS_KEY);
