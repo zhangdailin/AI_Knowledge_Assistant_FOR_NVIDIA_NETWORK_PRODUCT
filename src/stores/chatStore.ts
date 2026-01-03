@@ -23,8 +23,18 @@ interface ChatState {
   submitFeedback: (messageId: string, verdict: 'up' | 'down') => Promise<void>;
 }
 
+type KnowledgeSearchResult = {
+  id?: string;
+  documentId?: string;
+  title: string;
+  content: string;
+  score: number;
+  rrfScore: number;
+  rerankScore: number;
+};
 
-async function searchKnowledgeBase(query: string): Promise<Array<{ content: string; score: number }>> {
+
+async function searchKnowledgeBase(query: string): Promise<KnowledgeSearchResult[]> {
   try {
     // 增加搜索数量以获得更好的结果
     const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=10`);
@@ -36,7 +46,16 @@ async function searchKnowledgeBase(query: string): Promise<Array<{ content: stri
       const rerankScore = typeof chunk.rerank_score === 'number' ? chunk.rerank_score : 0;
       // 优先使用 rerank 分数，因为它通常更准确
       const finalScore = rerankScore > 0 ? rerankScore : rrfScore;
+      const chunkTitle =
+        chunk?.metadata?.header ||
+        chunk?.metadata?.title ||
+        chunk?.sectionTitle ||
+        chunk?.title ||
+        (chunk.documentId ? `文档 ${chunk.documentId}` : '知识库片段');
       return {
+        id: chunk.id,
+        documentId: chunk.documentId,
+        title: chunkTitle,
         content: chunk.content,
         score: finalScore,
         rrfScore,
@@ -75,17 +94,31 @@ async function multiLevelSearch(query: string): Promise<{
     ? results.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, results.length)
     : 0;
 
+  // 检查是否有 rerank 分数（更准确）
+  const maxRerankScore = results.reduce((max, r) => Math.max(max, r.rerankScore || 0), 0);
+  const hasRerank = maxRerankScore > 0;
+
   // 判断第一级是否成功
-  if (maxScore > 0.015 || (results.length >= 2 && avgScore > 0.01)) {
-    console.log('[Search] 第一级检索成功，最高分:', maxScore.toFixed(4));
+  // 优化：优先使用 rerank 分数判断，其阈值通常更高（0.7+表示高相关）
+  const level1Pass = maxScore > 0.015 ||
+                     (results.length >= 2 && avgScore > 0.01) ||
+                     (hasRerank && maxRerankScore > 0.65);
+
+  if (level1Pass) {
+    console.log('[Search] 第一级检索成功，最高分:', maxScore.toFixed(4), hasRerank ? `(Rerank: ${maxRerankScore.toFixed(4)})` : '');
     return { results, searchLevel: 1, hasRelevantKnowledge: true };
   }
 
   console.log('[Search] 第一级检索分数较低，尝试第二级检索');
 
   // 第二级：降低阈值，接受更低分数的结果
-  if (maxScore > 0.005 || (results.length >= 2 && avgScore > 0.003)) {
-    console.log('[Search] 第二级检索成功（降低阈值），最高分:', maxScore.toFixed(4));
+  // 优化：rerank > 0.5 也认为有一定相关性
+  const level2Pass = maxScore > 0.005 ||
+                     (results.length >= 2 && avgScore > 0.003) ||
+                     (hasRerank && maxRerankScore > 0.5);
+
+  if (level2Pass) {
+    console.log('[Search] 第二级检索成功（降低阈值），最高分:', maxScore.toFixed(4), hasRerank ? `(Rerank: ${maxRerankScore.toFixed(4)})` : '');
     return { results, searchLevel: 2, hasRelevantKnowledge: true };
   }
 
@@ -98,9 +131,15 @@ async function multiLevelSearch(query: string): Promise<{
     const keywordQuery = keywords.slice(0, 3).join(' '); // 取前3个关键词
     const keywordResults = await searchKnowledgeBase(keywordQuery);
     const keywordMaxScore = keywordResults.reduce((max, r) => Math.max(max, r.score), 0);
+    const keywordMaxRerankScore = keywordResults.reduce((max, r) => Math.max(max, r.rerankScore || 0), 0);
+    const keywordHasRerank = keywordMaxRerankScore > 0;
 
-    if (keywordMaxScore > 0.003 && keywordResults.length > 0) {
-      console.log('[Search] 第三级检索成功（关键词），最高分:', keywordMaxScore.toFixed(4));
+    // 优化：关键词搜索的阈值更低，但仍考虑 rerank 分数
+    const level3Pass = (keywordMaxScore > 0.003 && keywordResults.length > 0) ||
+                       (keywordHasRerank && keywordMaxRerankScore > 0.4);
+
+    if (level3Pass) {
+      console.log('[Search] 第三级检索成功（关键词），最高分:', keywordMaxScore.toFixed(4), keywordHasRerank ? `(Rerank: ${keywordMaxRerankScore.toFixed(4)})` : '');
       return { results: keywordResults, searchLevel: 3, hasRelevantKnowledge: true };
     }
   }
@@ -250,6 +289,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let knowledgeContext = '';
       let useGemini = false;
 
+      const topReferences = knowledgeResults.slice(0, 5);
+
       if (hasRelevantKnowledge) {
         // 取前5条最相关的内容，提供更丰富的上下文
         const contextPrefix = searchLevel === 1
@@ -259,7 +300,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : '相关知识库内容（关键词匹配）：';
 
         knowledgeContext = '\n\n' + contextPrefix + '\n' +
-          knowledgeResults.slice(0, 5).map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
+          topReferences.map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
       } else {
         // 知识库没有相关内容，使用 Gemini
         useGemini = true;
@@ -305,7 +346,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           useGemini,
           question: content,
           // 传递前5条参考文档用于验证，与上下文保持一致
-          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 5).map(r => r.content) : []
+          references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
+            id: r.id || `ref-${idx}`,
+            title: r.title || `参考文档 #${idx + 1}`,
+            content: r.content,
+            documentId: r.documentId
+          })) : []
         }),
         signal: abortController.signal
       });
@@ -328,9 +374,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model: modelUsed,
           deepThinking,
           // 保存前5条参考文档，提供更完整的来源信息
-          references: hasRelevantKnowledge ? knowledgeResults.slice(0, 5).map(r => ({
-            title: '知识库',
-            content: r.content.substring(0, 300), // 增加预览长度
+          references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
+            id: r.id || `ref-${idx}`,
+            documentId: r.documentId,
+            title: r.title || `参考文档 #${idx + 1}`,
+            content: r.content,
             score: r.score
           })) : [],
           validation,

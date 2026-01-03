@@ -26,6 +26,100 @@ function extractCodeBlocks(answer = '') {
   return blocks;
 }
 
+function prepareReferenceEntry(ref, index) {
+  if (!ref) {
+    return {
+      id: `ref-${index}`,
+      title: `参考文档 #${index + 1}`,
+      index,
+      content: '',
+      lowerContent: ''
+    };
+  }
+
+  if (typeof ref === 'string') {
+    const clean = ref.replace(/\r/g, '');
+    return {
+      id: `ref-${index}`,
+      title: `参考文档 #${index + 1}`,
+      index,
+      content: clean,
+      lowerContent: clean.toLowerCase()
+    };
+  }
+
+  const content = (ref.content || ref.text || '').replace(/\r/g, '');
+  return {
+    id: ref.id ? String(ref.id) : `ref-${index}`,
+    title: ref.title || `参考文档 #${index + 1}`,
+    index,
+    content,
+    lowerContent: content.toLowerCase()
+  };
+}
+
+function createExcerpt(content, startIndex, length) {
+  if (!content) return '';
+  const radius = 80;
+  const start = Math.max(0, startIndex - radius);
+  const end = Math.min(content.length, startIndex + (length || 0) + radius);
+  return content.slice(start, end).trim();
+}
+
+function matchCommandAgainstReferences(command, referencesMeta) {
+  const normalizedCmd = command.toLowerCase().trim();
+  if (!normalizedCmd) {
+    return { matched: false, confidence: 0, reference: null, excerpt: '' };
+  }
+
+  const cmdParts = normalizedCmd.split(/\s+/).filter(Boolean);
+  const mainCmd = cmdParts[0] || '';
+  const prefix = cmdParts.length >= 2 ? `${cmdParts[0]} ${cmdParts[1]}` : '';
+
+  let bestMatch = { matched: false, confidence: 0, reference: null, excerpt: '' };
+
+  for (const ref of referencesMeta) {
+    const { lowerContent, content } = ref;
+    if (!lowerContent) continue;
+
+    const exactIdx = lowerContent.indexOf(normalizedCmd);
+    if (exactIdx !== -1) {
+      return {
+        matched: true,
+        confidence: 1,
+        reference: ref,
+        excerpt: createExcerpt(content, exactIdx, normalizedCmd.length)
+      };
+    }
+
+    if (mainCmd && mainCmd.length > 1) {
+      const mainIdx = lowerContent.indexOf(mainCmd);
+      if (mainIdx !== -1 && bestMatch.confidence < 0.8) {
+        bestMatch = {
+          matched: true,
+          confidence: 0.8,
+          reference: ref,
+          excerpt: createExcerpt(content, mainIdx, mainCmd.length)
+        };
+      }
+    }
+
+    if (prefix) {
+      const prefixIdx = lowerContent.indexOf(prefix);
+      if (prefixIdx !== -1 && bestMatch.confidence < 0.7) {
+        bestMatch = {
+          matched: true,
+          confidence: 0.7,
+          reference: ref,
+          excerpt: createExcerpt(content, prefixIdx, prefix.length)
+        };
+      }
+    }
+  }
+
+  return bestMatch;
+}
+
 // 命令模式定义 - 支持更多网络设备和系统命令
 const COMMAND_PATTERNS = [
   // 网络设备命令
@@ -73,42 +167,13 @@ function extractCommandLines(answer = '') {
   return Array.from(commands);
 }
 
-// 模糊匹配：检查命令是否在参考文档中出现（允许参数差异）
-function fuzzyMatchCommand(command, referenceCorpus) {
-  const normalizedCmd = command.toLowerCase().trim();
-
-  // 精确匹配
-  if (referenceCorpus.includes(normalizedCmd)) {
-    return { matched: true, confidence: 1.0 };
-  }
-
-  // 提取命令主体（去除参数）
-  const cmdParts = normalizedCmd.split(/\s+/);
-  const mainCmd = cmdParts[0];
-
-  // 检查命令主体是否存在
-  if (referenceCorpus.includes(mainCmd)) {
-    return { matched: true, confidence: 0.8 };
-  }
-
-  // 检查命令前缀（如 netq show）
-  if (cmdParts.length >= 2) {
-    const prefix = `${cmdParts[0]} ${cmdParts[1]}`;
-    if (referenceCorpus.includes(prefix)) {
-      return { matched: true, confidence: 0.7 };
-    }
-  }
-
-  return { matched: false, confidence: 0 };
-}
-
 export function validateAnswerConsistency(answer, references = [], question = '') {
   console.log('[Validation] 开始验证答案');
   console.log('[Validation] 参考文档数量:', references.length);
   console.log('[Validation] 回答长度:', answer.length);
 
-  const normalizedReferences = references.map(ref => normalizeText(ref));
-  const referenceCorpus = normalizedReferences.join('\n');
+  const referencesMeta = references.map((ref, index) => prepareReferenceEntry(ref, index));
+  const referenceCorpus = referencesMeta.map(ref => ref.lowerContent).join('\n');
   const commandLines = extractCommandLines(answer);
 
   console.log('[Validation] 提取到的命令数量:', commandLines.length);
@@ -119,25 +184,61 @@ export function validateAnswerConsistency(answer, references = [], question = ''
   const hallucinations = [];
   const verifiedCommands = [];
   const partialMatches = [];
+  const referenceUsageMap = new Map();
   let totalMatchConfidence = 0;
+
+  const recordReferenceUsage = (payload) => {
+    const key = payload.referenceId || `idx-${payload.referenceIndex ?? 'unknown'}`;
+    if (!referenceUsageMap.has(key)) {
+      referenceUsageMap.set(key, {
+        referenceId: payload.referenceId || null,
+        referenceTitle: payload.referenceTitle || null,
+        referenceIndex: payload.referenceIndex ?? null,
+        commands: [],
+        excerpts: []
+      });
+    }
+    const existing = referenceUsageMap.get(key);
+    existing.commands.push(payload.command);
+    if (payload.excerpt) {
+      existing.excerpts.push(payload.excerpt);
+    }
+  };
 
   // 使用模糊匹配验证每个命令
   commandLines.forEach(cmd => {
-    const matchResult = fuzzyMatchCommand(cmd, referenceCorpus);
+    const matchResult = matchCommandAgainstReferences(cmd, referencesMeta);
 
-    if (matchResult.matched) {
+    if (matchResult.matched && matchResult.reference) {
+      const payload = {
+        command: cmd,
+        confidence: matchResult.confidence,
+        referenceId: matchResult.reference.id,
+        referenceTitle: matchResult.reference.title,
+        referenceIndex: matchResult.reference.index,
+        excerpt: matchResult.excerpt
+      };
       if (matchResult.confidence === 1.0) {
-        verifiedCommands.push(cmd);
+        verifiedCommands.push(payload);
       } else {
-        partialMatches.push({ command: cmd, confidence: matchResult.confidence });
+        partialMatches.push(payload);
       }
+      recordReferenceUsage(payload);
+      totalMatchConfidence += matchResult.confidence;
+    } else if (matchResult.matched) {
+      // 找到了部分匹配但缺少参考上下文
+      partialMatches.push({
+        command: cmd,
+        confidence: matchResult.confidence,
+        excerpt: matchResult.excerpt
+      });
       totalMatchConfidence += matchResult.confidence;
     } else {
-      hallucinations.push(cmd);
+      hallucinations.push({ command: cmd, reason: 'not_found' });
     }
   });
 
-  const hasReferences = normalizedReferences.length > 0 && referenceCorpus.trim().length > 0;
+  const hasReferences = referencesMeta.some(ref => ref.lowerContent.trim().length > 0);
   const hasCommands = commandLines.length > 0;
 
   // 改进的置信度计算
@@ -188,8 +289,8 @@ export function validateAnswerConsistency(answer, references = [], question = ''
     }
   } else {
     // 情况4: 有参考文档，有命令 - 完整验证
-    const matchRate = totalMatchConfidence / commandLines.length;
-    const hallucinationRatio = hallucinations.length / commandLines.length;
+    const matchRate = commandLines.length > 0 ? totalMatchConfidence / commandLines.length : 0;
+    const hallucinationRatio = commandLines.length > 0 ? hallucinations.length / commandLines.length : 0;
 
     // 基于命令匹配率和幻觉比例计算
     if (hallucinationRatio === 0) {
@@ -215,6 +316,14 @@ export function validateAnswerConsistency(answer, references = [], question = ''
   console.log('[Validation] 部分匹配:', partialMatches.length);
   console.log('[Validation] 幻觉命令:', hallucinations.length);
 
+  const referenceSummaries = referencesMeta.map(ref => ({
+    id: ref.id,
+    title: ref.title,
+    index: ref.index
+  }));
+
+  const referenceMatches = Array.from(referenceUsageMap.values());
+
   const warnings = [];
   if (!hasReferences) warnings.push('没有可用的参考文档');
   if (hallucinations.length > 0) warnings.push(`检测到 ${hallucinations.length} 个未验证的命令`);
@@ -232,6 +341,8 @@ export function validateAnswerConsistency(answer, references = [], question = ''
     question,
     validationMethod, // 添加验证方法，便于调试
     hasReferences,
+    referenceSummaries,
+    referenceMatches,
     analyzedAt: new Date().toISOString()
   };
 }

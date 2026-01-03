@@ -2,16 +2,27 @@ import React, { useState } from 'react';
 import { FileText, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface Reference {
+  id?: string;
+  documentId?: string;
   title: string;
   content: string;
   score: number;
 }
 
-interface ReferenceDocumentsProps {
-  references: Reference[];
+interface ReferenceHighlight {
+  referenceId?: string | null;
+  referenceTitle?: string | null;
+  referenceIndex?: number | null;
+  commands: string[];
+  excerpts?: string[];
 }
 
-const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references }) => {
+interface ReferenceDocumentsProps {
+  references: Reference[];
+  highlights?: Record<string, ReferenceHighlight>;
+}
+
+const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, highlights }) => {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   if (!references || references.length === 0) {
@@ -29,8 +40,11 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references }) =
         <span className="text-xs font-medium text-gray-600">参考文档 ({references.length})</span>
       </div>
       <div className="flex flex-wrap gap-2">
-        {references.map((ref, index) => (
-          <div key={index} className="relative group">
+        {references.map((ref, index) => {
+          const refKey = ref.id || `idx-${index}`;
+          const highlight = highlights?.[refKey];
+          return (
+            <div key={refKey} className="relative group">
             <button
               onClick={() => toggleExpand(index)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs text-blue-700 transition-all"
@@ -40,6 +54,11 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references }) =
               <span className="text-blue-500 ml-1">
                 {(ref.score * 100).toFixed(0)}%
               </span>
+              {highlight && highlight.commands.length > 0 && (
+                <span className="ml-1 text-[10px] text-emerald-600 font-semibold">
+                  {highlight.commands.length}条引用
+                </span>
+              )}
               {expandedIndex === index ? (
                 <ChevronUp className="w-3.5 h-3.5" />
               ) : (
@@ -64,6 +83,34 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references }) =
                     {ref.content}
                   </div>
                 </div>
+                {highlight && (
+                  <div className="mt-3 space-y-2">
+                    {highlight.commands.length > 0 && (
+                      <div className="text-xs text-gray-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                        <p className="font-semibold text-indigo-700 mb-1">引用命令</p>
+                        <ul className="space-y-1">
+                          {highlight.commands.map((cmd, idx) => (
+                            <li key={idx}>
+                              <code className="font-mono">{cmd}</code>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {highlight.excerpts && highlight.excerpts.length > 0 && (
+                      <div className="text-xs text-gray-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                        <p className="font-semibold text-amber-700 mb-1">引用段落</p>
+                        <div className="space-y-1">
+                          {highlight.excerpts.map((excerpt, idx) => (
+                            <p key={idx} className="leading-relaxed whitespace-pre-wrap">
+                              {excerpt}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <button
                   onClick={() => setExpandedIndex(null)}
                   className="mt-3 w-full text-xs text-gray-500 hover:text-gray-700 py-1"
@@ -72,8 +119,9 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references }) =
                 </button>
               </div>
             )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

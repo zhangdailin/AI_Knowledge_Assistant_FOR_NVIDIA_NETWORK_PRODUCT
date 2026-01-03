@@ -33,11 +33,78 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { addFeedbackEntry, getFeedbackMetrics } from './storage.mjs';
+import { smartQueryRewrite } from './queryExpansion.mjs';
+import { calculateDocumentQuality, batchEvaluateDocuments, generateQualityReport } from './documentQuality.mjs';
+import { recordSearchRequest, recordRetrievalMetrics, recordNegativePenalty, getPerformanceSummary, getDetailedMetrics, resetMetrics } from './performanceMonitor.mjs';
+import * as apiAuth from './apiAuth.mjs';
+import * as apiBatch from './apiBatch.mjs';
+import * as apiWebhook from './apiWebhook.mjs';
 
-// 搜索结果缓存
+// 精确匹配缓存（快速路径）
 const searchCache = new SimpleLRUCache(200);
+// 语义缓存（基于embedding相似度）
+const semanticCache = new SimpleLRUCache(100); // 存储 { queryEmbedding, query, results, timestamp }
 // 请求合并 Map，防止缓存踩踏
 const pendingSearches = new Map();
+
+/**
+ * 计算两个向量的余弦相似度
+ */
+function cosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  return denominator > 0 ? dotProduct / denominator : 0;
+}
+
+/**
+ * 在语义缓存中查找相似查询
+ * @param {Array} queryEmbedding - 查询的embedding向量
+ * @param {number} threshold - 相似度阈值（默认0.95）
+ * @returns {Object|null} - 缓存的结果或null
+ */
+function findSimilarCachedQuery(queryEmbedding, threshold = 0.95) {
+  if (!queryEmbedding || !Array.isArray(queryEmbedding)) return null;
+
+  let bestMatch = null;
+  let bestSimilarity = 0;
+
+  // 遍历语义缓存 (访问内部的 Map)
+  for (const [cacheKey, cacheEntry] of semanticCache.cache.entries()) {
+    const entry = cacheEntry.value || cacheEntry; // 兼容SimpleLRUCache的包装结构
+    const { queryEmbedding: cachedEmbedding, query: cachedQuery, results, timestamp } = entry;
+
+    if (!cachedEmbedding) continue;
+
+    const similarity = cosineSimilarity(queryEmbedding, cachedEmbedding);
+
+    if (similarity > bestSimilarity && similarity >= threshold) {
+      bestSimilarity = similarity;
+      bestMatch = {
+        query: cachedQuery,
+        results,
+        similarity,
+        cacheKey
+      };
+    }
+  }
+
+  if (bestMatch) {
+    console.log(`[SemanticCache] 命中！相似查询: "${bestMatch.query}" (相似度: ${bestMatch.similarity.toFixed(4)})`);
+  }
+
+  return bestMatch;
+}
 
 function applySearchCacheSize(size) {
   const parsed = Number(size);
@@ -46,20 +113,31 @@ function applySearchCacheSize(size) {
   }
 }
 
+function applySemanticCacheSize(size) {
+  const parsed = Number(size);
+  if (Number.isFinite(parsed) && parsed > 0 && parsed !== semanticCache.maxSize) {
+    semanticCache.setMaxSize(parsed);
+  }
+}
+
 function applySearchCacheTTL(ttlMs) {
   const parsed = Number(ttlMs);
   searchCache.setTTL(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
+  // 语义缓存使用相同的TTL
+  semanticCache.setTTL(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
 }
 
 function clearSearchCache() {
   searchCache.clear();
+  semanticCache.clear();
+  console.log('[Cache] 已清空精确匹配缓存和语义缓存');
 }
 
 storage.setSearchCacheInvalidator(clearSearchCache);
 
 
-// RRF 融合算法 (参数可配置)
-function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
+// RRF 融合算法 (参数可配置，支持负样本学习)
+async function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
   const queryLower = query.toLowerCase();
   const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
     ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
@@ -101,6 +179,26 @@ function fuseResults(keywordResults, vectorResults, query, maxResults, config = 
     entry.vectorScore = item.score;
   });
 
+  // 应用负样本学习：对获得负反馈的文档降权
+  const enableNegativeLearning = config.enableNegativeLearning !== false; // 默认启用
+  if (enableNegativeLearning) {
+    let penaltyApplied = 0;
+    for (const [id, entry] of combinedResults.entries()) {
+      const docId = entry.chunk.documentId;
+      if (docId) {
+        const penalty = await storage.getNegativePenalty(query, docId);
+        if (penalty < 0) {
+          entry.score += penalty;
+          entry.negativePenalty = penalty;
+          penaltyApplied++;
+        }
+      }
+    }
+    if (penaltyApplied > 0) {
+      console.log(`[NegativeLearning] 对${penaltyApplied}个文档应用了负样本惩罚`);
+    }
+  }
+
   return Array.from(combinedResults.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults)
@@ -108,7 +206,11 @@ function fuseResults(keywordResults, vectorResults, query, maxResults, config = 
       ...entry.chunk,
       _score: entry.score,
       _sources: entry.sources,
-      _debug: { keywordScore: entry.keywordScore, vectorScore: entry.vectorScore }
+      _debug: {
+        keywordScore: entry.keywordScore,
+        vectorScore: entry.vectorScore,
+        negativePenalty: entry.negativePenalty || 0
+      }
     }));
 }
 
@@ -594,8 +696,44 @@ app.get('/api/chunks/search', async (req, res) => {
       vectorMinScore: retrievalConfig.vectorMinScore ?? 'default',
       rerankTopN
     });
+
+    const requestStartTime = Date.now();
+
+    // Step 1: 精确匹配缓存（快速路径）
     const cached = searchCache.get(cacheKey);
-    if (cached) return res.json({ ok: true, chunks: cached, _cached: true });
+    if (cached) {
+      console.log('[Cache] 精确匹配缓存命中');
+      recordSearchRequest(Date.now() - requestStartTime, true, 'exact', 1);
+      return res.json({ ok: true, chunks: cached, _cached: true, _cacheType: 'exact' });
+    }
+
+    // Step 2: 生成query embedding用于语义缓存查询
+    let queryEmbedding = null;
+    try {
+      queryEmbedding = await embedText(query);
+    } catch (e) {
+      console.warn('[SemanticCache] embedding生成失败:', e.message);
+    }
+
+    // Step 3: 语义缓存查找（相似度阈值0.95）
+    if (queryEmbedding) {
+      const semanticThreshold = retrievalConfig.semanticCacheThreshold ?? 0.95;
+      const semanticMatch = findSimilarCachedQuery(queryEmbedding, semanticThreshold);
+
+      if (semanticMatch) {
+        // 语义缓存命中，刷新LRU
+        semanticCache.get(semanticMatch.cacheKey);
+        recordSearchRequest(Date.now() - requestStartTime, true, 'semantic', 1);
+        return res.json({
+          ok: true,
+          chunks: semanticMatch.results,
+          _cached: true,
+          _cacheType: 'semantic',
+          _originalQuery: semanticMatch.query,
+          _similarity: semanticMatch.similarity
+        });
+      }
+    }
 
     // 请求合并：如果相同查询正在进行，等待其完成
     if (pendingSearches.has(cacheKey)) {
@@ -608,28 +746,90 @@ app.get('/api/chunks/search', async (req, res) => {
     }
 
     const startTime = Date.now();
+    let variantCount = 1; // 记录查询变体数量
 
     // 创建搜索 Promise 并注册到 pendingSearches
     const searchPromise = (async () => {
-      // 1. 并行执行：关键词搜索 + 向量生成（带分类优先加分）
-      const keywordSearchPromise = storage.searchChunks(query, searchLimit, categoryIds);
-      const vectorSearchPromise = (async () => {
+      // 0. 查询扩展（如果启用）
+      const enableQueryExpansion = retrievalConfig.enableQueryExpansion !== false;
+      let searchQueries = [query];
+
+      if (enableQueryExpansion) {
         try {
-          const embedding = await embedText(query);
-          if (embedding) return await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
-        } catch (e) { }
-        return [];
-      })();
+          const rewriteResult = smartQueryRewrite(query, {
+            enableExpansion: true,
+            enableContext: false
+          });
 
-      const [keywordResults, vectorResults] = await Promise.all([
-        keywordSearchPromise,
-        vectorSearchPromise
-      ]);
+          // 使用前3个变体（包含原查询）
+          searchQueries = rewriteResult.variants.slice(0, 3);
+          variantCount = searchQueries.length; // 记录变体数量
 
-      console.log(`[Search] Query: "${query}" | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
+          if (searchQueries.length > 1) {
+            console.log(`[QueryExpansion] 原查询: "${query}"`);
+            console.log(`[QueryExpansion] 扩展为 ${searchQueries.length} 个变体: ${searchQueries.slice(1).map(q => `"${q}"`).join(', ')}`);
+          }
+        } catch (e) {
+          console.warn('[QueryExpansion] 查询扩展失败:', e.message);
+          searchQueries = [query];
+        }
+      }
 
-      // 2. 结果融合 (传入配置参数)
-      let finalResults = fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
+      // 1. 并行执行：对所有查询变体进行搜索
+      const allKeywordResults = [];
+      const allVectorResults = [];
+
+      for (const sq of searchQueries) {
+        // 关键词搜索
+        const kwResults = await storage.searchChunks(sq, searchLimit, categoryIds);
+        allKeywordResults.push(...kwResults);
+
+        // 向量搜索
+        try {
+          let embedding;
+          // 只对原查询复用之前生成的embedding
+          if (sq === query && queryEmbedding) {
+            embedding = queryEmbedding;
+          } else {
+            embedding = await embedText(sq);
+            // 保存原查询的embedding
+            if (sq === query && !queryEmbedding) {
+              queryEmbedding = embedding;
+            }
+          }
+
+          if (embedding) {
+            const vecResults = await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
+            allVectorResults.push(...vecResults);
+          }
+        } catch (e) {
+          console.warn(`[Search] 向量搜索失败 (query: "${sq}"):`, e.message);
+        }
+      }
+
+      // 去重（基于chunk id）
+      const keywordResultsMap = new Map();
+      allKeywordResults.forEach(r => {
+        const id = r.id;
+        if (!keywordResultsMap.has(id) || r.score > keywordResultsMap.get(id).score) {
+          keywordResultsMap.set(id, r);
+        }
+      });
+      const keywordResults = Array.from(keywordResultsMap.values());
+
+      const vectorResultsMap = new Map();
+      allVectorResults.forEach(r => {
+        const id = r.chunk.id;
+        if (!vectorResultsMap.has(id) || r.score > vectorResultsMap.get(id).score) {
+          vectorResultsMap.set(id, r);
+        }
+      });
+      const vectorResults = Array.from(vectorResultsMap.values());
+
+      console.log(`[Search] Query: "${query}" (${searchQueries.length} variants) | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
+
+      // 2. 结果融合 (传入配置参数，应用负样本学习)
+      let finalResults = await fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
 
       // 3. Reranking (使用配置的 topN)
       if (finalResults.length > 0) {
@@ -644,8 +844,26 @@ app.get('/api/chunks/search', async (req, res) => {
 
     try {
       const finalResults = await searchPromise;
-      // 4. 写入缓存
+
+      // 4. 写入精确匹配缓存
       searchCache.set(cacheKey, finalResults);
+
+      // 5. 写入语义缓存（如果有embedding）
+      if (queryEmbedding && finalResults.length > 0) {
+        const semanticCacheKey = `semantic_${Date.now()}_${Math.random()}`;
+        semanticCache.set(semanticCacheKey, {
+          queryEmbedding,
+          query,
+          results: finalResults,
+          timestamp: Date.now()
+        });
+        console.log(`[SemanticCache] 已缓存查询: "${query}" (embedding维度: ${queryEmbedding.length})`);
+      }
+
+      // 6. 记录性能指标
+      const totalTime = Date.now() - requestStartTime;
+      recordSearchRequest(totalTime, false, null, variantCount);
+
       res.json({ ok: true, chunks: finalResults });
     } finally {
       pendingSearches.delete(cacheKey);
@@ -1848,6 +2066,126 @@ app.get('/api/metrics/feedback', async (req, res) => {
   }
 });
 
+// ========== 文档质量评估 API ==========
+
+// 获取单个文档的质量评分
+app.get('/api/documents/:id/quality', async (req, res) => {
+  try {
+    const documentId = req.params.id;
+    const document = await storage.getDocument(documentId);
+
+    if (!document) {
+      return res.status(404).json({ ok: false, error: '文档不存在' });
+    }
+
+    const chunks = await storage.getChunks(documentId);
+
+    // 获取该文档的反馈统计
+    const feedbackData = await storage.getAllFeedback();
+
+    const docFeedback = feedbackData.filter(f => {
+      const refs = f.metadata?.references || [];
+      return refs.some(r => r.documentId === documentId);
+    });
+
+    const stats = {
+      positiveCount: docFeedback.filter(f => f.verdict === 'up').length,
+      negativeCount: docFeedback.filter(f => f.verdict === 'down').length
+    };
+
+    const quality = calculateDocumentQuality(document, chunks, stats);
+
+    res.json({ ok: true, quality });
+  } catch (error) {
+    console.error('[Quality] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 获取所有文档的质量评估报告
+app.get('/api/documents/quality/report', async (req, res) => {
+  try {
+    console.log('[Quality] 开始生成质量报告...');
+
+    const documents = await storage.getAllDocuments();
+
+    // 构建 chunks map
+    const chunksMap = new Map();
+    for (const doc of documents) {
+      const chunks = await storage.getChunks(doc.id);
+      chunksMap.set(doc.id, chunks);
+    }
+
+    // 构建反馈统计
+    const feedbackData = await storage.getAllFeedback();
+
+    const feedbackStats = {};
+    for (const doc of documents) {
+      const docFeedback = feedbackData.filter(f => {
+        const refs = f.metadata?.references || [];
+        return refs.some(r => r.documentId === doc.id);
+      });
+
+      feedbackStats[doc.id] = {
+        positiveCount: docFeedback.filter(f => f.verdict === 'up').length,
+        negativeCount: docFeedback.filter(f => f.verdict === 'down').length
+      };
+    }
+
+    // 批量评估
+    const qualityResults = await batchEvaluateDocuments(documents, chunksMap, feedbackStats);
+
+    // 生成报告
+    const report = generateQualityReport(qualityResults);
+
+    // 添加详细结果
+    report.details = qualityResults;
+
+    console.log(`[Quality] 报告生成完成: ${documents.length}个文档已评估`);
+
+    res.json({ ok: true, report });
+  } catch (error) {
+    console.error('[Quality] Report error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ========== 性能监控 API ==========
+
+// 获取性能摘要
+app.get('/api/metrics/performance', async (req, res) => {
+  try {
+    const summary = getPerformanceSummary();
+    res.json({ ok: true, metrics: summary });
+  } catch (error) {
+    console.error('[Performance] Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 获取详细性能数据
+app.get('/api/metrics/performance/detailed', async (req, res) => {
+  try {
+    const detailed = getDetailedMetrics();
+    res.json({ ok: true, metrics: detailed });
+  } catch (error) {
+    console.error('[Performance] Detailed error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 重置性能指标
+app.post('/api/metrics/performance/reset', async (req, res) => {
+  try {
+    resetMetrics();
+    console.log('[Performance] 性能指标已重置');
+    res.json({ ok: true, message: '性能指标已重置' });
+  } catch (error) {
+    console.error('[Performance] Reset error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ========== 模型列表 API ==========
 
 // 获取硅基流动模型列表
@@ -2962,15 +3300,211 @@ function parseRoCETopology(data) {
   };
 }
 
+// ============== API 认证和管理 ==============
+
+// API Key 管理端点
+app.post('/api/v1/auth/keys', asyncHandler(async (req, res) => {
+  const { name, permissions, rateLimit, expiresAt } = req.body;
+
+  const apiKeyData = await apiAuth.createApiKey({
+    name,
+    permissions: permissions || ['read'],
+    rateLimit: rateLimit || { requests: 1000, window: '1h' },
+    expiresAt
+  });
+
+  res.json({ ok: true, ...apiKeyData });
+}));
+
+app.get('/api/v1/auth/keys', asyncHandler(async (req, res) => {
+  const keys = await apiAuth.listApiKeys();
+  res.json({ ok: true, keys });
+}));
+
+app.delete('/api/v1/auth/keys/:apiKey', asyncHandler(async (req, res) => {
+  const success = await apiAuth.revokeApiKey(req.params.apiKey);
+  res.json({ ok: success, message: success ? 'API Key revoked' : 'API Key not found' });
+}));
+
+// ============== 批量操作 API ==============
+
+// 批量上传文档
+app.post('/api/v1/batch/documents/upload', apiAuth.requireApiKey(['write']), apiAuth.rateLimit(), upload.array('files', 50), asyncHandler(async (req, res) => {
+  const { category, batchSize, autoProcess } = req.body;
+
+  const results = await apiBatch.batchUploadDocuments(req.files, {
+    category: category || 'default',
+    batchSize: parseInt(batchSize) || 5,
+    autoProcess: autoProcess !== 'false'
+  });
+
+  res.json({ ok: true, results });
+}));
+
+// 批量删除文档
+app.post('/api/v1/batch/documents/delete', apiAuth.requireApiKey(['write']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const { documentIds } = req.body;
+
+  if (!Array.isArray(documentIds)) {
+    return res.status(400).json({ ok: false, error: 'documentIds must be an array' });
+  }
+
+  const results = await apiBatch.batchDeleteDocuments(documentIds);
+  res.json({ ok: true, results });
+}));
+
+// 批量更新文档
+app.post('/api/v1/batch/documents/update', apiAuth.requireApiKey(['write']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const { updates } = req.body;
+
+  if (!Array.isArray(updates)) {
+    return res.status(400).json({ ok: false, error: 'updates must be an array' });
+  }
+
+  const results = await apiBatch.batchUpdateDocuments(updates);
+  res.json({ ok: true, results });
+}));
+
+// 批量搜索
+app.post('/api/v1/batch/search', apiAuth.requireApiKey(['read']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const { queries, limit, categoryId, parallel } = req.body;
+
+  if (!Array.isArray(queries)) {
+    return res.status(400).json({ ok: false, error: 'queries must be an array' });
+  }
+
+  const results = await apiBatch.batchSearch(queries, {
+    limit: limit || 10,
+    categoryId,
+    parallel: parallel !== false
+  });
+
+  res.json({ ok: true, results });
+}));
+
+// 批量导出文档
+app.post('/api/v1/batch/documents/export', apiAuth.requireApiKey(['read']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const { documentIds, format } = req.body;
+
+  if (!Array.isArray(documentIds)) {
+    return res.status(400).json({ ok: false, error: 'documentIds must be an array' });
+  }
+
+  const results = await apiBatch.batchExportDocuments(documentIds, format || 'json');
+
+  if (format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=documents.csv');
+    res.send(results.data);
+  } else {
+    res.json({ ok: true, ...results });
+  }
+}));
+
+// 批量重新处理文档
+app.post('/api/v1/batch/documents/reprocess', apiAuth.requireApiKey(['write']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const { documentIds } = req.body;
+
+  if (!Array.isArray(documentIds)) {
+    return res.status(400).json({ ok: false, error: 'documentIds must be an array' });
+  }
+
+  const results = await apiBatch.batchReprocessDocuments(documentIds);
+  res.json({ ok: true, results });
+}));
+
+// 批量操作统计
+app.get('/api/v1/batch/stats', apiAuth.requireApiKey(['read']), apiAuth.rateLimit(), asyncHandler(async (req, res) => {
+  const stats = await apiBatch.getBatchOperationStats();
+  res.json({ ok: true, stats });
+}));
+
+// ============== Webhook API ==============
+
+// 注册 Webhook
+app.post('/api/v1/webhooks', apiAuth.requireApiKey(['write']), asyncHandler(async (req, res) => {
+  const { url, events, name, secret } = req.body;
+
+  if (!url || !events) {
+    return res.status(400).json({ ok: false, error: 'url and events are required' });
+  }
+
+  const webhook = await apiWebhook.registerWebhook({
+    url,
+    events,
+    name,
+    secret,
+    userId: req.apiKey?.userId || 'system'
+  });
+
+  res.json({ ok: true, webhook });
+}));
+
+// 列出所有 Webhooks
+app.get('/api/v1/webhooks', apiAuth.requireApiKey(['read']), asyncHandler(async (req, res) => {
+  const webhooks = await apiWebhook.listWebhooks(req.apiKey?.userId);
+  res.json({ ok: true, webhooks });
+}));
+
+// 获取单个 Webhook
+app.get('/api/v1/webhooks/:webhookId', apiAuth.requireApiKey(['read']), asyncHandler(async (req, res) => {
+  const webhook = await apiWebhook.getWebhook(req.params.webhookId);
+
+  if (!webhook) {
+    return res.status(404).json({ ok: false, error: 'Webhook not found' });
+  }
+
+  res.json({ ok: true, webhook });
+}));
+
+// 更新 Webhook
+app.put('/api/v1/webhooks/:webhookId', apiAuth.requireApiKey(['write']), asyncHandler(async (req, res) => {
+  const { url, events, enabled, name } = req.body;
+
+  const webhook = await apiWebhook.updateWebhook(req.params.webhookId, {
+    url,
+    events,
+    enabled,
+    name
+  });
+
+  if (!webhook) {
+    return res.status(404).json({ ok: false, error: 'Webhook not found' });
+  }
+
+  res.json({ ok: true, webhook });
+}));
+
+// 删除 Webhook
+app.delete('/api/v1/webhooks/:webhookId', apiAuth.requireApiKey(['write']), asyncHandler(async (req, res) => {
+  const success = await apiWebhook.deleteWebhook(req.params.webhookId);
+
+  if (!success) {
+    return res.status(404).json({ ok: false, error: 'Webhook not found' });
+  }
+
+  res.json({ ok: true, message: 'Webhook deleted' });
+}));
+
+// 测试 Webhook
+app.post('/api/v1/webhooks/:webhookId/test', apiAuth.requireApiKey(['write']), asyncHandler(async (req, res) => {
+  const result = await apiWebhook.testWebhook(req.params.webhookId);
+  res.json({ ok: result.success, ...result });
+}));
+
 // 增加 V8 内存限制提示
 const v8 = await import('v8');
 const totalHeapSize = v8.getHeapStatistics().total_available_size / 1024 / 1024;
 console.log(`[Server] Max Heap Size: ${Math.round(totalHeapSize)} MB`);
 
 const port = process.env.PORT || 8787;
-const server = app.listen(port, () => {
+const server = app.listen(port, async () => {
   console.log(`Extractor server listening at http://localhost:${port}`);
   console.log('[Server] 服务器已启动，等待请求...');
+
+  // 初始化 Webhooks
+  await apiWebhook.initializeWebhooks();
+  console.log('[Server] Webhooks 已初始化');
 
   // 启动时尝试恢复中断的任务
   setTimeout(() => {

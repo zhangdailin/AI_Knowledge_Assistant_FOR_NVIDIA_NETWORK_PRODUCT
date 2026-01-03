@@ -23,23 +23,54 @@ export interface Message {
   createdAt: string;
 }
 
+export interface ReferenceMetadata {
+  id?: string;
+  documentId?: string;
+  title: string;
+  content: string;
+  score: number;
+}
+
+export interface ValidationCommandMatch {
+  command: string;
+  confidence?: number;
+  referenceId?: string | null;
+  referenceTitle?: string | null;
+  referenceIndex?: number | null;
+  excerpt?: string;
+}
+
+export interface ValidationReferenceMatch {
+  referenceId?: string | null;
+  referenceTitle?: string | null;
+  referenceIndex?: number | null;
+  commands: string[];
+  excerpts?: string[];
+}
+
+export interface ValidationHallucination {
+  command: string;
+  reason?: string;
+}
+
 export interface MessageMetadata {
   model?: string;
   usage?: {
     tokens: number;
   };
-  references?: Array<{
-    title: string;
-    content: string;
-    score: number;
-  }>;
+  references?: ReferenceMetadata[];
   validation?: {
     isConsistent: boolean;
     confidenceScore: number;
     totalCommands?: number;
-    verifiedCommands?: string[];
-    hallucinations?: string[];
+    verifiedCommands?: ValidationCommandMatch[];
+    partialMatches?: ValidationCommandMatch[];
+    hallucinations?: ValidationHallucination[];
     warnings?: string[];
+    referenceSummaries?: Array<{ id?: string; title?: string; index?: number }>;
+    referenceMatches?: ValidationReferenceMatch[];
+    hasReferences?: boolean;
+    validationMethod?: string;
     analyzedAt?: string;
   };
   deepThinking?: boolean;

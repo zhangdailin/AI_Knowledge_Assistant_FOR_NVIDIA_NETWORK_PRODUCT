@@ -322,54 +322,102 @@ const TERM_MAPPINGS = {
   '查看': ['check', 'view', 'show', 'display', 'inspect'],
   '状态': ['status', 'state', 'health', 'condition', 'info', 'summary'],
   '命令': ['command', 'cli', 'cmd', 'instruction', 'nv', 'nvue', 'netq', 'vtysh'],
-  '保存': ['save', 'write', 'commit', 'store'],
+  '保存': ['save', 'write', 'commit', 'store', 'persist'],
   '重启': ['reboot', 'reload', 'restart', 'reset'],
   '删除': ['delete', 'remove', 'unset', 'clear', 'erase', 'no'],
   '开启': ['enable', 'up', 'start', 'activate', 'on'],
   '关闭': ['disable', 'down', 'stop', 'deactivate', 'off', 'shutdown'],
-  '调试': ['debug', 'trace', 'log', 'monitor'],
-  '升级': ['upgrade', 'update', 'install', 'patch'],
+  '调试': ['debug', 'trace', 'log', 'monitor', 'troubleshoot'],
+  '升级': ['upgrade', 'update', 'install', 'patch', 'firmware'],
   '连接': ['connect', 'ssh', 'telnet', 'console', 'link'],
+  '验证': ['verify', 'validate', 'check', 'confirm', 'test'],
+  '应用': ['apply', 'commit', 'activate', 'deploy'],
+  '备份': ['backup', 'snapshot', 'export', 'save'],
+  '恢复': ['restore', 'recover', 'rollback', 'revert'],
+  '监控': ['monitor', 'watch', 'track', 'observe'],
 
   // --- Objects / Entities ---
   '所有': ['all', 'full', 'entire', 'everything', 'total', 'whole'],
-  '设备': ['device', 'system', 'switch', 'router', 'box', 'hardware', 'platform', 'node', 'chassis'],
+  '设备': ['device', 'system', 'switch', 'router', 'box', 'hardware', 'platform', 'node', 'chassis', 'appliance'],
   '当前': ['current', 'currently', 'active', 'running', 'applied', 'now'],
-  '接口': ['interface', 'port', 'int', 'eth', 'swp'],
-  '路由': ['route', 'routing', 'rib', 'fib', 'forwarding'],
-  '网络': ['network', 'net', 'fabric', 'infrastructure'],
-  '版本': ['version', 'ver', 'revision', 'release', 'image'],
+  '接口': ['interface', 'port', 'int', 'eth', 'swp', 'link', 'nic'],
+  '路由': ['route', 'routing', 'rib', 'fib', 'forwarding', 'nexthop', 'gateway'],
+  '网络': ['network', 'net', 'fabric', 'infrastructure', 'topology'],
+  '版本': ['version', 'ver', 'revision', 'release', 'image', 'build'],
   '用户': ['user', 'username', 'account', 'admin', 'role'],
   '密码': ['password', 'passwd', 'secret', 'credential', 'auth'],
-  '邻居': ['neighbor', 'peer', 'adjacency'],
-  '日志': ['log', 'logging', 'syslog', 'journal'],
-  '错误': ['error', 'fail', 'failure', 'drop', 'discard', 'loss', 'down'],
-  '起不来': ['down', 'fail', 'failure', 'not established'],
+  '邻居': ['neighbor', 'peer', 'adjacency', 'next-hop'],
+  '日志': ['log', 'logging', 'syslog', 'journal', 'audit'],
+  '错误': ['error', 'fail', 'failure', 'drop', 'discard', 'loss', 'down', 'issue'],
+  '起不来': ['down', 'fail', 'failure', 'not established', 'not up'],
   '怎么办': ['troubleshoot', 'fix', 'solution', 'how to', 'debug'],
+  '故障': ['failure', 'fault', 'problem', 'issue', 'malfunction', 'outage'],
+  '性能': ['performance', 'throughput', 'latency', 'bandwidth', 'speed'],
+  '流量': ['traffic', 'flow', 'packet', 'data', 'throughput'],
 
   // --- Protocols / Technologies ---
-  'bgp': ['border gateway protocol', 'ebgp', 'ibgp'],
-  'ospf': ['open shortest path first'],
-  'evpn': ['ethernet vpn', 'vxlan'],
-  'vxlan': ['virtual extensible lan', 'vni', 'vtep', 'overlay'],
-  'vni': ['virtual network identifier', 'segment id'],
-  'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link', 'peerlink', 'dual-connected', 'mlag-id', 'backup-ip'],
-  // NVUE specific command mappings
+  'bgp': ['border gateway protocol', 'ebgp', 'ibgp', 'as', 'asn', 'autonomous system'],
+  'ospf': ['open shortest path first', 'area', 'lsa', 'spf'],
+  'evpn': ['ethernet vpn', 'vxlan', 'type-2', 'type-3', 'type-5'],
+  'vxlan': ['virtual extensible lan', 'vni', 'vtep', 'overlay', 'tunnel'],
+  'vni': ['virtual network identifier', 'segment id', 'vnid'],
+  'mlag': ['multi-chassis link aggregation', 'clag', 'bond', 'peer-link', 'peerlink', 'dual-connected', 'mlag-id', 'backup-ip', 'mclag'],
+  'roce': ['rdma over converged ethernet', 'infiniband', 'ib', 'rdma', 'pfc', 'ecn', 'qos'],
+  'infiniband': ['ib', 'roce', 'rdma', 'fabric', 'subnet manager', 'sm'],
+  'rdma': ['remote direct memory access', 'roce', 'infiniband', 'iwarp'],
+  'pfc': ['priority flow control', 'pause', 'lossless', 'no-drop'],
+  'ecn': ['explicit congestion notification', 'marking', 'cwr', 'ce'],
+  'qos': ['quality of service', 'cos', 'dscp', 'priority', 'scheduling', 'marking'],
+
+  // --- NVUE specific command mappings ---
   'nv set': ['nv config', 'nvue', 'nv set interface', 'nv set system', 'nv set mlag', 'nv set bridge', 'nv set router', 'nv set evpn', 'nv set vrf'],
   'nvue': ['nv set', 'nv show', 'nv config', 'nv unset', 'nv action'],
   'nv': ['nvue', 'nv set', 'nv show', 'nv config', 'nv unset'],
-  'stp': ['spanning tree', 'rstp', 'mstp', 'pvst'],
-  'lacp': ['link aggregation', 'bond', 'port-channel', 'lag'],
-  'lldp': ['link layer discovery'],
-  'vlan': ['virtual lan', 'bridge', 'dot1q'],
-  'vrf': ['virtual routing and forwarding', 'vpn-instance'],
-  'acl': ['access control list', 'filter', 'policy', 'rule'],
-  'bfd': ['bidirectional forwarding detection'],
-  'ptp': ['precision time protocol', '1588'],
-  'snmp': ['simple network management protocol', 'trap', 'inform'],
-  'ntp': ['network time protocol', 'time'],
-  'dhcp': ['dynamic host configuration protocol', 'relay'],
-  'dns': ['domain name system', 'resolve', 'nameserver']
+  'netq': ['netq show', 'netq check', 'netq trace', 'netq agent'],
+
+  // --- Layer 2/3 Technologies ---
+  'stp': ['spanning tree', 'rstp', 'mstp', 'pvst', 'bpdu'],
+  'lacp': ['link aggregation', 'bond', 'port-channel', 'lag', 'etherchannel'],
+  'lldp': ['link layer discovery', 'cdp', 'neighbor discovery'],
+  'vlan': ['virtual lan', 'bridge', 'dot1q', '802.1q', 'trunk', 'access'],
+  'vrf': ['virtual routing and forwarding', 'vpn-instance', 'routing instance'],
+  'acl': ['access control list', 'filter', 'policy', 'rule', 'permit', 'deny'],
+  'bfd': ['bidirectional forwarding detection', 'fast-failover'],
+  'ptp': ['precision time protocol', '1588', 'ieee1588', 'grandmaster', 'boundary clock'],
+  'snmp': ['simple network management protocol', 'trap', 'inform', 'oid', 'mib'],
+  'ntp': ['network time protocol', 'time', 'clock', 'stratum'],
+  'dhcp': ['dynamic host configuration protocol', 'relay', 'bootp', 'option82'],
+  'dns': ['domain name system', 'resolve', 'nameserver', 'lookup'],
+  'arp': ['address resolution protocol', 'mac address', 'ip mapping'],
+  'fdb': ['forwarding database', 'mac table', 'cam table'],
+  'multicast': ['igmp', 'pim', 'mroute', 'mcast', 'group'],
+
+  // --- Common Abbreviations ---
+  'mac': ['media access control', 'hardware address', 'ethernet address'],
+  'ip': ['internet protocol', 'ipv4', 'ipv6', 'address'],
+  'mtu': ['maximum transmission unit', 'jumbo frame', 'packet size'],
+  'ttl': ['time to live', 'hop limit'],
+  'qinq': ['802.1ad', 'double tag', 'stacked vlan'],
+  'gre': ['generic routing encapsulation', 'tunnel'],
+  'ipsec': ['ip security', 'vpn', 'encryption'],
+  'nat': ['network address translation', 'pat', 'source nat', 'destination nat'],
+  'hsrp': ['hot standby router protocol', 'vrrp', 'gateway redundancy'],
+  'vrrp': ['virtual router redundancy protocol', 'hsrp', 'gateway'],
+
+  // --- Storage & File Systems ---
+  '文件': ['file', 'document', 'config file', 'image'],
+  '目录': ['directory', 'folder', 'path'],
+  '存储': ['storage', 'disk', 'flash', 'memory'],
+
+  // --- Common Chinese Queries ---
+  '怎样': ['how to', 'how', 'method', 'way'],
+  '为什么': ['why', 'reason', 'cause'],
+  '原理': ['principle', 'mechanism', 'concept', 'theory'],
+  '区别': ['difference', 'compare', 'versus', 'vs'],
+  '优势': ['advantage', 'benefit', 'pros'],
+  '缺点': ['disadvantage', 'limitation', 'cons', 'issue'],
+  '建议': ['recommend', 'suggestion', 'best practice'],
+  '注意': ['caution', 'warning', 'notice', 'important']
 };
 
 // 简单的内存缓存 (带 LRU 淘汰)
@@ -472,10 +520,56 @@ function resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId) {
 export async function searchChunks(query, limit = 30, categoryIds = null) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
-  const queryLower = query.toLowerCase();
+  let queryLower = query.toLowerCase();
+
+  // 查询重写：将口语化表达转换为技术术语
+  const queryRewritePatterns = [
+    // 查看/检查 -> show
+    { pattern: /(怎么|如何)(看|查看|查询|检查)(.+)/, rewrite: (m, _, __, target) => `show ${target.trim()}` },
+    { pattern: /(查看|检查|看)(.+)(状态|信息|配置)/, rewrite: (m, _, target) => `show ${target.trim()}` },
+
+    // 配置 -> config/set
+    { pattern: /(怎么|如何)(配置|设置)(.+)/, rewrite: (m, _, __, target) => `config ${target.trim()} set` },
+    { pattern: /(配置|设置)(.+)(方法|步骤|命令)/, rewrite: (m, _, target) => `config ${target.trim()}` },
+
+    // 概念查询
+    { pattern: /(.+)(是什么|什么意思|含义)/, rewrite: (m, term) => `${term.trim()} 定义 概念` },
+
+    // 故障排查
+    { pattern: /(.+)(不工作|无法|失败|报错)/, rewrite: (m, issue) => `${issue.trim()} troubleshoot debug 故障` },
+    { pattern: /(怎么|如何)(解决|修复|排查)(.+)/, rewrite: (m, _, __, issue) => `${issue.trim()} troubleshoot fix` },
+
+    // 操作指南
+    { pattern: /(启用|禁用|开启|关闭)(.+)/, rewrite: (m, action, target) => `${target.trim()} ${action} enable disable` },
+  ];
+
+  let rewritten = false;
+  for (const { pattern, rewrite } of queryRewritePatterns) {
+    const match = queryLower.match(pattern);
+    if (match) {
+      const newQuery = rewrite(...match);
+      if (newQuery && newQuery !== queryLower) {
+        console.log(`[QueryRewrite] "${query}" => "${newQuery}"`);
+        queryLower = newQuery;
+        rewritten = true;
+        break; // 只应用第一个匹配的规则
+      }
+    }
+  }
+
+  // 定义停用词列表（与前端保持一致）
+  const stopWords = new Set([
+    '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
+    '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好',
+    '自己', '这', '那', '能', '吗', '么', '为', '啊', '呢', '吧', '如何', '怎么', '什么'
+  ]);
 
   const rawQueryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
-    .filter(w => w.length >= 2 || (w.length === 1 && /[\u4e00-\u9fa5]/.test(w)));
+    .filter(w => {
+      // 保留长度>=2的词，或单字中文但非停用词
+      if (w.length >= 2) return !stopWords.has(w);
+      return /[\u4e00-\u9fa5]/.test(w) && !stopWords.has(w);
+    });
 
   const intent = { isCommand: false, isConcept: false, isTroubleshooting: false };
 
@@ -505,7 +599,8 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     }
   }
 
-  const expandedQueryWords = Array.from(queryWordsSet);
+  // 同义词扩展后，再次过滤停用词（确保扩展的词不包含停用词）
+  const expandedQueryWords = Array.from(queryWordsSet).filter(w => !stopWords.has(w));
   const technicalTerms = expandedQueryWords.filter(w => /^[a-z0-9]+$/.test(w));
   const technicalTermsSet = new Set(technicalTerms);
 
@@ -834,6 +929,12 @@ export async function addFeedbackEntry(entry) {
     feedback.splice(0, feedback.length - 2000);
   }
   await writeJSON(FEEDBACK_FILE, feedback);
+
+  // 负样本学习：如果是负面反馈，记录(query, documentId)对
+  if (entry.verdict === 'down' && entry.question && entry.metadata?.references) {
+    await recordNegativeSample(entry.question, entry.metadata.references);
+  }
+
   return entry;
 }
 
@@ -852,6 +953,81 @@ export async function getFeedbackMetrics() {
     positivityRate: total > 0 ? positive / total : 0,
     recent
   };
+}
+
+export async function getAllFeedback() {
+  await initStorage();
+  return await readJSON(FEEDBACK_FILE, []);
+}
+
+// ========== 负样本学习 ==========
+
+const NEGATIVE_SAMPLES_FILE = path.join(DATA_DIR, 'negative_samples.json');
+
+/**
+ * 记录负样本：用户对某个查询+文档组合给出负反馈
+ * @param {string} query - 查询文本
+ * @param {Array} references - 参考文档列表
+ */
+async function recordNegativeSample(query, references) {
+  const negativeSamples = await readJSON(NEGATIVE_SAMPLES_FILE, {});
+
+  // 规范化query（小写、去空格）
+  const normalizedQuery = query.toLowerCase().trim();
+
+  if (!negativeSamples[normalizedQuery]) {
+    negativeSamples[normalizedQuery] = {};
+  }
+
+  // 记录每个参考文档的负反馈次数
+  if (Array.isArray(references)) {
+    for (const ref of references) {
+      const docId = ref.documentId || ref.id;
+      if (docId) {
+        negativeSamples[normalizedQuery][docId] = (negativeSamples[normalizedQuery][docId] || 0) + 1;
+      }
+    }
+  }
+
+  await writeJSON(NEGATIVE_SAMPLES_FILE, negativeSamples);
+  console.log(`[NegativeSample] 已记录负样本: query="${normalizedQuery}", docs=${Object.keys(negativeSamples[normalizedQuery]).length}`);
+}
+
+/**
+ * 获取负样本惩罚分数
+ * @param {string} query - 查询文本
+ * @param {string} documentId - 文档ID
+ * @returns {number} - 惩罚分数（负数，用于降权）
+ */
+export async function getNegativePenalty(query, documentId) {
+  if (!query || !documentId) return 0;
+
+  const negativeSamples = await readJSON(NEGATIVE_SAMPLES_FILE, {});
+  const normalizedQuery = query.toLowerCase().trim();
+
+  // 精确匹配查询
+  if (negativeSamples[normalizedQuery] && negativeSamples[normalizedQuery][documentId]) {
+    const feedbackCount = negativeSamples[normalizedQuery][documentId];
+    // 每个负反馈 -0.1分，最多 -0.5分
+    return -Math.min(feedbackCount * 0.1, 0.5);
+  }
+
+  // 模糊匹配：查询包含关键词
+  const queryKeywords = normalizedQuery.split(/\s+/).filter(w => w.length > 2);
+  for (const [cachedQuery, docs] of Object.entries(negativeSamples)) {
+    // 如果当前查询包含缓存查询的所有词（或反之），认为相似
+    const cachedKeywords = cachedQuery.split(/\s+/).filter(w => w.length > 2);
+    const isMatch = queryKeywords.some(kw => cachedQuery.includes(kw)) ||
+                   cachedKeywords.some(kw => normalizedQuery.includes(kw));
+
+    if (isMatch && docs[documentId]) {
+      const feedbackCount = docs[documentId];
+      // 模糊匹配的惩罚减半
+      return -Math.min(feedbackCount * 0.05, 0.25);
+    }
+  }
+
+  return 0;
 }
 
 // ========== 分类管理 ==========

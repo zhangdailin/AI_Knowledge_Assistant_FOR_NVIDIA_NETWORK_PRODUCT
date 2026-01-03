@@ -381,9 +381,11 @@ function makeParentKey(breadcrumbs = []) {
 
 /**
  * 切分过大的 section（保护代码块）
+ * @param {number} overlapSize - 重叠大小（字符数），默认 300
  */
-function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetadata = {}) {
+function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetadata = {}, overlapSize = 300) {
   const chunks = [];
+  const effectiveOverlap = Math.min(overlapSize, Math.floor(maxSize * 0.2)); // 重叠不超过chunk的20%
 
   // 先按代码块分割
   const parts = [];
@@ -421,8 +423,9 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetada
     parts.push({ type: 'text', content });
   }
 
-  // 合并 parts 成 chunks
+  // 合并 parts 成 chunks（支持重叠）
   let currentChunk = '';
+  let previousChunkTail = ''; // 保存前一个chunk的尾部用于重叠
   let chunkIndex = startIndex;
   const contextPrefix = breadcrumbs.length > 0 ? `[${breadcrumbs.join(' > ')}]\n\n` : '';
 
@@ -431,17 +434,24 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetada
     if (part.type === 'code') {
       // 如果代码块本身就超过 maxSize，单独作为一个 chunk
       if (part.content.length > maxSize) {
-        // 先保存当前累积的内容
+        // 先保存当前累积的内容（带重叠）
         if (currentChunk.trim()) {
-          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
+          const fullContent = previousChunkTail + currentChunk;
+          chunks.push(createChunk(contextPrefix + fullContent, breadcrumbs, chunkIndex++, baseMetadata));
+          // 保存当前chunk的尾部
+          previousChunkTail = extractTail(currentChunk, effectiveOverlap);
           currentChunk = '';
         }
-        // 代码块单独成 chunk（即使超长也不切）
-        chunks.push(createChunk(contextPrefix + part.content, breadcrumbs, chunkIndex++, baseMetadata));
+        // 代码块单独成 chunk（即使超长也不切，但带重叠）
+        const codeChunkContent = previousChunkTail + part.content;
+        chunks.push(createChunk(contextPrefix + codeChunkContent, breadcrumbs, chunkIndex++, baseMetadata));
+        previousChunkTail = ''; // 代码块后不保留重叠（避免重复代码块）
       } else if (currentChunk.length + part.content.length > maxSize) {
-        // 加入代码块会超限，先保存当前内容
+        // 加入代码块会超限，先保存当前内容（带重叠）
         if (currentChunk.trim()) {
-          chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
+          const fullContent = previousChunkTail + currentChunk;
+          chunks.push(createChunk(contextPrefix + fullContent, breadcrumbs, chunkIndex++, baseMetadata));
+          previousChunkTail = extractTail(currentChunk, effectiveOverlap);
         }
         currentChunk = part.content;
       } else {
@@ -455,17 +465,24 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetada
         if (!para.trim()) continue;
 
         if (currentChunk.length + para.length + 2 > maxSize) {
-          // 保存当前 chunk
+          // 保存当前 chunk（带重叠）
           if (currentChunk.trim()) {
-            chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
+            const fullContent = previousChunkTail + currentChunk;
+            chunks.push(createChunk(contextPrefix + fullContent, breadcrumbs, chunkIndex++, baseMetadata));
+            previousChunkTail = extractTail(currentChunk, effectiveOverlap);
           }
 
-          // 如果单个段落超长，强制切分
+          // 如果单个段落超长，强制切分（带重叠）
           if (para.length > maxSize) {
             const subParts = splitBysentences(para, maxSize);
-            for (const subPart of subParts) {
-              chunks.push(createChunk(contextPrefix + subPart, breadcrumbs, chunkIndex++, baseMetadata));
+            for (let i = 0; i < subParts.length; i++) {
+              const subContent = (i === 0 ? previousChunkTail : '') + subParts[i];
+              chunks.push(createChunk(contextPrefix + subContent, breadcrumbs, chunkIndex++, baseMetadata));
+              if (i < subParts.length - 1) {
+                previousChunkTail = extractTail(subParts[i], effectiveOverlap);
+              }
             }
+            previousChunkTail = extractTail(subParts[subParts.length - 1], effectiveOverlap);
             currentChunk = '';
           } else {
             currentChunk = para;
@@ -477,12 +494,39 @@ function splitLargeSection(content, breadcrumbs, maxSize, startIndex, baseMetada
     }
   }
 
-  // 保存最后的内容
+  // 保存最后的内容（带重叠）
   if (currentChunk.trim()) {
-    chunks.push(createChunk(contextPrefix + currentChunk, breadcrumbs, chunkIndex++, baseMetadata));
+    const fullContent = previousChunkTail + currentChunk;
+    chunks.push(createChunk(contextPrefix + fullContent, breadcrumbs, chunkIndex++, baseMetadata));
   }
 
   return chunks;
+}
+
+/**
+ * 提取文本尾部用于重叠
+ * 优先在句子/段落边界截取，避免切断语义
+ */
+function extractTail(text, overlapSize) {
+  if (!text || overlapSize <= 0) return '';
+  if (text.length <= overlapSize) return text;
+
+  // 从目标位置往前找句子边界
+  const startPos = Math.max(0, text.length - overlapSize);
+  const tail = text.slice(startPos);
+
+  // 尝试在句子边界处切分（中英文）
+  const sentenceBoundaries = ['\n\n', '。\n', '.\n', '！\n', '?\n', ';\n'];
+  for (const boundary of sentenceBoundaries) {
+    const idx = tail.indexOf(boundary);
+    if (idx !== -1 && idx < overlapSize * 0.8) {
+      // 找到边界且不会丢失太多内容
+      return tail.slice(idx + boundary.length);
+    }
+  }
+
+  // 没找到合适边界，直接截取
+  return tail;
 }
 
 /**

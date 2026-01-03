@@ -7,6 +7,24 @@ import MessageContent from './MessageContent';
 import SnIblfResultCard from '../plugins/sn-iblf/SnIblfResultCard';
 import ReferenceDocuments from './ReferenceDocuments';
 import { localStorageManager } from '../lib/localStorage';
+import type { ReferenceMetadata } from '../lib/types';
+
+type CommandMatch = {
+  command: string;
+  confidence?: number;
+  referenceId?: string | null;
+  referenceTitle?: string | null;
+  referenceIndex?: number | null;
+  excerpt?: string;
+};
+
+type ReferenceHighlight = {
+  referenceId?: string | null;
+  referenceTitle?: string | null;
+  referenceIndex?: number | null;
+  commands: string[];
+  excerpts: string[];
+};
 
 // 验证方法标签映射
 const getValidationMethodLabel = (method: string): string => {
@@ -24,12 +42,101 @@ const getValidationMethodLabel = (method: string): string => {
   return labels[method] || method;
 };
 
+const normalizeCommandMatches = (items: any): CommandMatch[] => {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map(item => {
+      if (typeof item === 'string') {
+        return { command: item };
+      }
+      if (item && typeof item.command === 'string') {
+        return {
+          command: item.command,
+          confidence: typeof item.confidence === 'number' ? item.confidence : undefined,
+          referenceId: item.referenceId ?? null,
+          referenceTitle: item.referenceTitle ?? null,
+          referenceIndex: typeof item.referenceIndex === 'number' ? item.referenceIndex : (item.referenceIndex ?? null),
+          excerpt: item.excerpt
+        };
+      }
+      return null;
+    })
+    .filter((match): match is CommandMatch => Boolean(match?.command));
+};
+
+const normalizeHallucinations = (items: any): Array<{ command: string; reason?: string }> => {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map(item => {
+      if (typeof item === 'string') {
+        return { command: item };
+      }
+      if (item && typeof item.command === 'string') {
+        return item;
+      }
+      return null;
+    })
+    .filter((entry): entry is { command: string; reason?: string } => Boolean(entry?.command));
+};
+
+const buildReferenceHighlightMap = (validation: any): Record<string, ReferenceHighlight> => {
+  if (!validation) return {};
+
+  if (Array.isArray(validation.referenceMatches) && validation.referenceMatches.length > 0) {
+    return validation.referenceMatches.reduce<Record<string, ReferenceHighlight>>((acc, match) => {
+      const key = match.referenceId || `idx-${match.referenceIndex ?? 'unknown'}`;
+      acc[key] = {
+        referenceId: match.referenceId ?? null,
+        referenceTitle: match.referenceTitle ?? null,
+        referenceIndex: match.referenceIndex ?? null,
+        commands: Array.isArray(match.commands) ? match.commands : [],
+        excerpts: Array.isArray(match.excerpts) ? match.excerpts : []
+      };
+      return acc;
+    }, {});
+  }
+
+  const combinedMatches = [
+    ...normalizeCommandMatches(validation.verifiedCommands),
+    ...normalizeCommandMatches(validation.partialMatches)
+  ];
+
+  return combinedMatches.reduce<Record<string, ReferenceHighlight>>((acc, match) => {
+    const key = match.referenceId || `idx-${match.referenceIndex ?? 'unknown'}`;
+    if (!match.referenceId && match.referenceIndex == null) return acc;
+    if (!acc[key]) {
+      acc[key] = {
+        referenceId: match.referenceId ?? null,
+        referenceTitle: match.referenceTitle ?? null,
+        referenceIndex: match.referenceIndex ?? null,
+        commands: [],
+        excerpts: []
+      };
+    }
+    acc[key].commands.push(match.command);
+    if (match.excerpt) {
+      acc[key].excerpts.push(match.excerpt);
+    }
+    return acc;
+  }, {});
+};
+
 const ChatInterface: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [isSending, setIsSending] = useState(false); // 新增：发送状态
   const [validationDetailModal, setValidationDetailModal] = useState<any>(null); // 验证详情弹窗
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const detailVerifiedCommands = validationDetailModal
+    ? normalizeCommandMatches(validationDetailModal.verifiedCommands)
+    : [];
+  const detailPartialMatches = validationDetailModal
+    ? normalizeCommandMatches(validationDetailModal.partialMatches)
+    : [];
+  const detailHallucinations = validationDetailModal
+    ? normalizeHallucinations(validationDetailModal.hallucinations)
+    : [];
 
   const { user } = useAuthStore();
   const {
@@ -246,25 +353,34 @@ const ChatInterface: React.FC = () => {
                 </div>
                 <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-200">
                   <div className="text-xs text-emerald-600 mb-1">已验证</div>
-                  <div className="text-xl font-bold text-emerald-700">{validationDetailModal.verifiedCommands?.length || 0}</div>
+                  <div className="text-xl font-bold text-emerald-700">{detailVerifiedCommands.length}</div>
                 </div>
                 <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
                   <div className="text-xs text-amber-600 mb-1">待核实</div>
-                  <div className="text-xl font-bold text-amber-700">{validationDetailModal.hallucinations?.length || 0}</div>
+                  <div className="text-xl font-bold text-amber-700">{detailHallucinations.length}</div>
                 </div>
               </div>
 
               {/* 已验证的命令 */}
-              {validationDetailModal.verifiedCommands && validationDetailModal.verifiedCommands.length > 0 && (
+              {detailVerifiedCommands.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
                     <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    已验证命令 ({validationDetailModal.verifiedCommands.length})
+                    已验证命令 ({detailVerifiedCommands.length})
                   </h4>
                   <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {validationDetailModal.verifiedCommands.map((cmd: string, idx: number) => (
+                    {detailVerifiedCommands.map((match, idx) => (
                       <div key={idx} className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-                        <code className="text-xs text-emerald-800 font-mono">{cmd}</code>
+                        <code className="text-xs text-emerald-800 font-mono">{match.command}</code>
+                        <div className="text-[10px] text-emerald-700 mt-1 flex flex-wrap gap-2">
+                          {match.referenceTitle && <span>来源: {match.referenceTitle}</span>}
+                          {typeof match.confidence === 'number' && <span>置信度 {(match.confidence * 100).toFixed(0)}%</span>}
+                        </div>
+                        {match.excerpt && (
+                          <p className="text-[11px] text-gray-600 mt-1 leading-relaxed whitespace-pre-wrap bg-white/60 rounded px-2 py-1">
+                            {match.excerpt}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -272,17 +388,27 @@ const ChatInterface: React.FC = () => {
               )}
 
               {/* 部分匹配的命令 */}
-              {validationDetailModal.partialMatches && validationDetailModal.partialMatches.length > 0 && (
+              {detailPartialMatches.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-blue-600" />
-                    部分匹配命令 ({validationDetailModal.partialMatches.length})
+                    部分匹配命令 ({detailPartialMatches.length})
                   </h4>
                   <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {validationDetailModal.partialMatches.map((item: any, idx: number) => (
+                    {detailPartialMatches.map((item, idx) => (
                       <div key={idx} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                         <code className="text-xs text-blue-800 font-mono">{item.command}</code>
-                        <span className="ml-2 text-xs text-blue-600">({(item.confidence * 100).toFixed(0)}% 匹配)</span>
+                        {typeof item.confidence === 'number' && (
+                          <span className="ml-2 text-xs text-blue-600">({(item.confidence * 100).toFixed(0)}% 匹配)</span>
+                        )}
+                        {item.referenceTitle && (
+                          <div className="text-[10px] text-blue-600 mt-1">来源: {item.referenceTitle}</div>
+                        )}
+                        {item.excerpt && (
+                          <p className="text-[11px] text-gray-600 mt-1 leading-relaxed whitespace-pre-wrap bg-white rounded px-2 py-1">
+                            {item.excerpt}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -290,19 +416,22 @@ const ChatInterface: React.FC = () => {
               )}
 
               {/* 待核实的命令 */}
-              {validationDetailModal.hallucinations && validationDetailModal.hallucinations.length > 0 && (
+              {detailHallucinations.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
-                    待核实命令 ({validationDetailModal.hallucinations.length})
+                    待核实命令 ({detailHallucinations.length})
                   </h4>
                   <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg border border-amber-200">
                     这些命令未在参考文档中找到，可能需要人工核实其准确性
                   </p>
                   <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {validationDetailModal.hallucinations.map((cmd: string, idx: number) => (
+                    {detailHallucinations.map((item, idx) => (
                       <div key={idx} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                        <code className="text-xs text-amber-800 font-mono">{cmd}</code>
+                        <code className="text-xs text-amber-800 font-mono">{item.command}</code>
+                        {item.reason && (
+                          <span className="ml-2 text-[10px] text-amber-700">{item.reason}</span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -491,7 +620,19 @@ const ChatInterface: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-6 max-w-4xl mx-auto">
-              {messages.map((message) => (
+              {messages.map((message) => {
+                const validationData = message.metadata?.validation;
+                const referenceDocuments = (message.metadata?.references || []) as ReferenceMetadata[];
+                const referenceHighlightMap = buildReferenceHighlightMap(validationData);
+                const referenceBadgeEntries = Object.entries(referenceHighlightMap);
+                const referenceLookup = new Map<string, (typeof referenceDocuments)[number]>();
+                referenceDocuments.forEach((ref, idx) => {
+                  const key = ref.id || `idx-${idx}`;
+                  referenceLookup.set(key, ref);
+                });
+                const hasReferenceBadges = referenceBadgeEntries.length > 0;
+
+                return (
                 <div key={message.id} className={`flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 ${message.role === 'user' ? 'justify-end' : 'justify-start'
                   }`}>
                   {message.role === 'assistant' && (
@@ -575,6 +716,27 @@ const ChatInterface: React.FC = () => {
                       </span>
                     </div>
 
+                    {message.role === 'assistant' && hasReferenceBadges && (
+                      <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px] text-gray-600">
+                        <span className="font-semibold text-gray-700">引用</span>
+                        {referenceBadgeEntries.map(([key, entry]) => {
+                          const refTitle =
+                            referenceLookup.get(key)?.title ||
+                            entry.referenceTitle ||
+                            `参考文档 #${(entry.referenceIndex ?? 0) + 1}`;
+                          return (
+                            <span
+                              key={key}
+                              className="px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600"
+                            >
+                              {refTitle}
+                              <span className="ml-1 text-gray-400">({entry.commands.length}条)</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {message.role === 'assistant' && (
                       <div className={`flex items-center gap-2 mt-2 ${message.metadata?.feedback ? 'text-gray-500' : 'text-gray-400'}`}>
                         <button
@@ -605,8 +767,8 @@ const ChatInterface: React.FC = () => {
                     )}
 
                     {/* 参考文档展示 */}
-                    {message.role === 'assistant' && message.metadata?.references && message.metadata.references.length > 0 && (
-                      <ReferenceDocuments references={message.metadata.references} />
+                    {message.role === 'assistant' && referenceDocuments.length > 0 && (
+                      <ReferenceDocuments references={referenceDocuments} highlights={referenceHighlightMap} />
                     )}
                   </div>
 
