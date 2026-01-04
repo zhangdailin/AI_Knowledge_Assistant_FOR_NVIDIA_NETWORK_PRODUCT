@@ -81,7 +81,7 @@ function extractKeywords(query: string): string[] {
 
 // 多级检索策略
 async function multiLevelSearch(query: string): Promise<{
-  results: Array<{ content: string; score: number }>;
+  results: KnowledgeSearchResult[];
   searchLevel: number;
   hasRelevantKnowledge: boolean;
 }> {
@@ -347,10 +347,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           question: content,
           // 传递前5条参考文档用于验证，与上下文保持一致
           references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
-            id: r.id || `ref-${idx}`,
-            title: r.title || `参考文档 #${idx + 1}`,
+            id: r.id ?? `ref-${idx}`,
+            title: r.title ?? `参考文档 #${idx + 1}`,
             content: r.content,
-            documentId: r.documentId
+            documentId: r.documentId ?? undefined
           })) : []
         }),
         signal: abortController.signal
@@ -375,9 +375,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           deepThinking,
           // 保存前5条参考文档，提供更完整的来源信息
           references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
-            id: r.id || `ref-${idx}`,
-            documentId: r.documentId,
-            title: r.title || `参考文档 #${idx + 1}`,
+            id: r.id ?? `ref-${idx}`,
+            documentId: r.documentId ?? undefined,
+            title: r.title ?? `参考文档 #${idx + 1}`,
             content: r.content,
             score: r.score
           })) : [],

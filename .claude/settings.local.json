@@ -22,7 +22,8 @@
       "Bash(npm run server:backend)",
       "Bash(python:*)",
       "Bash(timeout 30 curl:*)",
-      "Bash(timeout 5 node:*)"
+      "Bash(timeout 5 node:*)",
+      "Bash(npm run build)"
     ]
   }
 }

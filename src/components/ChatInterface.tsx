@@ -57,11 +57,11 @@ const normalizeCommandMatches = (items: any): CommandMatch[] => {
           referenceTitle: item.referenceTitle ?? null,
           referenceIndex: typeof item.referenceIndex === 'number' ? item.referenceIndex : (item.referenceIndex ?? null),
           excerpt: item.excerpt
-        };
+        } as CommandMatch;
       }
       return null;
     })
-    .filter((match): match is CommandMatch => Boolean(match?.command));
+    .filter((match): match is CommandMatch => match !== null && Boolean(match.command));
 };
 
 const normalizeHallucinations = (items: any): Array<{ command: string; reason?: string }> => {
@@ -83,7 +83,7 @@ const buildReferenceHighlightMap = (validation: any): Record<string, ReferenceHi
   if (!validation) return {};
 
   if (Array.isArray(validation.referenceMatches) && validation.referenceMatches.length > 0) {
-    return validation.referenceMatches.reduce<Record<string, ReferenceHighlight>>((acc, match) => {
+    return validation.referenceMatches.reduce((acc: Record<string, ReferenceHighlight>, match: any) => {
       const key = match.referenceId || `idx-${match.referenceIndex ?? 'unknown'}`;
       acc[key] = {
         referenceId: match.referenceId ?? null,
@@ -778,7 +778,8 @@ const ChatInterface: React.FC = () => {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
 
               {/* 加载状态 */}
               {isLoading && (
