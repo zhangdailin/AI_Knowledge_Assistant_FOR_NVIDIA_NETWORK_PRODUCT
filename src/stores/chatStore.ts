@@ -99,10 +99,11 @@ async function multiLevelSearch(query: string): Promise<{
   const hasRerank = maxRerankScore > 0;
 
   // 判断第一级是否成功
-  // 优化：优先使用 rerank 分数判断，其阈值通常更高（0.7+表示高相关）
-  const level1Pass = maxScore > 0.015 ||
-                     (results.length >= 2 && avgScore > 0.01) ||
-                     (hasRerank && maxRerankScore > 0.65);
+  // 关键优化：如果有 rerank 分数，优先使用 rerank 判断（更准确）
+  // rerank 分数范围 0-1，0.7+ 表示高相关，0.5+ 表示中等相关
+  const level1Pass = hasRerank
+    ? maxRerankScore > 0.7  // 有 rerank 时只看 rerank 分数
+    : (maxScore > 0.025 || (results.length >= 2 && avgScore > 0.018));  // 无 rerank 时看 embedding 分数
 
   if (level1Pass) {
     console.log('[Search] 第一级检索成功，最高分:', maxScore.toFixed(4), hasRerank ? `(Rerank: ${maxRerankScore.toFixed(4)})` : '');
@@ -112,10 +113,9 @@ async function multiLevelSearch(query: string): Promise<{
   console.log('[Search] 第一级检索分数较低，尝试第二级检索');
 
   // 第二级：降低阈值，接受更低分数的结果
-  // 优化：rerank > 0.5 也认为有一定相关性
-  const level2Pass = maxScore > 0.005 ||
-                     (results.length >= 2 && avgScore > 0.003) ||
-                     (hasRerank && maxRerankScore > 0.5);
+  const level2Pass = hasRerank
+    ? maxRerankScore > 0.55  // 有 rerank 时只看 rerank 分数
+    : (maxScore > 0.012 || (results.length >= 2 && avgScore > 0.008));  // 无 rerank 时看 embedding 分数
 
   if (level2Pass) {
     console.log('[Search] 第二级检索成功（降低阈值），最高分:', maxScore.toFixed(4), hasRerank ? `(Rerank: ${maxRerankScore.toFixed(4)})` : '');
@@ -134,9 +134,10 @@ async function multiLevelSearch(query: string): Promise<{
     const keywordMaxRerankScore = keywordResults.reduce((max, r) => Math.max(max, r.rerankScore || 0), 0);
     const keywordHasRerank = keywordMaxRerankScore > 0;
 
-    // 优化：关键词搜索的阈值更低，但仍考虑 rerank 分数
-    const level3Pass = (keywordMaxScore > 0.003 && keywordResults.length > 0) ||
-                       (keywordHasRerank && keywordMaxRerankScore > 0.4);
+    // 关键词搜索的阈值
+    const level3Pass = keywordHasRerank
+      ? keywordMaxRerankScore > 0.45  // 有 rerank 时只看 rerank 分数
+      : (keywordMaxScore > 0.008 && keywordResults.length > 0);  // 无 rerank 时看 embedding 分数
 
     if (level3Pass) {
       console.log('[Search] 第三级检索成功（关键词），最高分:', keywordMaxScore.toFixed(4), keywordHasRerank ? `(Rerank: ${keywordMaxRerankScore.toFixed(4)})` : '');

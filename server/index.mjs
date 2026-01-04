@@ -422,10 +422,24 @@ async function processUploadedFile(documentId, file) {
     console.log(`[Async] 文档处理完成: ${documentId}`);
 
   } catch (error) {
-    console.error(`[Async] 处理文档失败: ${documentId}`, error);
+    console.error(`[Async] 处理文档失败: ${documentId}`);
+    console.error(`[Async] 错误类型: ${error.name}`);
+    console.error(`[Async] 错误信息: ${error.message}`);
+    console.error(`[Async] 错误堆栈:`, error.stack);
+
+    // 提供更友好的错误信息
+    let userFriendlyMessage = error.message;
+    if (error.message.includes('Embedding API')) {
+      userFriendlyMessage = 'Embedding API 调用失败，请检查 API 配置';
+    } else if (error.message.includes('提取文本为空')) {
+      userFriendlyMessage = '文件内容为空或无法解析';
+    } else if (error.message.includes('分块失败')) {
+      userFriendlyMessage = '文档分块处理失败';
+    }
+
     await storage.updateDocument(documentId, {
       status: 'error',
-      errorMessage: error.message
+      errorMessage: userFriendlyMessage
     });
   }
 }

@@ -23,7 +23,9 @@
       "Bash(python:*)",
       "Bash(timeout 30 curl:*)",
       "Bash(timeout 5 node:*)",
-      "Bash(npm run build)"
+      "Bash(npm run build)",
+      "Bash(node index.mjs)",
+      "Bash(ls:*)"
     ]
   }
 }
