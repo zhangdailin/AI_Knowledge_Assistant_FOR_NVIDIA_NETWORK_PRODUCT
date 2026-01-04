@@ -76,12 +76,24 @@ function matchCommandAgainstReferences(command, referencesMeta) {
   const mainCmd = cmdParts[0] || '';
   const prefix = cmdParts.length >= 2 ? `${cmdParts[0]} ${cmdParts[1]}` : '';
 
+  // 检测是否是英伟达命令
+  const isNvidiaCmd = /^nv\s+(show|set|unset|config|apply)/i.test(normalizedCmd);
+
+  // 对于英伟达命令，提取命令模式（不包括具体参数值）
+  let cmdPattern = normalizedCmd;
+  if (isNvidiaCmd && cmdParts.length >= 3) {
+    // 例如: "nv show interface swp1" -> "nv show interface"
+    // 保留前3个词作为命令模式
+    cmdPattern = cmdParts.slice(0, 3).join(' ');
+  }
+
   let bestMatch = { matched: false, confidence: 0, reference: null, excerpt: '' };
 
   for (const ref of referencesMeta) {
     const { lowerContent, content } = ref;
     if (!lowerContent) continue;
 
+    // 1. 完全匹配（最高优先级）
     const exactIdx = lowerContent.indexOf(normalizedCmd);
     if (exactIdx !== -1) {
       return {
@@ -92,26 +104,41 @@ function matchCommandAgainstReferences(command, referencesMeta) {
       };
     }
 
-    if (mainCmd && mainCmd.length > 1) {
-      const mainIdx = lowerContent.indexOf(mainCmd);
-      if (mainIdx !== -1 && bestMatch.confidence < 0.8) {
+    // 2. 对于英伟达命令，匹配命令模式（不要求参数完全一致）
+    if (isNvidiaCmd && cmdPattern !== normalizedCmd) {
+      const patternIdx = lowerContent.indexOf(cmdPattern);
+      if (patternIdx !== -1 && bestMatch.confidence < 0.95) {
         bestMatch = {
           matched: true,
-          confidence: 0.8,
+          confidence: 0.95, // 高置信度：命令结构匹配
           reference: ref,
-          excerpt: createExcerpt(content, mainIdx, mainCmd.length)
+          excerpt: createExcerpt(content, patternIdx, cmdPattern.length)
         };
       }
     }
 
-    if (prefix) {
+    // 3. 前缀匹配（命令 + 第一个参数）
+    if (prefix && cmdParts.length >= 2) {
       const prefixIdx = lowerContent.indexOf(prefix);
-      if (prefixIdx !== -1 && bestMatch.confidence < 0.7) {
+      if (prefixIdx !== -1 && bestMatch.confidence < 0.85) {
+        bestMatch = {
+          matched: true,
+          confidence: 0.85,
+          reference: ref,
+          excerpt: createExcerpt(content, prefixIdx, prefix.length)
+        };
+      }
+    }
+
+    // 4. 主命令匹配（只匹配第一个词）
+    if (mainCmd && mainCmd.length > 1) {
+      const mainIdx = lowerContent.indexOf(mainCmd);
+      if (mainIdx !== -1 && bestMatch.confidence < 0.7) {
         bestMatch = {
           matched: true,
           confidence: 0.7,
           reference: ref,
-          excerpt: createExcerpt(content, prefixIdx, prefix.length)
+          excerpt: createExcerpt(content, mainIdx, mainCmd.length)
         };
       }
     }
@@ -122,21 +149,44 @@ function matchCommandAgainstReferences(command, referencesMeta) {
 
 // 命令模式定义 - 支持更多网络设备和系统命令
 const COMMAND_PATTERNS = [
-  // 网络设备命令
-  /^(nv-|netq|cumulus|show|ip|system|ping|traceroute|mtr)/i,
-  // 配置命令
-  /^(conf|config|set|delete|remove|enable|disable|shutdown|no shutdown)/i,
+  // 英伟达网络设备命令（优先匹配）
+  /^nv\s+(show|set|unset|config|apply)/i,
+  // 其他网络设备命令
+  /^(nv-|netq|cumulus|show\s+|ip\s+|ping\s+|traceroute\s+|mtr\s+)/i,
+  // 配置命令（必须有空格或参数）
+  /^(conf\s+|config\s+|set\s+|delete\s+|remove\s+|enable\s+|disable\s+|shutdown|no\s+shutdown)/i,
   // Linux系统命令
-  /^(sudo|apt|yum|systemctl|service|docker|kubectl|git)/i,
+  /^(sudo\s+|apt\s+|yum\s+|systemctl\s+|service\s+|docker\s+|kubectl\s+|git\s+)/i,
   // 网络工具
-  /^(curl|wget|ssh|scp|rsync|nc|telnet)/i,
+  /^(curl\s+|wget\s+|ssh\s+|scp\s+|rsync\s+|nc\s+|telnet\s+)/i,
   // 文件操作
-  /^(cat|grep|awk|sed|find|ls|cd|mkdir|rm|cp|mv)/i
+  /^(cat\s+|grep\s+|awk\s+|sed\s+|find\s+|ls\s+|cd\s+|mkdir\s+|rm\s+|cp\s+|mv\s+)/i
+];
+
+// 排除模式 - 这些不是命令
+const EXCLUDE_PATTERNS = [
+  /^(system|config|interface|router|switch|vlan|port|network|device|server|host|node|cluster|pod|namespace|service|deployment|container|image|volume|secret|configmap):?\s*$/i,
+  /^(注意|说明|示例|例如|提示|警告|重要|备注|参考|步骤|方法|配置|设置|选项|参数|说明|描述)[:：]/i,
+  /^\d+[\.\)]\s+/,  // 列表项编号
+  /^[-*]\s+/,       // 列表项标记
 ];
 
 function isLikelyCommand(line) {
   const trimmed = line.trim();
+
+  // 基本过滤
   if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return false;
+
+  // 排除明显不是命令的内容
+  if (EXCLUDE_PATTERNS.some(pattern => pattern.test(trimmed))) return false;
+
+  // 排除只有一个单词且以冒号结尾的（标签）
+  if (/^[a-z]+:$/i.test(trimmed)) return false;
+
+  // 排除太短的内容（少于3个字符）
+  if (trimmed.length < 3) return false;
+
+  // 匹配命令模式
   return COMMAND_PATTERNS.some(pattern => pattern.test(trimmed));
 }
 
@@ -218,7 +268,8 @@ export function validateAnswerConsistency(answer, references = [], question = ''
         referenceIndex: matchResult.reference.index,
         excerpt: matchResult.excerpt
       };
-      if (matchResult.confidence === 1.0) {
+      // 降低阈值：置信度 >= 0.9 算已验证，< 0.9 算部分匹配
+      if (matchResult.confidence >= 0.9) {
         verifiedCommands.push(payload);
       } else {
         partialMatches.push(payload);
