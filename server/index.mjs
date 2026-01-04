@@ -219,7 +219,12 @@ const app = express();
 // CORS 白名单配置
 const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',')
-  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://172.17.200.222:5173'  // 添加你的前端地址
+    ];
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -228,6 +233,7 @@ app.use(cors({
     if (ALLOWED_ORIGINS.includes(origin) || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
+      console.warn(`[CORS] Blocked origin: ${origin}`);
       callback(new Error('CORS not allowed'));
     }
   },
