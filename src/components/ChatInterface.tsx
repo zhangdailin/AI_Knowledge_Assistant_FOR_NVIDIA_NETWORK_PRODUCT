@@ -767,7 +767,7 @@ const ChatInterface: React.FC = () => {
                     )}
 
                     {/* 参考文档展示 */}
-                    {message.role === 'assistant' && referenceDocuments.length > 0 && (
+                    {message.role === 'assistant' && referenceDocuments.length > 0 && hasReferenceBadges && (
                       <ReferenceDocuments references={referenceDocuments} highlights={referenceHighlightMap} />
                     )}
                   </div>
