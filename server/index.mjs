@@ -319,6 +319,12 @@ async function processUploadedFile(documentId, file) {
     const fixedFilename = fixFilename(file.originalname);
     console.log(`[Async] 开始处理文档: ${documentId}, 文件: ${fixedFilename}`);
 
+    // 获取文档信息
+    const document = await storage.getDocument(documentId);
+    if (!document) {
+      throw new Error('文档不存在');
+    }
+
     // 1. 解析文本
     let text = '';
     const mime = file.mimetype || '';

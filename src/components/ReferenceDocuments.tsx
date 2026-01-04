@@ -29,6 +29,22 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
     return null;
   }
 
+  // 只显示被引用的文档（在 highlights 中有记录的）
+  const referencedDocs = references.filter((ref, index) => {
+    const refKey = ref.id || `idx-${index}`;
+    const highlight = highlights?.[refKey];
+    // 只保留有引用命令或引用段落的文档
+    return highlight && (
+      (highlight.commands && highlight.commands.length > 0) ||
+      (highlight.excerpts && highlight.excerpts.length > 0)
+    );
+  });
+
+  // 如果没有被引用的文档，不显示整个区域
+  if (referencedDocs.length === 0) {
+    return null;
+  }
+
   const toggleExpand = (index: number) => {
     setExpandedIndex(expandedIndex === index ? null : index);
   };
@@ -37,10 +53,10 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
     <div className="mt-3 pt-3 border-t border-gray-200">
       <div className="flex items-center gap-2 mb-2">
         <FileText className="w-4 h-4 text-gray-500" />
-        <span className="text-xs font-medium text-gray-600">参考文档 ({references.length})</span>
+        <span className="text-xs font-medium text-gray-600">参考文档 ({referencedDocs.length})</span>
       </div>
       <div className="flex flex-wrap gap-2">
-        {references.map((ref, index) => {
+        {referencedDocs.map((ref, index) => {
           const refKey = ref.id || `idx-${index}`;
           const highlight = highlights?.[refKey];
           return (
