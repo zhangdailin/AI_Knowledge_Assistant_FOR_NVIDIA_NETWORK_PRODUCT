@@ -61,122 +61,131 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   return (
     <div>
       <div
-        className={`flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer group transition-colors ${
+        className={`flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer group transition-colors relative ${
           isSelected ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
         }`}
-        style={{ paddingLeft: `${level * 16 + 8}px` }}
+        style={{ paddingLeft: `${level * 12 + 8}px` }}
       >
         {/* 展开/折叠按钮 */}
         <button
           onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-          className="p-0.5 hover:bg-gray-200 rounded"
+          className="p-0.5 hover:bg-gray-200 rounded flex-shrink-0"
         >
           {hasChildren ? (
-            expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />
+            expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />
           ) : (
-            <span className="w-4 h-4" />
+            <span className="w-3.5 h-3.5" />
           )}
         </button>
 
         {/* 图标 */}
         {expanded && hasChildren ? (
-          <FolderOpen className="w-4 h-4 text-yellow-500" />
+          <FolderOpen className="w-4 h-4 text-yellow-500 flex-shrink-0" />
         ) : (
-          <Folder className="w-4 h-4 text-yellow-500" />
+          <Folder className="w-4 h-4 text-yellow-500 flex-shrink-0" />
         )}
 
         {/* 名称 */}
         {editing ? (
-          <div className="flex items-center gap-1 flex-1" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
             <input
               type="text"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
-              className="flex-1 px-2 py-0.5 text-sm border rounded"
+              className="flex-1 min-w-0 px-2 py-0.5 text-sm border rounded"
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSaveEdit();
                 if (e.key === 'Escape') setEditing(false);
               }}
             />
-            <button onClick={handleSaveEdit} className="p-1 text-green-600 hover:bg-green-50 rounded">
+            <button onClick={handleSaveEdit} className="p-1 text-green-600 hover:bg-green-50 rounded flex-shrink-0">
               <Check className="w-3 h-3" />
             </button>
-            <button onClick={() => setEditing(false)} className="p-1 text-gray-500 hover:bg-gray-100 rounded">
+            <button onClick={() => setEditing(false)} className="p-1 text-gray-500 hover:bg-gray-100 rounded flex-shrink-0">
               <X className="w-3 h-3" />
             </button>
           </div>
         ) : (
-          <span
-            className="flex-1 text-sm truncate"
-            onClick={() => onSelect(node.id)}
-          >
-            {node.name}
-          </span>
-        )}
-
-        {/* 文档数量 */}
-        {count > 0 && !editing && (
-          <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-            {count}
-          </span>
-        )}
-
-        {/* 操作按钮 */}
-        {!editing && (
-          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
-            <button
-              onClick={(e) => { e.stopPropagation(); setAdding(true); }}
-              className="p-1 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded"
-              title="添加子分类"
+          <>
+            <span
+              className="flex-1 text-sm truncate min-w-0"
+              onClick={() => onSelect(node.id)}
+              title={node.name}
             >
-              <Plus className="w-3 h-3" />
-            </button>
-            {node.id !== 'default' && (
-              <>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setEditing(true); setEditName(node.name); }}
-                  className="p-1 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded"
-                  title="编辑"
-                >
-                  <Edit2 className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}
-                  className="p-1 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
-                  title="删除"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </>
+              {node.name}
+            </span>
+
+            {/* 文档数量 */}
+            {count > 0 && (
+              <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex-shrink-0">
+                {count}
+              </span>
             )}
-          </div>
+          </>
         )}
       </div>
+
+      {/* 操作按钮 - 独立一行显示在 hover 时 */}
+      {!editing && isSelected && (
+        <div
+          className="flex items-center gap-1 py-1 px-2 ml-6 mb-1"
+          style={{ paddingLeft: `${level * 12 + 8}px` }}
+        >
+          <button
+            onClick={(e) => { e.stopPropagation(); setAdding(true); }}
+            className="p-1.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded flex items-center gap-1"
+            title="添加子分类"
+          >
+            <Plus className="w-3 h-3" />
+            <span>添加</span>
+          </button>
+          {node.id !== 'default' && (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); setEditing(true); setEditName(node.name); }}
+                className="p-1.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded flex items-center gap-1"
+                title="编辑"
+              >
+                <Edit2 className="w-3 h-3" />
+                <span>编辑</span>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}
+                className="p-1.5 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded flex items-center gap-1"
+                title="删除"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>删除</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 添加子分类输入框 */}
       {adding && (
         <div
           className="flex items-center gap-1 px-2 py-1"
-          style={{ paddingLeft: `${(level + 1) * 16 + 8}px` }}
+          style={{ paddingLeft: `${(level + 1) * 12 + 8}px` }}
         >
-          <Folder className="w-4 h-4 text-gray-400" />
+          <Folder className="w-4 h-4 text-gray-400 flex-shrink-0" />
           <input
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="新分类名称"
-            className="flex-1 px-2 py-0.5 text-sm border rounded"
+            className="flex-1 min-w-0 px-2 py-0.5 text-sm border rounded"
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleAddChild();
               if (e.key === 'Escape') setAdding(false);
             }}
           />
-          <button onClick={handleAddChild} className="p-1 text-green-600 hover:bg-green-50 rounded">
+          <button onClick={handleAddChild} className="p-1 text-green-600 hover:bg-green-50 rounded flex-shrink-0">
             <Check className="w-3 h-3" />
           </button>
-          <button onClick={() => setAdding(false)} className="p-1 text-gray-500 hover:bg-gray-100 rounded">
+          <button onClick={() => setAdding(false)} className="p-1 text-gray-500 hover:bg-gray-100 rounded flex-shrink-0">
             <X className="w-3 h-3" />
           </button>
         </div>

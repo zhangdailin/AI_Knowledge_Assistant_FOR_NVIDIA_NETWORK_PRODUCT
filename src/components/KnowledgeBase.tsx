@@ -415,7 +415,7 @@ const KnowledgeBase: React.FC = () => {
 
         <div className="flex gap-4 h-[calc(100%-80px)]">
           {/* 左侧分类树 */}
-          <div className="w-56 flex-shrink-0 admin-card p-3 overflow-y-auto">
+          <div className="w-64 flex-shrink-0 admin-card p-3 overflow-y-auto overflow-x-hidden">
             <h3 className="text-sm font-medium text-gray-700 mb-2">文档分类</h3>
             <CategoryTree
               categories={categories}

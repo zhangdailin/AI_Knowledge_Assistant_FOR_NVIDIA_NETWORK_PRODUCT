@@ -716,25 +716,9 @@ const ChatInterface: React.FC = () => {
                       </span>
                     </div>
 
-                    {message.role === 'assistant' && hasReferenceBadges && (
-                      <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px] text-gray-600">
-                        <span className="font-semibold text-gray-700">引用</span>
-                        {referenceBadgeEntries.map(([key, entry]) => {
-                          const refTitle =
-                            referenceLookup.get(key)?.title ||
-                            entry.referenceTitle ||
-                            `参考文档 #${(entry.referenceIndex ?? 0) + 1}`;
-                          return (
-                            <span
-                              key={key}
-                              className="px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600"
-                            >
-                              {refTitle}
-                              <span className="ml-1 text-gray-400">({entry.commands.length}条)</span>
-                            </span>
-                          );
-                        })}
-                      </div>
+                    {/* 参考文档展示 */}
+                    {message.role === 'assistant' && referenceDocuments.length > 0 && hasReferenceBadges && (
+                      <ReferenceDocuments references={referenceDocuments} highlights={referenceHighlightMap} />
                     )}
 
                     {message.role === 'assistant' && (
@@ -764,11 +748,6 @@ const ChatInterface: React.FC = () => {
                           待改进
                         </button>
                       </div>
-                    )}
-
-                    {/* 参考文档展示 */}
-                    {message.role === 'assistant' && referenceDocuments.length > 0 && hasReferenceBadges && (
-                      <ReferenceDocuments references={referenceDocuments} highlights={referenceHighlightMap} />
                     )}
                   </div>
 
