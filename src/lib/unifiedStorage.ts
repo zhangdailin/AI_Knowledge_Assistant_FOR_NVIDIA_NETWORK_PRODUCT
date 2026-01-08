@@ -8,8 +8,25 @@ import { serverStorageManager } from './serverStorage';
 
 class UnifiedStorageManager {
   // 文档管理
-  async getDocuments(userId?: string): Promise<Document[]> {
-    return await serverStorageManager.getDocuments();
+  async getDocuments(userId?: string, params?: {
+    page?: number;
+    limit?: number;
+    category?: string;
+    status?: string;
+    search?: string;
+  }): Promise<Document[]> {
+    const result = await serverStorageManager.getDocuments(params);
+    return result.documents;
+  }
+
+  async getDocumentsWithPagination(userId?: string, params?: {
+    page?: number;
+    limit?: number;
+    category?: string;
+    status?: string;
+    search?: string;
+  }): Promise<{ documents: Document[]; pagination?: { page: number; limit: number; total: number; totalPages: number } }> {
+    return await serverStorageManager.getDocuments(params);
   }
 
   async createDocument(

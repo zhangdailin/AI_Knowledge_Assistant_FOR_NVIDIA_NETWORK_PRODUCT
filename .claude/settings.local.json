@@ -25,7 +25,9 @@
       "Bash(timeout 5 node:*)",
       "Bash(npm run build)",
       "Bash(node index.mjs)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(npm install ws)"
     ]
   }
 }

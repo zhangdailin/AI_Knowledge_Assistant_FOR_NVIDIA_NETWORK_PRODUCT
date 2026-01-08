@@ -196,6 +196,10 @@ export async function createChunks(chunksData) {
       }));
       existing.push(...newChunks);
       await writeJSON(filePath, existing);
+
+      // 更新文档的 chunkCount
+      await updateDocument(docId, { chunkCount: existing.length });
+
       invalidateChunkCache(`${docId}.json`);
       if (searchCacheInvalidator) searchCacheInvalidator('createChunks');
       result.push(...newChunks);
@@ -422,8 +426,8 @@ const TERM_MAPPINGS = {
 
 // 简单的内存缓存 (带 LRU 淘汰)
 const chunkCache = new Map(); // file -> { data: [], timestamp: number }
-let CACHE_TTL = 30 * 1000; // 默认 30s，可从配置覆盖
-let MAX_CACHE_ENTRIES = 20; // 默认最大 20 个文件，可从配置覆盖
+let CACHE_TTL = 60 * 1000; // 默认 60s，可从配置覆盖
+let MAX_CACHE_ENTRIES = 50; // 默认最大 50 个文件，可从配置覆盖
 
 // 从配置加载缓存参数
 async function loadCacheConfig() {

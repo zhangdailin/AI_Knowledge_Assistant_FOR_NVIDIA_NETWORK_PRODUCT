@@ -25,14 +25,31 @@ class ServerStorageManager {
   }
 
   // 文档管理
-  async getDocuments(): Promise<Document[]> {
+  async getDocuments(params?: {
+    page?: number;
+    limit?: number;
+    category?: string;
+    status?: string;
+    search?: string;
+  }): Promise<{ documents: Document[]; pagination?: { page: number; limit: number; total: number; totalPages: number } }> {
     try {
-      const res = await fetch(`${this.apiUrl}/api/documents`);
+      const queryParams = new URLSearchParams();
+      if (params?.page) queryParams.append('page', params.page.toString());
+      if (params?.limit) queryParams.append('limit', params.limit.toString());
+      if (params?.category) queryParams.append('category', params.category);
+      if (params?.status) queryParams.append('status', params.status);
+      if (params?.search) queryParams.append('search', params.search);
+
+      const url = `${this.apiUrl}/api/documents${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
+      const res = await fetch(url);
       if (!res.ok) {
         throw new StorageError(`获取文档列表失败: ${res.statusText}`, true);
       }
       const data = await res.json();
-      return data.documents || [];
+      return {
+        documents: data.documents || [],
+        pagination: data.pagination
+      };
     } catch (error) {
       console.error('获取文档列表失败:', error);
       // 重新抛出错误，让调用者决定如何处理
