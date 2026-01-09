@@ -15,6 +15,7 @@ import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COM
 import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, ValidationError } from './utils/apiResponse.mjs';
 import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
 import { findById, findByName } from './utils/treeUtils.mjs';
+import { SearchPipeline } from './utils/searchPipeline.mjs';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
@@ -54,6 +55,9 @@ const semanticCache = new SimpleLRUCache(CACHE.SEMANTIC_CACHE_SIZE);
 // 请求合并 Map，防止缓存踩踏
 const pendingSearches = new Map();
 const pendingSearchTimeouts = new Map();
+
+// 初始化搜索管道（在函数定义之后）
+let searchPipeline = null;
 
 /**
  * 清理挂起的搜索条目和其超时
@@ -250,6 +254,19 @@ async function fuseResults(keywordResults, vectorResults, query, maxResults, con
       }
     }));
 }
+
+// 初始化搜索管道
+searchPipeline = new SearchPipeline({
+  storage,
+  embedText,
+  rerankDocuments,
+  fuseResults,
+  smartQueryRewrite,
+  searchCache,
+  semanticCache,
+  findSimilarCachedQuery,
+  cosineSimilarity
+});
 
 const app = express();
 
