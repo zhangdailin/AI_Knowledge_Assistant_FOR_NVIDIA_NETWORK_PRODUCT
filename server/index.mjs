@@ -14,6 +14,7 @@ import XLSX from 'xlsx';
 import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COMMAND_PATTERNS } from './constants.mjs';
 import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, ValidationError } from './utils/apiResponse.mjs';
 import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
+import { findById, findByName } from './utils/treeUtils.mjs';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
@@ -327,26 +328,14 @@ function fixFilename(filename) {
   return filename;
 }
 
+// 使用通用树工具替换原有的递归查询
+// 保留这两个函数作为简单包装器以保持向后兼容
 function findCategoryById(nodes, categoryId) {
-  for (const node of nodes) {
-    if (node.id === categoryId) return node;
-    if (node.children) {
-      const found = findCategoryById(node.children, categoryId);
-      if (found) return found;
-    }
-  }
-  return null;
+  return findById(nodes, categoryId);
 }
 
 function findCategoryByName(nodes, name) {
-  for (const node of nodes) {
-    if (node.name === name) return node;
-    if (node.children) {
-      const found = findCategoryByName(node.children, name);
-      if (found) return found;
-    }
-  }
-  return null;
+  return findByName(nodes, name);
 }
 
 function resolveCategoryInfo(categoryValue, categoryTree) {
