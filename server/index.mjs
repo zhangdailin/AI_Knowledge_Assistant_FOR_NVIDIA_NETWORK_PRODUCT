@@ -10,6 +10,11 @@ import { validateFileType, getFileCategory } from './fileValidation.mjs';
 import { asyncHandler, SimpleLRUCache } from './utils.mjs';
 import XLSX from 'xlsx';
 
+// 新增工具类导入
+import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COMMAND_PATTERNS } from './constants.mjs';
+import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, ValidationError } from './utils/apiResponse.mjs';
+import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
+
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
 
@@ -42,14 +47,12 @@ import * as apiBatch from './apiBatch.mjs';
 import * as apiWebhook from './apiWebhook.mjs';
 
 // 精确匹配缓存（快速路径）
-const searchCache = new SimpleLRUCache(200);
+const searchCache = new SimpleLRUCache(CACHE.SEARCH_CACHE_SIZE);
 // 语义缓存（基于embedding相似度）
-const semanticCache = new SimpleLRUCache(100); // 存储 { queryEmbedding, query, results, timestamp }
+const semanticCache = new SimpleLRUCache(CACHE.SEMANTIC_CACHE_SIZE);
 // 请求合并 Map，防止缓存踩踏
 const pendingSearches = new Map();
 const pendingSearchTimeouts = new Map();
-const SEARCH_TIMEOUT_MS = 30000; // 搜索超时时间（30秒）
-const MAX_PENDING_SEARCHES = 1000; // 最大待处理搜索数
 
 /**
  * 清理挂起的搜索条目和其超时
@@ -86,10 +89,10 @@ function cosineSimilarity(vecA, vecB) {
 /**
  * 在语义缓存中查找相似查询
  * @param {Array} queryEmbedding - 查询的embedding向量
- * @param {number} threshold - 相似度阈值（默认0.95）
+ * @param {number} threshold - 相似度阈值
  * @returns {Object|null} - 缓存的结果或null
  */
-function findSimilarCachedQuery(queryEmbedding, threshold = 0.95) {
+function findSimilarCachedQuery(queryEmbedding, threshold = CACHE.SEMANTIC_CACHE_THRESHOLD) {
   if (!queryEmbedding || !Array.isArray(queryEmbedding)) return null;
 
   let bestMatch = null;
@@ -162,26 +165,36 @@ function escapeRegexString(str) {
 // RRF 融合算法 (参数可配置，支持负样本学习)
 async function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
   const queryLower = query.toLowerCase();
-  const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
-    ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
-  const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus', 'vrrp', 'vlan', 'route', 'gateway', '网关', '路由', 'vrr', 'anycast'].some(k => queryLower.includes(k));
+
+  // 检查命令查询
+  const isCommandQuery = COMMAND_PATTERNS.some(pattern => {
+    if (pattern instanceof RegExp) return pattern.test(queryLower);
+    return queryLower.includes(pattern);
+  });
+
+  // 检查技术查询
+  const isTechQuery = TECHNICAL_KEYWORDS.some(keyword => queryLower.includes(keyword));
 
   const combinedResults = new Map();
-  // 从配置读取 RRF K 值，默认 60
-  const k = config.rrfK ?? 60;
+  // 从配置读取 RRF K 值
+  const k = config.rrfK ?? SCORING.RRF_K;
   // 从配置读取基础权重
-  const baseKeywordWeight = config.keywordWeight ?? 1.0;
-  const baseVectorWeight = config.vectorWeight ?? 1.0;
+  const baseKeywordWeight = config.keywordWeight ?? RRF_WEIGHTS.DEFAULT_KEYWORD_WEIGHT;
+  const baseVectorWeight = config.vectorWeight ?? RRF_WEIGHTS.DEFAULT_VECTOR_WEIGHT;
   // 根据查询类型动态调整
-  const keywordWeight = (isCommandQuery || isTechQuery) ? baseKeywordWeight * 1.5 : baseKeywordWeight;
-  const vectorWeight = (isCommandQuery || isTechQuery) ? baseVectorWeight * 0.8 : baseVectorWeight;
+  const keywordWeight = (isCommandQuery || isTechQuery)
+    ? baseKeywordWeight * RRF_WEIGHTS.COMMAND_QUERY_KEYWORD_MULTIPLIER
+    : baseKeywordWeight;
+  const vectorWeight = (isCommandQuery || isTechQuery)
+    ? baseVectorWeight * RRF_WEIGHTS.COMMAND_QUERY_VECTOR_MULTIPLIER
+    : baseVectorWeight;
 
   keywordResults.forEach((chunk, index) => {
     const id = chunk.id;
     if (!combinedResults.has(id)) combinedResults.set(id, { chunk, score: 0, sources: [] });
     const item = combinedResults.get(id);
     item.score += (1 / (k + index + 1)) * keywordWeight;
-    if (chunk.score > 10) item.score += 0.05;
+    if (chunk.score > 10) item.score += SCORING.HIGH_SCORE_BONUS;
     if (isCommandQuery && chunk.content) {
       const contentLower = chunk.content.toLowerCase();
       if (contentLower.includes('nv set') || contentLower.includes('nv show') || contentLower.includes('```')) item.score += 0.08;
@@ -197,7 +210,7 @@ async function fuseResults(keywordResults, vectorResults, query, maxResults, con
     if (!combinedResults.has(id)) combinedResults.set(id, { chunk, score: 0, sources: [] });
     const entry = combinedResults.get(id);
     entry.score += (1 / (k + index + 1)) * vectorWeight;
-    if (item.score > 0.85) entry.score += 0.05;
+    if (item.score > 0.85) entry.score += SCORING.HIGH_SCORE_BONUS;
     entry.sources.push('vector');
     entry.vectorScore = item.score;
   });
@@ -357,7 +370,7 @@ function resolveCategoryInfo(categoryValue, categoryTree) {
 // 异步处理文件上传
 async function processUploadedFile(documentId, file) {
   try {
-    const fixedFilename = fixFilename(file.originalname);
+    const fixedFilename = fixFilenameUtil(file.originalname);
     console.log(`[Async] 开始处理文档: ${documentId}, 文件: ${fixedFilename}`);
 
     // 获取文档信息
@@ -366,44 +379,19 @@ async function processUploadedFile(documentId, file) {
       throw new Error('文档不存在');
     }
 
-    // 1. 解析文本
-    let text = '';
+    // 1. 解析文本 - 使用统一的文件提取器
     const mime = file.mimetype || '';
     const fileCategory = getFileCategory(fixedFilename, mime);
+    let text = await extractFileContent(file.buffer, fileCategory, { pdfParseModule });
 
-    if (fileCategory === 'pdf') {
-      const PdfParseClass = pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse || pdfParseModule;
-      const parser = new PdfParseClass({ data: file.buffer });
-      const result = await parser.getText({});
-      text = result?.text || '';
-    } else if (fileCategory === 'word') {
-      const result = await mammoth.extractRawText({ buffer: file.buffer });
-      text = result.value;
-    } else if (fileCategory === 'excel') {
-      const workbook = XLSX.read(file.buffer, { type: 'buffer', cellFormula: false, cellStyles: false });
-      const sheets = workbook.SheetNames.map(name => {
-        const sheet = workbook.Sheets[name];
-        const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-        return `【${name}】\n${csv}`;
-      });
-      text = sheets.join('\n\n');
-    } else if (fileCategory === 'text') {
-      text = file.buffer.toString('utf-8');
-    } else {
-      console.warn(`[Async] 未知文件类型: ${mime}, 尝试作为文本处理`);
-      text = file.buffer.toString('utf-8');
-    }
-
-    text = (text || '').trim();
     if (!text) throw new Error('提取文本为空，请确保文件包含可读取的文本内容');
 
     const textSizeKB = Math.round(text.length / 1024);
     console.log(`[Async] 文本提取完成，长度: ${text.length} 字符 (${textSizeKB} KB)`);
 
     // 检查文本大小限制（防止内存溢出）
-    const MAX_TEXT_SIZE = 100 * 1024 * 1024; // 100MB
-    if (text.length > MAX_TEXT_SIZE) {
-      throw new Error(`文本内容过大 (${textSizeKB} KB)，超过 ${Math.round(MAX_TEXT_SIZE / 1024 / 1024)}MB 限制。请拆分文件后再上传。`);
+    if (text.length > LIMITS.MAX_TEXT_SIZE) {
+      throw new Error(`文本内容过大 (${textSizeKB} KB)，超过 ${Math.round(LIMITS.MAX_TEXT_SIZE / 1024 / 1024)}MB 限制。请拆分文件后再上传。`);
     }
 
     // 更新预览
@@ -413,7 +401,7 @@ async function processUploadedFile(documentId, file) {
 
     // 2. 分块
     // 根据文件大小调整最大块大小
-    let maxChunkSize = 4000;
+    let maxChunkSize = LIMITS.MAX_CHUNK_SIZE;
 
     if (text.length > 500 * 1024) {
       // 大文件：使用更大的块，减少块数量
@@ -868,8 +856,8 @@ app.get('/api/chunks/search', async (req, res) => {
     }
 
     // 检查待处理搜索数，防止无限增长
-    if (pendingSearches.size >= MAX_PENDING_SEARCHES) {
-      console.warn(`[Search] 待处理搜索数超过限制 (${pendingSearches.size}/${MAX_PENDING_SEARCHES})，清理最早的请求`);
+    if (pendingSearches.size >= LIMITS.MAX_PENDING_SEARCHES) {
+      console.warn(`[Search] 待处理搜索数超过限制 (${pendingSearches.size}/${LIMITS.MAX_PENDING_SEARCHES})，清理最早的请求`);
       const oldestKey = pendingSearches.keys().next().value;
       if (oldestKey) cleanupPendingSearch(oldestKey);
     }
@@ -974,10 +962,10 @@ app.get('/api/chunks/search', async (req, res) => {
     // 设置超时，防止搜索无限期挂起
     const timeoutId = setTimeout(() => {
       if (pendingSearches.has(cacheKey)) {
-        console.warn(`[Search] 搜索超时 (${SEARCH_TIMEOUT_MS}ms): "${query}"`);
+        console.warn(`[Search] 搜索超时 (${LIMITS.SEARCH_TIMEOUT_MS}ms): "${query}"`);
         cleanupPendingSearch(cacheKey);
       }
-    }, SEARCH_TIMEOUT_MS);
+    }, LIMITS.SEARCH_TIMEOUT_MS);
 
     pendingSearchTimeouts.set(cacheKey, timeoutId);
 
@@ -3711,8 +3699,6 @@ const server = app.listen(port, async () => {
 // WebSocket 服务器
 const wss = new WebSocketServer({ server });
 const wsClients = new Set();
-const WS_HEARTBEAT_INTERVAL = 30000; // 心跳间隔（30秒）
-const WS_HEARTBEAT_TIMEOUT = 60000; // 心跳超时（60秒）
 
 wss.on('connection', (ws) => {
   console.log('[WebSocket] 客户端已连接，当前连接数:', wsClients.size + 1);
@@ -3746,7 +3732,7 @@ const wsHeartbeatInterval = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, WS_HEARTBEAT_INTERVAL);
+}, WEBSOCKET.HEARTBEAT_INTERVAL);
 
 // 监听服务器关闭事件，清理心跳定时器
 server.on('close', () => {
