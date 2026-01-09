@@ -27,7 +27,9 @@
       "Bash(node index.mjs)",
       "Bash(ls:*)",
       "Bash(netstat:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(find:*)",
+      "Bash(npm install ws)"
     ]
   }
 }

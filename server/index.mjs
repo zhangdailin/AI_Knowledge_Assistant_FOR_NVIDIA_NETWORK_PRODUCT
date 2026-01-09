@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { createRequire } from 'node:module';
+import { WebSocketServer } from 'ws';
 import * as storage from './storage.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText, rerankDocuments } from './embedding.mjs';
@@ -424,7 +425,8 @@ async function processUploadedFile(documentId, file) {
     await taskQueue.processEmbeddingTask(task.id, documentId);
 
     // 5. 更新状态
-    await storage.updateDocument(documentId, { status: 'ready' });
+    const updatedDoc = await storage.updateDocument(documentId, { status: 'ready' });
+    broadcastDocumentUpdate(updatedDoc);
     console.log(`[Async] 文档处理完成: ${documentId}`);
 
   } catch (error) {
@@ -447,6 +449,8 @@ async function processUploadedFile(documentId, file) {
       status: 'error',
       errorMessage: userFriendlyMessage
     });
+    const errorDoc = await storage.getDocument(documentId);
+    broadcastDocumentUpdate(errorDoc);
   }
 }
 
@@ -562,10 +566,44 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
 
 // ========== 知识库 API ==========
 
-// 获取所有文档
+// 获取所有文档（支持分页和筛选）
 app.get('/api/documents', asyncHandler(async (req, res) => {
-  const documents = await storage.getAllDocuments();
-  res.json({ ok: true, documents });
+  const { page = 1, limit = 50, category, status, search } = req.query;
+  const pageNum = parseInt(page);
+  const limitNum = parseInt(limit);
+
+  let documents = await storage.getAllDocuments();
+
+  // 筛选
+  if (category) {
+    documents = documents.filter(doc => doc.categoryId === category || doc.category === category);
+  }
+  if (status) {
+    documents = documents.filter(doc => doc.status === status);
+  }
+  if (search) {
+    const searchLower = search.toLowerCase();
+    documents = documents.filter(doc =>
+      doc.title?.toLowerCase().includes(searchLower) ||
+      doc.filename?.toLowerCase().includes(searchLower)
+    );
+  }
+
+  // 分页
+  const total = documents.length;
+  const offset = (pageNum - 1) * limitNum;
+  const paginatedDocs = documents.slice(offset, offset + limitNum);
+
+  res.json({
+    ok: true,
+    documents: paginatedDocs,
+    pagination: {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  });
 }, '获取文档列表'));
 
 // 获取单个文档
@@ -628,6 +666,7 @@ app.put('/api/documents/:id/category', asyncHandler(async (req, res) => {
 app.delete('/api/documents/:id', asyncHandler(async (req, res) => {
   console.log(`[API] 删除文档请求: ${req.params.id}`);
   const deleted = await storage.deleteDocument(req.params.id);
+  invalidateStatsCache(); // 清除统计缓存
   console.log(`[API] 删除文档成功: ${req.params.id}, deleted=${deleted}`);
   res.json({ ok: true, deleted });
 }, '删除文档'));
@@ -667,6 +706,7 @@ app.post('/api/documents/:id/chunks', asyncHandler(async (req, res) => {
   }));
 
   const newChunks = await storage.createChunks(chunksWithDocId);
+  invalidateStatsCache(); // 清除统计缓存
   res.json({ ok: true, chunks: newChunks });
 }, '创建 chunks'));
 
@@ -940,20 +980,33 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
+// 统计数据缓存
+let statsCache = null;
+let statsCacheTime = 0;
+const STATS_CACHE_TTL = 60000; // 60秒缓存
+
+// 清除统计缓存的辅助函数
+function invalidateStatsCache() {
+  statsCache = null;
+  statsCacheTime = 0;
+}
+
 // 获取统计数据 - 仪表盘使用
 app.get('/api/stats', async (req, res) => {
   try {
-    const documents = await storage.getAllDocuments();
-    let totalChunks = 0;
+    const now = Date.now();
 
-    // 统计所有文档的chunks数量
+    // 检查缓存
+    if (statsCache && (now - statsCacheTime) < STATS_CACHE_TTL) {
+      return res.json(statsCache);
+    }
+
+    const documents = await storage.getAllDocuments();
+
+    // 优化：从文档元数据获取 chunks 数量，避免加载所有 chunks 文件
+    let totalChunks = 0;
     for (const doc of documents) {
-      try {
-        const chunks = await storage.getChunks(doc.id);
-        totalChunks += chunks.length;
-      } catch (e) {
-        // 忽略单个文档的错误
-      }
+      totalChunks += doc.chunkCount || 0;
     }
 
     // 获取分类树，用于显示分类名称
@@ -984,7 +1037,7 @@ app.get('/api/stats', async (req, res) => {
     // 从查询日志获取真实统计数据
     const queryStats = await storage.getQueryStats();
 
-    res.json({
+    const stats = {
       totalDocuments: documents.length,
       totalChunks,
       totalQueries: queryStats.totalQueries,
@@ -992,7 +1045,13 @@ app.get('/api/stats', async (req, res) => {
       recentQueries: queryStats.recentQueries,
       topQuestions: queryStats.topQuestions,
       documentsByCategory
-    });
+    };
+
+    // 更新缓存
+    statsCache = stats;
+    statsCacheTime = now;
+
+    res.json(stats);
   } catch (error) {
     console.error('获取统计数据失败:', error);
     res.status(500).json({ ok: false, error: '获取统计数据失败' });
@@ -1105,7 +1164,10 @@ app.post('/api/documents/:id/generate-embeddings', async (req, res) => {
     console.log(`[API] 任务已创建: ${task.id}, status=${task.status}`);
 
     // 异步处理任务（不阻塞响应）
-    taskQueue.processEmbeddingTask(task.id, documentId).catch(error => {
+    taskQueue.processEmbeddingTask(task.id, documentId).then(async () => {
+      const doc = await storage.getDocument(documentId);
+      broadcastDocumentUpdate(doc);
+    }).catch(error => {
       console.error(`[API] 处理 embedding 任务 ${task.id} 失败:`, error);
     });
 
@@ -3528,6 +3590,28 @@ const server = app.listen(port, async () => {
   console.log(`Extractor server listening at http://localhost:${port}`);
   console.log('[Server] 服务器已启动，等待请求...');
 
+  // 初始化文档的 chunkCount
+  try {
+    const documents = await storage.getAllDocuments();
+    let updated = 0;
+    for (const doc of documents) {
+      if (doc.chunkCount === undefined) {
+        try {
+          const chunks = await storage.getChunks(doc.id);
+          await storage.updateDocument(doc.id, { chunkCount: chunks.length });
+          updated++;
+        } catch (e) {
+          // 忽略单个文档的错误
+        }
+      }
+    }
+    if (updated > 0) {
+      console.log(`[Server] 已初始化 ${updated} 个文档的 chunkCount`);
+    }
+  } catch (e) {
+    console.error('[Server] 初始化 chunkCount 失败:', e);
+  }
+
   // 初始化 Webhooks
   await apiWebhook.initializeWebhooks();
   console.log('[Server] Webhooks 已初始化');
@@ -3542,6 +3626,39 @@ const server = app.listen(port, async () => {
     });
   }, 5000); // 延迟 5 秒执行，确保服务器已完全启动
 });
+
+// WebSocket 服务器
+const wss = new WebSocketServer({ server });
+const wsClients = new Set();
+
+wss.on('connection', (ws) => {
+  console.log('[WebSocket] 客户端已连接');
+  wsClients.add(ws);
+
+  ws.on('close', () => {
+    console.log('[WebSocket] 客户端已断开');
+    wsClients.delete(ws);
+  });
+
+  ws.on('error', (error) => {
+    console.error('[WebSocket] 错误:', error);
+    wsClients.delete(ws);
+  });
+});
+
+// 广播文档更新
+export function broadcastDocumentUpdate(document) {
+  const message = JSON.stringify({
+    type: 'document_update',
+    document
+  });
+
+  wsClients.forEach(client => {
+    if (client.readyState === 1) { // OPEN
+      client.send(message);
+    }
+  });
+}
 
 // 确保服务器保持运行
 server.keepAliveTimeout = 65000;

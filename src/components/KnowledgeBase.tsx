@@ -7,6 +7,7 @@ import { serverStorageManager } from '../lib/serverStorage';
 import { Category } from '../lib/types';
 import DocumentChunksStatus from './DocumentChunksStatus';
 import CategoryTree from './CategoryTree';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 type ViewMode = 'grid' | 'table';
 
@@ -74,6 +75,10 @@ const KnowledgeBase: React.FC = () => {
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null);
   const [movingDoc, setMovingDoc] = useState<Document | null>(null);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalDocs, setTotalDocs] = useState(0);
+  const pageSize = 50;
 
   const { user } = useAuthStore();
 
@@ -89,10 +94,19 @@ const KnowledgeBase: React.FC = () => {
 
   const loadDocuments = useCallback(async () => {
     if (user) {
-      const docs = await unifiedStorageManager.getDocuments(user.id);
-      setDocuments(docs);
+      const result = await unifiedStorageManager.getDocumentsWithPagination(user.id, {
+        page: currentPage,
+        limit: pageSize,
+        category: selectedCategoryId || undefined,
+        search: searchTerm || undefined
+      });
+      setDocuments(result.documents);
+      if (result.pagination) {
+        setTotalPages(result.pagination.totalPages);
+        setTotalDocs(result.pagination.total);
+      }
     }
-  }, [user]);
+  }, [user, currentPage, selectedCategoryId, searchTerm]);
 
   useEffect(() => {
     if (user) {
@@ -135,25 +149,22 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  // 轮询逻辑：如果有文档正在处理中，每3秒刷新一次状态
-  // 此外，如果发现有文档 Embedding 未完成（但状态是 ready），也进行轮询，以便及时更新进度
-  useEffect(() => {
-    const shouldPoll = documents.some(doc => {
-      // 1. 文档状态本身是 processing
-      if (doc.status === 'processing') return true;
-      // 2. 文档状态是 ready，但我们不知道它的 embedding 是否全部完成
-      // 这里无法直接判断 chunks 状态，但可以根据 regenerationDocs 集合来判断
-      if (regeneratingDocs.has(doc.id)) return true;
-      return false;
-    });
-
-    if (shouldPoll) {
-      const timer = setInterval(() => {
-        loadDocuments();
-      }, 3000);
-      return () => clearInterval(timer);
+  // WebSocket 实时更新
+  const handleWebSocketMessage = useCallback((message: any) => {
+    if (message.type === 'document_update' && message.document) {
+      setDocuments(prev => {
+        const index = prev.findIndex(d => d.id === message.document.id);
+        if (index >= 0) {
+          const newDocs = [...prev];
+          newDocs[index] = message.document;
+          return newDocs;
+        }
+        return prev;
+      });
     }
-  }, [documents, regeneratingDocs, loadDocuments]);
+  }, []);
+
+  useWebSocket(handleWebSocketMessage);
 
   const openChunkViewer = async (doc: Document) => {
     try {
@@ -381,17 +392,8 @@ const KnowledgeBase: React.FC = () => {
     return counts;
   }, [documents, categories]);
 
-  const filteredDocuments = useMemo(() => {
-    return documents.filter(doc => {
-      const preview = doc.contentPreview || '';
-      const matchesSearch = doc.filename.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        preview.toLowerCase().includes(searchTerm.toLowerCase());
-      if (!selectedCategoryId) return matchesSearch;
-      const allowedIds = getCategoryAndChildrenIds(selectedCategoryId, categories);
-      const docCatId = doc.categoryId || (doc.category ? getCategoryIdByName(doc.category, categories) : null) || 'default';
-      return matchesSearch && allowedIds.includes(docCatId);
-    });
-  }, [documents, searchTerm, selectedCategoryId, categories]);
+  // 服务器端已经处理了筛选和分页，这里直接使用 documents
+  const filteredDocuments = documents;
 
   if (!user) {
     return (
@@ -420,7 +422,10 @@ const KnowledgeBase: React.FC = () => {
             <CategoryTree
               categories={categories}
               selectedId={selectedCategoryId}
-              onSelect={setSelectedCategoryId}
+              onSelect={(id) => {
+                setSelectedCategoryId(id);
+                setCurrentPage(1); // 重置页码
+              }}
               onAdd={handleAddCategory}
               onUpdate={handleUpdateCategory}
               onDelete={handleDeleteCategory}
@@ -440,7 +445,10 @@ const KnowledgeBase: React.FC = () => {
                     type="text"
                     placeholder="搜索文档..."
                     value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setCurrentPage(1); // 重置页码
+                    }}
                     className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -671,9 +679,32 @@ const KnowledgeBase: React.FC = () => {
               )}
             </div>
 
-            {/* 底部统计 */}
-            <div className="mt-3 text-xs text-gray-500 text-center">
-              共 {filteredDocuments.length} 个文档 {selectedCategoryId && `(已筛选)`}
+            {/* 底部统计和分页 */}
+            <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+              <div>
+                共 {totalDocs} 个文档 {selectedCategoryId && `(已筛选)`}
+              </div>
+              {totalPages > 1 && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 rounded border disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    上一页
+                  </button>
+                  <span>
+                    第 {currentPage} / {totalPages} 页
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 rounded border disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
