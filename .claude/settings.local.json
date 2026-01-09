@@ -29,7 +29,9 @@
       "Bash(netstat:*)",
       "Bash(findstr:*)",
       "Bash(find:*)",
-      "Bash(npm install ws)"
+      "Bash(npm install ws)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nMerge remote-tracking branch ''origin/main'' into main\n\nResolved merge conflict in .claude/settings.local.json by combining permissions from both branches.\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push)"
     ]
   }
 }

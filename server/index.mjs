@@ -142,7 +142,7 @@ async function fuseResults(keywordResults, vectorResults, query, maxResults, con
   const queryLower = query.toLowerCase();
   const isCommandQuery = /nv\s+(set|show|config|unset)/.test(queryLower) ||
     ['配置', '命令', 'config', 'show', 'how to', '如何'].some(k => queryLower.includes(k));
-  const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus'].some(k => queryLower.includes(k));
+  const isTechQuery = ['mlag', 'bgp', 'evpn', 'vxlan', 'ospf', 'lacp', 'bond', 'cumulus', 'vrrp', 'vlan', 'route', 'gateway', '网关', '路由', 'vrr', 'anycast'].some(k => queryLower.includes(k));
 
   const combinedResults = new Map();
   // 从配置读取 RRF K 值，默认 60
