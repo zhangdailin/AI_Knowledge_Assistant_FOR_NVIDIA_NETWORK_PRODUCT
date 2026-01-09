@@ -47,6 +47,21 @@ const searchCache = new SimpleLRUCache(200);
 const semanticCache = new SimpleLRUCache(100); // 存储 { queryEmbedding, query, results, timestamp }
 // 请求合并 Map，防止缓存踩踏
 const pendingSearches = new Map();
+const pendingSearchTimeouts = new Map();
+const SEARCH_TIMEOUT_MS = 30000; // 搜索超时时间（30秒）
+const MAX_PENDING_SEARCHES = 1000; // 最大待处理搜索数
+
+/**
+ * 清理挂起的搜索条目和其超时
+ */
+function cleanupPendingSearch(cacheKey) {
+  const timeoutId = pendingSearchTimeouts.get(cacheKey);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    pendingSearchTimeouts.delete(cacheKey);
+  }
+  pendingSearches.delete(cacheKey);
+}
 
 /**
  * 计算两个向量的余弦相似度
@@ -136,6 +151,13 @@ function clearSearchCache() {
 
 storage.setSearchCacheInvalidator(clearSearchCache);
 
+/**
+ * 转义正则表达式中的特殊字符
+ */
+function escapeRegexString(str) {
+  if (!str) return '';
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 // RRF 融合算法 (参数可配置，支持负样本学习)
 async function fuseResults(keywordResults, vectorResults, query, maxResults, config = {}) {
@@ -219,19 +241,37 @@ const app = express();
 
 // CORS 白名单配置
 const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',')
+  ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
   : [
       'http://localhost:5173',
       'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'http://172.17.200.222:5173'  // 添加你的前端地址
+      'http://127.0.0.1:5173'
     ];
+
+// 在开发环境中只有明确配置时才允许额外的源
+if (process.env.NODE_ENV === 'development' && process.env.CORS_ALLOW_ANY === 'true') {
+  ALLOWED_ORIGINS.push('*');
+}
+
+console.log('[CORS] Allowed origins:', ALLOWED_ORIGINS);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // 允许无 origin 的请求（如服务器间调用）
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin) || process.env.NODE_ENV === 'development') {
+    // 不允许无 origin 的浏览器请求（防止某些跨域攻击）
+    // 仅允许以下情况：
+    // 1. 显式配置的白名单中的源
+    // 2. 工具请求（如curl）没有origin可以通过env变量允许
+
+    if (!origin) {
+      // 如果是无origin的请求且不在开发环境或env未明确允许，则拒绝
+      if (process.env.ALLOW_NO_ORIGIN !== 'true') {
+        return callback(new Error('CORS not allowed - missing origin header'));
+      }
+      return callback(null, true);
+    }
+
+    // 检查白名单
+    if (ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) {
       callback(null, true);
     } else {
       console.warn(`[CORS] Blocked origin: ${origin}`);
@@ -359,6 +399,12 @@ async function processUploadedFile(documentId, file) {
 
     const textSizeKB = Math.round(text.length / 1024);
     console.log(`[Async] 文本提取完成，长度: ${text.length} 字符 (${textSizeKB} KB)`);
+
+    // 检查文本大小限制（防止内存溢出）
+    const MAX_TEXT_SIZE = 100 * 1024 * 1024; // 100MB
+    if (text.length > MAX_TEXT_SIZE) {
+      throw new Error(`文本内容过大 (${textSizeKB} KB)，超过 ${Math.round(MAX_TEXT_SIZE / 1024 / 1024)}MB 限制。请拆分文件后再上传。`);
+    }
 
     // 更新预览
     await storage.updateDocument(documentId, {
@@ -493,8 +539,18 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
 
     // 3. 异步处理
     // 注意：这里没有 await，故意让它在后台运行
+    // processUploadedFile 内部会处理错误，更新文档状态并通知前端
     processUploadedFile(document.id, file).catch(err => {
-      console.error(`[Upload] 后台处理失败: ${document.id}`, err);
+      console.error(`[Upload] 后台处理异常失败: ${document.id}`, err);
+      // 防御性更新：确保文档状态被标记为错误
+      storage.updateDocument(document.id, {
+        status: 'error',
+        errorMessage: '后台处理发生异常，请重新上传'
+      }).then(errorDoc => {
+        broadcastDocumentUpdate(errorDoc);
+      }).catch(updateErr => {
+        console.error(`[Upload] 状态更新失败: ${document.id}`, updateErr);
+      });
     });
 
   } catch (error) {
@@ -811,6 +867,13 @@ app.get('/api/chunks/search', async (req, res) => {
       }
     }
 
+    // 检查待处理搜索数，防止无限增长
+    if (pendingSearches.size >= MAX_PENDING_SEARCHES) {
+      console.warn(`[Search] 待处理搜索数超过限制 (${pendingSearches.size}/${MAX_PENDING_SEARCHES})，清理最早的请求`);
+      const oldestKey = pendingSearches.keys().next().value;
+      if (oldestKey) cleanupPendingSearch(oldestKey);
+    }
+
     const startTime = Date.now();
     let variantCount = 1; // 记录查询变体数量
 
@@ -908,6 +971,16 @@ app.get('/api/chunks/search', async (req, res) => {
 
     pendingSearches.set(cacheKey, searchPromise);
 
+    // 设置超时，防止搜索无限期挂起
+    const timeoutId = setTimeout(() => {
+      if (pendingSearches.has(cacheKey)) {
+        console.warn(`[Search] 搜索超时 (${SEARCH_TIMEOUT_MS}ms): "${query}"`);
+        cleanupPendingSearch(cacheKey);
+      }
+    }, SEARCH_TIMEOUT_MS);
+
+    pendingSearchTimeouts.set(cacheKey, timeoutId);
+
     try {
       const finalResults = await searchPromise;
 
@@ -932,7 +1005,7 @@ app.get('/api/chunks/search', async (req, res) => {
 
       res.json({ ok: true, chunks: finalResults });
     } finally {
-      pendingSearches.delete(cacheKey);
+      cleanupPendingSearch(cacheKey);
     }
   } catch (error) {
     console.error('搜索 chunks 失败:', error);
@@ -1235,13 +1308,14 @@ app.post('/api/sn-to-iblf', async (req, res) => {
       for (const sn of pendingSNs) {
         if (!snMap.has(sn) && content.includes(sn)) {
           // 匹配格式: SN,SN,SN,SN,SN,hostname
-          const snPattern = new RegExp(`${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]+${sn}[,\\s]*(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+          const escapedSn = escapeRegexString(sn);
+          const snPattern = new RegExp(`${escapedSn}[,\\s]+${escapedSn}[,\\s]+${escapedSn}[,\\s]+${escapedSn}[,\\s]+${escapedSn}[,\\s]*(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
           let match = content.match(snPattern);
           if (match) {
             snMap.set(sn, match[1]);
           } else {
             // 备选匹配
-            const altPattern = new RegExp(`${sn}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+            const altPattern = new RegExp(`${escapedSn}[^\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
             match = content.match(altPattern);
             if (match) snMap.set(sn, match[1]);
           }
@@ -1428,7 +1502,7 @@ app.post('/api/sn-to-address', async (req, res) => {
           }
 
           // 备用匹配：仅提取主机名
-          const snPattern = new RegExp(`${sn}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
+          const snPattern = new RegExp(`${escapeRegexString(sn)}[^\\r\\n]*?(MDC-[A-Z0-9-]+-GPU-\\d+)`, 'i');
           const snMatch = content.match(snPattern);
           if (snMatch) {
             const hostname = snMatch[1];
@@ -2758,12 +2832,19 @@ function parseCSVPortMap(csvContent) {
 
   const portMap = new Map();
   for (let i = 1; i < lines.length; i++) {
-    // 简单的 CSV 解析 (不支持包含逗号的 Quoted 字段，但对于 UFM 导出通常足够)
+    // 简单�� CSV 解析 (不支持包含逗号的 Quoted 字段，但对于 UFM 导出通常足够)
     const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-    const sys = cols[systemIdx];
-    const port = portIdx >= 0 ? cols[portIdx] : '';
-    const peer = cols[peerNodeIdx];
-    const peerPort = peerPortIdx >= 0 ? cols[peerPortIdx] : '';
+
+    // 添加边界检查
+    if (cols.length <= Math.max(systemIdx, peerNodeIdx)) {
+      console.warn(`[CSV] 第 ${i + 1} 行列数不足，跳过此行`);
+      continue;
+    }
+
+    const sys = cols[systemIdx]?.trim();
+    const port = portIdx >= 0 ? cols[portIdx]?.trim() : '';
+    const peer = cols[peerNodeIdx]?.trim();
+    const peerPort = peerPortIdx >= 0 ? cols[peerPortIdx]?.trim() : '';
 
     if (!sys || !peer || sys === 'nan' || peer === 'nan') continue;
     portMap.set(`${sys}|${port}`, { peer, peerPort });
@@ -3630,20 +3711,48 @@ const server = app.listen(port, async () => {
 // WebSocket 服务器
 const wss = new WebSocketServer({ server });
 const wsClients = new Set();
+const WS_HEARTBEAT_INTERVAL = 30000; // 心跳间隔（30秒）
+const WS_HEARTBEAT_TIMEOUT = 60000; // 心跳超时（60秒）
 
 wss.on('connection', (ws) => {
-  console.log('[WebSocket] 客户端已连接');
+  console.log('[WebSocket] 客户端已连接，当前连接数:', wsClients.size + 1);
   wsClients.add(ws);
 
+  // 标记连接状态
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   ws.on('close', () => {
-    console.log('[WebSocket] 客户端已断开');
+    console.log('[WebSocket] 客户端已断开，当前连接数:', wsClients.size - 1);
     wsClients.delete(ws);
   });
 
   ws.on('error', (error) => {
-    console.error('[WebSocket] 错误:', error);
+    console.error('[WebSocket] 错误:', error.message);
     wsClients.delete(ws);
   });
+});
+
+// WebSocket 心跳检测（清理僵尸连接）
+const wsHeartbeatInterval = setInterval(() => {
+  wsClients.forEach((ws) => {
+    if (!ws.isAlive) {
+      console.warn('[WebSocket] 检测到僵尸连接，正在清理');
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, WS_HEARTBEAT_INTERVAL);
+
+// 监听服务器关闭事件，清理心跳定时器
+server.on('close', () => {
+  console.log('[Server] 服务器正在关闭...');
+  clearInterval(wsHeartbeatInterval);
+  clearInterval(heartbeat);
 });
 
 // 广播文档更新
@@ -3669,12 +3778,6 @@ const heartbeat = setInterval(() => {
   // 这个定时器会保持事件循环活跃
   // 不需要做任何事情，只是为了防止进程退出
 }, 30000);
-
-// 监听服务器关闭事件
-server.on('close', () => {
-  console.log('[Server] 服务器正在关闭...');
-  clearInterval(heartbeat);
-});
 
 // 增加全局异常捕获，防止进程崩溃退出
 process.on('uncaughtException', (err) => {
