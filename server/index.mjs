@@ -16,6 +16,7 @@ import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, Validati
 import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
 import { findById, findByName } from './utils/treeUtils.mjs';
 import { SearchPipeline } from './utils/searchPipeline.mjs';
+import { parseTopologyFile, handleTopologyOperation } from './utils/topologyHandler.mjs';
 
 // 直接使用 createRequire 加载 pdf-parse
 const require = createRequire(import.meta.url);
@@ -774,7 +775,7 @@ app.put('/api/chunks/:id/embedding', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }, '更新 embedding'));
 
-// 搜索 chunks (混合检索：关键词 + 向量)
+// 搜索 chunks (混合检索：关键词 + 向量) - 使用 SearchPipeline
 app.get('/api/chunks/search', async (req, res) => {
   try {
     const { q, limit, categoryId } = req.query;
@@ -798,7 +799,6 @@ app.get('/api/chunks/search', async (req, res) => {
       categoryIds = storage.getCategoryAndChildrenIds(categoryId, categoryTree);
     }
 
-
     const cacheKey = JSON.stringify({
       q: query,
       limit: searchLimit,
@@ -814,42 +814,6 @@ app.get('/api/chunks/search', async (req, res) => {
     });
 
     const requestStartTime = Date.now();
-
-    // Step 1: 精确匹配缓存（快速路径）
-    const cached = searchCache.get(cacheKey);
-    if (cached) {
-      console.log('[Cache] 精确匹配缓存命中');
-      recordSearchRequest(Date.now() - requestStartTime, true, 'exact', 1);
-      return res.json({ ok: true, chunks: cached, _cached: true, _cacheType: 'exact' });
-    }
-
-    // Step 2: 生成query embedding用于语义缓存查询
-    let queryEmbedding = null;
-    try {
-      queryEmbedding = await embedText(query);
-    } catch (e) {
-      console.warn('[SemanticCache] embedding生成失败:', e.message);
-    }
-
-    // Step 3: 语义缓存查找（相似度阈值0.95）
-    if (queryEmbedding) {
-      const semanticThreshold = retrievalConfig.semanticCacheThreshold ?? 0.95;
-      const semanticMatch = findSimilarCachedQuery(queryEmbedding, semanticThreshold);
-
-      if (semanticMatch) {
-        // 语义缓存命中，刷新LRU
-        semanticCache.get(semanticMatch.cacheKey);
-        recordSearchRequest(Date.now() - requestStartTime, true, 'semantic', 1);
-        return res.json({
-          ok: true,
-          chunks: semanticMatch.results,
-          _cached: true,
-          _cacheType: 'semantic',
-          _originalQuery: semanticMatch.query,
-          _similarity: semanticMatch.similarity
-        });
-      }
-    }
 
     // 请求合并：如果相同查询正在进行，等待其完成
     if (pendingSearches.has(cacheKey)) {
@@ -868,100 +832,14 @@ app.get('/api/chunks/search', async (req, res) => {
       if (oldestKey) cleanupPendingSearch(oldestKey);
     }
 
-    const startTime = Date.now();
-    let variantCount = 1; // 记录查询变体数量
-
     // 创建搜索 Promise 并注册到 pendingSearches
-    const searchPromise = (async () => {
-      // 0. 查询扩展（如果启用）
-      const enableQueryExpansion = retrievalConfig.enableQueryExpansion !== false;
-      let searchQueries = [query];
-
-      if (enableQueryExpansion) {
-        try {
-          const rewriteResult = smartQueryRewrite(query, {
-            enableExpansion: true,
-            enableContext: false
-          });
-
-          // 使用前3个变体（包含原查询）
-          searchQueries = rewriteResult.variants.slice(0, 3);
-          variantCount = searchQueries.length; // 记录变体数量
-
-          if (searchQueries.length > 1) {
-            console.log(`[QueryExpansion] 原查询: "${query}"`);
-            console.log(`[QueryExpansion] 扩展为 ${searchQueries.length} 个变体: ${searchQueries.slice(1).map(q => `"${q}"`).join(', ')}`);
-          }
-        } catch (e) {
-          console.warn('[QueryExpansion] 查询扩展失败:', e.message);
-          searchQueries = [query];
-        }
-      }
-
-      // 1. 并行执行：对所有查询变体进行搜索
-      const allKeywordResults = [];
-      const allVectorResults = [];
-
-      for (const sq of searchQueries) {
-        // 关键词搜索
-        const kwResults = await storage.searchChunks(sq, searchLimit, categoryIds);
-        allKeywordResults.push(...kwResults);
-
-        // 向量搜索
-        try {
-          let embedding;
-          // 只对原查询复用之前生成的embedding
-          if (sq === query && queryEmbedding) {
-            embedding = queryEmbedding;
-          } else {
-            embedding = await embedText(sq);
-            // 保存原查询的embedding
-            if (sq === query && !queryEmbedding) {
-              queryEmbedding = embedding;
-            }
-          }
-
-          if (embedding) {
-            const vecResults = await storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
-            allVectorResults.push(...vecResults);
-          }
-        } catch (e) {
-          console.warn(`[Search] 向量搜索失败 (query: "${sq}"):`, e.message);
-        }
-      }
-
-      // 去重（基于chunk id）
-      const keywordResultsMap = new Map();
-      allKeywordResults.forEach(r => {
-        const id = r.id;
-        if (!keywordResultsMap.has(id) || r.score > keywordResultsMap.get(id).score) {
-          keywordResultsMap.set(id, r);
-        }
-      });
-      const keywordResults = Array.from(keywordResultsMap.values());
-
-      const vectorResultsMap = new Map();
-      allVectorResults.forEach(r => {
-        const id = r.chunk.id;
-        if (!vectorResultsMap.has(id) || r.score > vectorResultsMap.get(id).score) {
-          vectorResultsMap.set(id, r);
-        }
-      });
-      const vectorResults = Array.from(vectorResultsMap.values());
-
-      console.log(`[Search] Query: "${query}" (${searchQueries.length} variants) | Category=${categoryId || 'all'} | Keyword=${keywordResults.length}, Vector=${vectorResults.length} | ${Date.now() - startTime}ms`);
-
-      // 2. 结果融合 (传入配置参数，应用负样本学习)
-      let finalResults = await fuseResults(keywordResults, vectorResults, query, searchLimit, retrievalConfig);
-
-      // 3. Reranking (使用配置的 topN)
-      if (finalResults.length > 0) {
-        const rerankedResults = await rerankDocuments(query, finalResults, rerankTopN);
-        finalResults = rerankedResults.length > 0 ? rerankedResults : finalResults;
-      }
-
-      return finalResults;
-    })();
+    const searchPromise = searchPipeline.execute(query, {
+      cacheKey,
+      searchLimit,
+      categoryIds,
+      rerankTopN,
+      config: retrievalConfig
+    });
 
     pendingSearches.set(cacheKey, searchPromise);
 
@@ -976,28 +854,34 @@ app.get('/api/chunks/search', async (req, res) => {
     pendingSearchTimeouts.set(cacheKey, timeoutId);
 
     try {
-      const finalResults = await searchPromise;
+      const pipelineResult = await searchPromise;
 
-      // 4. 写入精确匹配缓存
-      searchCache.set(cacheKey, finalResults);
+      // 记录性能指标
+      const totalTime = Date.now() - requestStartTime;
+      recordSearchRequest(
+        totalTime,
+        pipelineResult.cached || false,
+        pipelineResult.cacheType || null,
+        pipelineResult.variantCount || 1
+      );
 
-      // 5. 写入语义缓存（如果有embedding）
-      if (queryEmbedding && finalResults.length > 0) {
-        const semanticCacheKey = `semantic_${Date.now()}_${Math.random()}`;
-        semanticCache.set(semanticCacheKey, {
-          queryEmbedding,
-          query,
-          results: finalResults,
-          timestamp: Date.now()
-        });
-        console.log(`[SemanticCache] 已缓存查询: "${query}" (embedding维度: ${queryEmbedding.length})`);
+      // 构建响应
+      const response = {
+        ok: true,
+        chunks: pipelineResult.results
+      };
+
+      // 添加缓存相关信息
+      if (pipelineResult.cached) {
+        response._cached = true;
+        response._cacheType = pipelineResult.cacheType;
+        if (pipelineResult.cacheType === 'semantic') {
+          response._originalQuery = pipelineResult.originalQuery;
+          response._similarity = pipelineResult.similarity;
+        }
       }
 
-      // 6. 记录性能指标
-      const totalTime = Date.now() - requestStartTime;
-      recordSearchRequest(totalTime, false, null, variantCount);
-
-      res.json({ ok: true, chunks: finalResults });
+      res.json(response);
     } finally {
       cleanupPendingSearch(cacheKey);
     }
@@ -2403,371 +2287,23 @@ app.get('/api/models/gemini', async (req, res) => {
 });
 
 // ============== 拓扑还原 API ==============
-app.post('/api/topology-restore', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: '请上传文件' });
-    }
 
-    const networkType = req.body.networkType || 'ib';
-    const configStr = req.body.config;
-    const config = configStr ? JSON.parse(configStr) : {};
-    const fileBuffer = req.file.buffer;
-    const originalName = req.file.originalname;
-    const input = parseTopologyUpload(fileBuffer, originalName);
+// ============== 统一拓扑 API 端点 (处理所有拓扑相关操作) ==============
+app.post('/api/topology/:operation', upload.single('file'), asyncHandlerV2(async (req, res) => {
+  const { operation } = req.params;
+  const file = req.file;
+  const params = { ...req.body, ...req.query, res }; // Pass res for streaming operations
 
-    console.log(`[TopologyRestore] 开始解析 ${networkType} 网络拓扑，文件: ${req.file.originalname}`);
-    console.log(`[TopologyRestore] 配置: ${JSON.stringify(config)}`);
-
-    let result;
-    if (networkType === 'ib') {
-      const portMap = input.kind === 'csv'
-        ? parseCSVPortMap(input.csvContent)
-        : parseExcelPortMap(input.data);
-
-      result = topology.buildTopologyStructure(portMap, {
-        layerDetection: config.layerDetection || 'auto',
-        manualLayers: config.manualLayers || null,
-        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-        networkType: networkType  // 传递网络类型
-      });
-    } else if (networkType === 'roce') {
-      if (input.kind === 'excel') {
-        result = analyzeRoCETopology(input.data);
-      } else {
-        const portMap = parseCSVPortMap(input.csvContent);
-        result = topology.buildTopologyStructure(portMap, {
-          layerDetection: config.layerDetection || 'auto',
-          manualLayers: config.manualLayers || null,
-          podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-          networkType: networkType
-        });
-      }
-    } else {
-      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
-    }
-
-    if (!result || !result.success) {
-      throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
-    }
-
-    console.log(`[TopologyRestore] 拓扑解析完成: ${result.metadata.stats.totalDevices} 设备, ${result.chainsCount} 链路`);
-    return res.json({
-      ok: true,
-      ...result
-    });
-  } catch (error) {
-    console.error('[TopologyRestore] Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
+  // 验证必需的文件上传
+  if (!file) {
+    return ApiResponse.badRequest(res, 'file required');
   }
-});
 
-// ============== 拓扑还原 API V2 (流式加载) ==============
-app.post('/api/topology-restore-v2', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: '请上传文件' });
-    }
+  // 处理拓扑操作
+  const result = await handleTopologyOperation(operation, file, params);
 
-    const networkType = req.body.networkType || 'ib';
-    const configStr = req.body.config;
-    const config = configStr ? JSON.parse(configStr) : {};
-    const fileBuffer = req.file.buffer;
-    const fileName = req.file.originalname;
-    // 使用 let 以便根据规模自动调整
-    let isLazy = req.query.mode === 'lazy' || req.body.mode === 'lazy';
-
-    console.log(`[TopologyV2] 开始流式解析 ${networkType} 拓扑: ${fileName} (Request Lazy: ${isLazy})`);
-
-    // 1. 解析原始数据
-    const input = parseTopologyUpload(fileBuffer, fileName);
-    let portMap;
-    let result;
-    let isFromKnowledgeBase = false;
-
-    if (networkType === 'ib') {
-      if (input.kind === 'csv') {
-        try {
-          portMap = parseCSVPortMap(input.csvContent);
-        } catch (e) {
-          // 尝试解析为 SN 清单
-          console.log('[TopologyV2] 标准解析失败，尝试作为 SN 清单解析:', e.message);
-          const snList = parseSNListCSV(input.csvContent);
-          if (snList && snList.length > 0) {
-            console.log(`[TopologyV2] 识别为 SN 清单 (${snList.length} 个条目)，尝试从知识库重建拓扑...`);
-            portMap = await buildPortMapFromKnowledgeBase(snList, networkType);
-            isFromKnowledgeBase = true;
-            if (portMap.size === 0) {
-              throw new Error('知识库中未找到相关连接信息');
-            }
-          } else {
-            throw e; // 抛出原始错误
-          }
-        }
-      } else {
-        portMap = parseExcelPortMap(input.data);
-      }
-    } else if (networkType === 'roce') {
-      if (input.kind === 'excel') {
-        result = analyzeRoCETopology(input.data);
-      } else {
-        portMap = parseCSVPortMap(input.csvContent);
-      }
-    } else {
-      return res.status(400).json({ ok: false, error: '不支持的网络类型' });
-    }
-
-    // 2. 构建拓扑结构
-    if (!result) {
-      result = topology.buildTopologyStructure(portMap, {
-        layerDetection: config.layerDetection || 'auto',
-        manualLayers: config.manualLayers || null,
-        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-        networkType: networkType
-      });
-    }
-
-    if (!result || !result.success) {
-      throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
-    }
-
-    // 3. 决定渲染模式 和 Lazy 策略
-    const totalNodes = result.nodeCount;
-    let renderMode = 'reactflow';
-    if (totalNodes > 2000) {
-      renderMode = 'cytoscape';
-    } else if (totalNodes > 1000) {
-      // 这里的阈值可以根据实际性能测试调整
-      renderMode = 'virtual-reactflow';
-    }
-
-    // 自动调整 Lazy 模式：如果节点少于 1500，强制关闭 Lazy，一次性发送所有数据
-    if (isLazy && totalNodes < 1500) {
-      console.log(`[TopologyV2] 节点数 (${totalNodes}) 较少，自动关闭 Lazy 模式，直接全量发送。`);
-      isLazy = false;
-    }
-
-    console.log(`[TopologyV2] 节点数: ${totalNodes}, 模式: ${renderMode}, Final Lazy: ${isLazy}`);
-
-    // 4. 开启流式响应 (NDJSON)
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // (a) 发送元数据
-    res.write(JSON.stringify({
-      type: 'meta',
-      data: {
-        nodeCount: result.nodeCount,
-        edgeCount: result.edgeCount,
-        renderMode,
-        layers: result.metadata.layers,
-        pods: result.metadata.pods,
-        stats: result.metadata.stats,
-        networkType: result.networkType || networkType,
-        isLazy,
-        layerY: result.layerY
-      }
-    }) + '\n');
-
-    // (b) 发送所有层级节点 (动态层级)
-    // 支持 Core/Spine/Leaf 以及 RoCE 的 CSW/SSW/ASW 等所有层级
-    const allLayers = Object.keys(result.nodesByLayer);
-
-    for (const layer of allLayers) {
-      const nodes = result.nodesByLayer[layer];
-      if (!nodes || nodes.length === 0) continue;
-
-      // 如果是 Leaf 层 (或 RoCE 的 ASW/SSW) 在 Lazy 模式下是否需要跳过？
-      // 当前逻辑：只有 'leaf' 且 Lazy 模式才跳过？
-      // 为了安全，我们保留原逻辑：Lazy 模式下跳过 'leaf' 层的节点（改为按需加载）。
-      // 对于 RoCE，通常节点数少，isLazy=false，所以全发。
-      if (isLazy && layer === 'leaf') continue;
-
-      // 分块发送
-      const chunkSize = 500;
-      for (let i = 0; i < nodes.length; i += chunkSize) {
-        const chunk = nodes.slice(i, i + chunkSize);
-        res.write(JSON.stringify({
-          type: 'chunk',
-          layer: layer,
-          nodes: chunk
-        }) + '\n');
-        await new Promise(r => setImmediate(r));
-      }
-    }
-
-    // (e) 发送连接 (分块发送)
-    // 注意：Connections 数组可能很大
-    if (result.connections && result.connections.length > 0) {
-      let edges = result.connections;
-
-      // Lazy 模式下，只发送非 Leaf 相关的边（即 Core-Spine）
-      // 假设我们只过滤掉两端都是 Leaf 或者 连接到 Leaf 的边？
-      // 通常 Core-Spine 是必要的。Spine-Leaf 在加载 Leaf 时加载。
-      if (isLazy) {
-        const leafIds = new Set((result.nodesByLayer.leaf || []).map(n => n.id));
-        // 保留: 源和目标都 NOT IN leafIds
-        edges = edges.filter(e => !leafIds.has(e.source) && !leafIds.has(e.target));
-      }
-
-      const chunkSize = 2000;
-      for (let i = 0; i < edges.length; i += chunkSize) {
-        const chunk = edges.slice(i, i + chunkSize);
-        res.write(JSON.stringify({
-          type: 'chunk',
-          dataType: 'edges',
-          items: chunk
-        }) + '\n');
-        await new Promise(r => setImmediate(r));
-      }
-    }
-
-    // 结束响应
-    res.end();
-
-  } catch (error) {
-    console.error('[TopologyV2] Error:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ ok: false, error: error.message });
-    } else {
-      // 如果流已经开始，发送一条错误消息
-      res.write(JSON.stringify({ type: 'error', error: error.message }) + '\n');
-      res.end();
-    }
-  }
-});
-
-// ============== 获取 POD 详情 API (Lazy Loading) ==============
-app.post('/api/topology-pod-details', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok: false, error: 'file required' });
-    const podName = req.body.podName;
-    if (!podName) return res.status(400).json({ ok: false, error: 'podName required' });
-
-    const networkType = req.body.networkType || 'ib';
-    const configStr = req.body.config;
-    const config = configStr ? JSON.parse(configStr) : {};
-    const fileBuffer = req.file.buffer;
-
-    // 解析 (复用逻辑)
-    const input = parseTopologyUpload(fileBuffer, req.file.originalname);
-
-    let result;
-    if (networkType === 'roce' && input.kind === 'excel') {
-      result = analyzeRoCETopology(input.data);
-    } else {
-      const portMap = input.kind === 'csv'
-        ? parseCSVPortMap(input.csvContent)
-        : parseExcelPortMap(input.data);
-
-      result = topology.buildTopologyStructure(portMap, {
-        layerDetection: config.layerDetection || 'auto',
-        manualLayers: config.manualLayers || null,
-        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-        networkType: networkType
-      });
-    }
-
-    if (!result || !result.success) throw new Error('Build failed');
-
-    let podNodes = [];
-    if (networkType === 'ib') {
-      podNodes = (result.nodesByLayer.leaf || [])
-        .filter(n => n.pod === podName)
-        .map(n => ({ ...n, layer: n.layer || 'leaf' }));
-    } else {
-      Object.entries(result.nodesByLayer || {}).forEach(([layer, nodes]) => {
-        if (Array.isArray(nodes)) {
-          podNodes.push(...nodes.filter(n => n.pod === podName).map(n => ({ ...n, layer })));
-        }
-      });
-    }
-    const podNodeIds = new Set(podNodes.map(n => n.id));
-
-    // 过滤边 (连接到该 POD 的边)
-    const edges = result.connections.filter(e => podNodeIds.has(e.source) || podNodeIds.has(e.target));
-
-    res.json({
-      ok: true,
-      pod: podName,
-      nodes: podNodes,
-      edges: edges
-    });
-
-  } catch (error) {
-    console.error('[PodDetails] Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-// ============== 拓扑搜索 API (Deep Search) ==============
-app.post('/api/topology-search', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok: false, error: 'file required' });
-    const query = req.body.query;
-    if (!query) return res.json({ ok: true, matches: [] });
-
-    // 复用解析逻辑 (同样需要优化复用代码)
-    const networkType = req.body.networkType || 'ib';
-    const configStr = req.body.config;
-    const config = configStr ? JSON.parse(configStr) : {};
-    const fileBuffer = req.file.buffer;
-
-    const input = parseTopologyUpload(fileBuffer, req.file.originalname);
-
-    let result;
-    if (networkType === 'roce' && input.kind === 'excel') {
-      result = analyzeRoCETopology(input.data);
-    } else {
-      const portMap = input.kind === 'csv'
-        ? parseCSVPortMap(input.csvContent)
-        : parseExcelPortMap(input.data);
-
-      // 构建拓扑 (Server-side search requires full build to be accurate with layers/pods)
-      result = topology.buildTopologyStructure(portMap, {
-        layerDetection: config.layerDetection || 'auto',
-        manualLayers: config.manualLayers || null,
-        podExtraction: config.podExtraction || { method: 'regex', pattern: 'POD\\d+' },
-        networkType: networkType
-      });
-    }
-
-    if (!result || !result.success) throw new Error('Build failed');
-
-    // 搜索逻辑
-    const matches = [];
-    const searchLower = query.toLowerCase();
-
-    // 遍历所有层级
-    Object.entries(result.nodesByLayer).forEach(([layer, nodes]) => {
-      if (!Array.isArray(nodes)) return;
-      nodes.forEach(node => {
-        if (node.id.toLowerCase().includes(searchLower) || (node.label && node.label.toLowerCase().includes(searchLower))) {
-          matches.push({
-            id: node.id,
-            label: node.label,
-            layer: layer,
-            pod: node.pod
-          });
-        }
-      });
-    });
-
-    // 限制返回数量
-    const limitedMatches = matches.slice(0, 20);
-
-    res.json({
-      ok: true,
-      matches: limitedMatches,
-      total: matches.length
-    });
-
-  } catch (error) {
-    console.error('[TopologySearch] Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
+  return ApiResponse.success(res, result);
+}));
 
 // ============== 拓扑解析辅助函数 ==============
 

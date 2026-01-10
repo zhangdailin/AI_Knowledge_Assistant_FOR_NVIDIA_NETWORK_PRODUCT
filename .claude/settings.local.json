@@ -34,7 +34,14 @@
       "Bash(git push)",
       "Bash(wc:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\n修复7个严重bug和安全问题\n\n修复内容：\n1. 内存泄漏 - pendingSearches Map无限增长\n   - 添加最大待处理搜索数限制\n   - 实现搜索超时清理机制\n   \n2. 正则表达式注入漏洞\n   - 对用户输入的SN进行转义\n   - 添加escapeRegexString工具函数\n   \n3. 未捕获的异步错误\n   - 改进文件上传后台处理的错误处理\n   - 添加防御性状态更新\n   - 通知前端处理失败\n   \n4. 文件大小溢出风险\n   - 添加100MB文本大小限制\n   - 防止大文件导致内存溢出\n   \n5. CSV解析边界检查\n   - 验证列数是否足够\n   - 使用可选链操作符安全访问\n   \n6. WebSocket僵尸连接泄漏\n   - 实现心跳检测机制\n   - 定期清理无响应的连接\n   \n7. CORS安全配置\n   - 不允许无Origin头的请求\n   - 移除硬编码IP地址\n   - 需要显式环境变量控制\n\n🤖 Generated with Claude Code\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(ssh-keyscan:*)",
+      "Bash(~/.ssh/known_hosts)",
+      "Bash(git tag:*)",
+      "Bash(npm test)"
     ]
   }
 }

@@ -9,7 +9,8 @@
     "uploadedAt": "2025-12-23T15:24:35.663Z",
     "status": "ready",
     "id": "doc-1766503475664",
-    "categoryId": "cat-1766845817168"
+    "categoryId": "cat-1766845817168",
+    "chunkCount": 777
   },
   {
     "userId": "public",
@@ -21,7 +22,8 @@
     "uploadedAt": "2025-12-24T00:46:25.524Z",
     "status": "ready",
     "id": "doc-1766537185525",
-    "categoryId": "cat-1766845817168"
+    "categoryId": "cat-1766845817168",
+    "chunkCount": 402
   },
   {
     "userId": "public",
@@ -33,6 +35,7 @@
     "uploadedAt": "2025-12-24T00:48:29.161Z",
     "status": "ready",
     "id": "doc-1766537309162",
-    "categoryId": "cat-1766845817168"
+    "categoryId": "cat-1766845817168",
+    "chunkCount": 650
   }
 ]

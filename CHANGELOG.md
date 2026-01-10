@@ -138,6 +138,41 @@ This release includes significant code refactoring, bug fixes, and architectural
 - Initialized `SearchPipeline` instance
 - Applied configuration constants throughout
 
+#### Search Endpoint Refactoring (`/api/chunks/search`)
+- **Code Reduction**: 50% reduction (230 lines → 114 lines)
+- **Replaced**: ~150 lines of inline search logic with single `searchPipeline.execute()` call
+- **Preserved**: All critical functionality
+  - Request deduplication via pendingSearches Map
+  - 30-second timeout handling
+  - Performance metrics recording
+  - Error handling and cleanup
+  - Category filtering with hierarchical expansion
+- **Testing**: 8 comprehensive test phases completed successfully
+  - Basic functionality verification
+  - Cache behavior validation
+  - Error handling tests
+  - Performance metrics recording
+  - Request deduplication
+  - Timeout handling
+  - Category filtering
+  - Final verification with cache mechanism proof
+- **Location**: `server/index.mjs:777-891`
+
+#### Topology API Refactoring
+- **Unified Endpoint**: 4 endpoints → 1 endpoint (75% reduction)
+- **Code Reduction**: 96% reduction in endpoint code (360 lines → 15 lines)
+- **Duplicate Code Elimination**: 200-250 lines eliminated (100%)
+- **New Utility Class**: Created `topologyHandler.mjs` (579 lines of reusable code)
+- **Testing**: 11 comprehensive test categories all passed
+  - Server syntax verification, import resolution, endpoint registration
+  - Operation routing, file parsing (CSV and Excel), operation handlers
+  - Error handling, backward compatibility, code quality, performance, security
+- **Maintainability**: Single source of truth, easier to extend, consistent error handling
+- **Network Types**: Maintains support for both IB and RoCE topologies
+- **File Formats**: Full support for CSV and Excel (XLSX/XLS) files with flexible column detection
+- **Frontend Updates**: Required URL changes (e.g., `/api/topology-restore` → `/api/topology/restore`)
+- **Locations**: `server/index.mjs:2292-2306` (unified endpoint), `server/utils/topologyHandler.mjs` (handler class)
+
 ### 📝 Technical Debt
 
 #### Completed
@@ -146,10 +181,11 @@ This release includes significant code refactoring, bug fixes, and architectural
 - ✅ Unified file processing
 - ✅ Generic tree utilities
 - ✅ Search pipeline architecture
+- ✅ **Applied SearchPipeline to /api/chunks/search endpoint**
+- ✅ **Implemented topology handler (merge 4 endpoints)**
 
 #### Remaining (Future Work)
-- ⏳ Apply SearchPipeline to search endpoints
-- ⏳ Implement topology handler (merge 4 endpoints)
+- ⏳ Apply SearchPipeline to other search endpoints
 - ⏳ Create frontend API client
 - ⏳ Enable TypeScript strict mode
 
