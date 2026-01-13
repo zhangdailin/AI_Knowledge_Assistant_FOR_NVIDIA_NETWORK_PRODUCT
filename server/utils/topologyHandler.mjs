@@ -469,23 +469,30 @@ async function handlePodDetails(file, params) {
     throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
   }
 
+  // 添加额外验证
+  if (!result.nodesByLayer || Object.keys(result.nodesByLayer).length === 0) {
+    throw new Error('拓扑数据为空：没有找到任何节点');
+  }
+
+  // 从 nodesByLayer 中提取所有节点
+  const allNodes = Object.values(result.nodesByLayer).flat();
+
   // 过滤出指定 POD 的详细信息
-  const podNodes = result.data.nodes.filter(node =>
+  const podNodes = allNodes.filter(node =>
     node.podId === podId || (node.group && node.group === podId)
   );
-  const podEdges = result.data.edges.filter(edge =>
+  const podEdges = (result.connections || result.edges || []).filter(edge =>
     podNodes.some(node => node.id === edge.source || node.id === edge.target)
   );
 
   return {
+    success: true,
     podId,
     nodes: podNodes,
     edges: podEdges,
-    metadata: {
-      nodeCount: podNodes.length,
-      edgeCount: podEdges.length,
-      ...result.metadata
-    }
+    nodeCount: podNodes.length,
+    edgeCount: podEdges.length,
+    metadata: result.metadata
   };
 }
 
@@ -539,8 +546,16 @@ async function handleTopologySearch(file, params) {
     throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
   }
 
+  // 添加额外验证
+  if (!result.nodesByLayer || Object.keys(result.nodesByLayer).length === 0) {
+    throw new Error('拓扑数据为空：没有找到任何节点');
+  }
+
+  // 从 nodesByLayer 中提取所有节点
+  const allNodes = Object.values(result.nodesByLayer).flat();
+
   // 在拓扑中搜索匹配的节点
-  const searchResults = result.data.nodes.filter(node =>
+  const searchResults = allNodes.filter(node =>
     node.id.toLowerCase().includes(query.toLowerCase()) ||
     (node.label && node.label.toLowerCase().includes(query.toLowerCase())) ||
     (node.name && node.name.toLowerCase().includes(query.toLowerCase())) ||
@@ -549,10 +564,11 @@ async function handleTopologySearch(file, params) {
   ).slice(0, limit);
 
   return {
+    success: true,
     query,
     limit,
     results: searchResults,
-    totalCount: result.data.nodes.length,
+    totalCount: allNodes.length,
     matchedCount: searchResults.length,
     metadata: result.metadata
   };
