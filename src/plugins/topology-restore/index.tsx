@@ -260,7 +260,7 @@ const TopologyRestoreTool: React.FC = () => {
 
       console.log('[TopologyRestore] Requesting V2 API for streaming (Lazy Mode)...');
 
-      const res = await fetch(`${getApiServerUrl()}/api/topology-restore-v2`, {
+      const res = await fetch(`${getApiServerUrl()}/api/topology/restore-v2`, {
         method: 'POST',
         body: formData
       });
@@ -656,7 +656,7 @@ const TopologyRestoreTool: React.FC = () => {
       formData.append('config', JSON.stringify(config));
       formData.append('podName', podName);
 
-      const res = await fetch(`${getApiServerUrl()}/api/topology-pod-details`, {
+      const res = await fetch(`${getApiServerUrl()}/api/topology/pod-details`, {
         method: 'POST',
         body: formData
       });
@@ -765,7 +765,7 @@ const TopologyRestoreTool: React.FC = () => {
         formData.append('networkType', networkType);
         formData.append('config', JSON.stringify(config));
 
-        const res = await fetch(`${getApiServerUrl()}/api/topology-search`, {
+        const res = await fetch(`${getApiServerUrl()}/api/topology/search`, {
           method: 'POST',
           body: formData
         });

@@ -133,7 +133,8 @@ class UnifiedStorageManager {
 
   // 获取所有文档（用于调试和统计）
   async getAllDocumentsPublic(): Promise<Document[]> {
-    return await serverStorageManager.getDocuments();
+    const result = await serverStorageManager.getDocuments();
+    return result.documents;
   }
 
   // 更新文档

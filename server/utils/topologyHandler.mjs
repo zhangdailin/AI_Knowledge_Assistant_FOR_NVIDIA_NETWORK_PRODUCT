@@ -270,7 +270,7 @@ async function handleTopologyRestore(file, params) {
     throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
   }
 
-  return result.data;
+  return result;
 }
 
 async function handleTopologyRestoreV2(file, params) {
@@ -328,7 +328,9 @@ async function handleTopologyRestoreV2(file, params) {
   // 流式响应拓扑数据
   if (res) {
     // 决定渲染模式和 Lazy 策略
-    const totalNodes = result.data.nodeCount || (result.data.nodes ? result.data.nodes.length : 0);
+    const totalNodes = result.nodeCount ||
+      (result.nodes ? result.nodes.length : 0) ||
+      (result.nodesByLayer ? Object.values(result.nodesByLayer).flat().length : 0);
     let renderMode = 'reactflow';
     if (totalNodes > 2000) {
       renderMode = 'cytoscape';
@@ -354,23 +356,23 @@ async function handleTopologyRestoreV2(file, params) {
     res.write(JSON.stringify({
       type: 'meta',
       data: {
-        nodeCount: result.data.nodeCount || totalNodes,
-        edgeCount: result.data.edgeCount || (result.data.edges ? result.data.edges.length : 0),
+        nodeCount: result.nodeCount || totalNodes,
+        edgeCount: result.edgeCount || (result.edges ? result.edges.length : 0) || (result.connections ? result.connections.length : 0),
         renderMode,
-        layers: result.data.metadata?.layers,
-        pods: result.data.metadata?.pods,
-        stats: result.data.metadata?.stats,
-        networkType: result.data.networkType || networkType,
+        layers: result.metadata?.layers,
+        pods: result.metadata?.pods,
+        stats: result.metadata?.stats,
+        networkType: result.networkType || networkType,
         isLazy: effectiveLazy,
-        layerY: result.data.layerY
+        layerY: result.layerY
       }
     }) + '\n');
 
     // 发送所有层级节点 (动态层级)
-    const allLayers = result.data.nodesByLayer ? Object.keys(result.data.nodesByLayer) : [];
+    const allLayers = result.nodesByLayer ? Object.keys(result.nodesByLayer) : [];
 
     for (const layer of allLayers) {
-      const nodes = result.data.nodesByLayer[layer];
+      const nodes = result.nodesByLayer[layer];
       if (!nodes || nodes.length === 0) continue;
 
       if (effectiveLazy && layer === 'leaf') continue;
@@ -389,13 +391,13 @@ async function handleTopologyRestoreV2(file, params) {
     }
 
     // 发送连接 (分块发送)
-    const edges = result.data.connections || result.data.edges;
+    const edges = result.connections || result.edges || [];
     if (edges && edges.length > 0) {
       let edgesToSend = edges;
 
       // Lazy 模式下，过滤掉连接到 leaf 的边
-      if (effectiveLazy && result.data.nodesByLayer?.leaf) {
-        const leafIds = new Set(result.data.nodesByLayer.leaf.map(n => n.id));
+      if (effectiveLazy && result.nodesByLayer?.leaf) {
+        const leafIds = new Set(result.nodesByLayer.leaf.map(n => n.id));
         edgesToSend = edges.filter(e => !leafIds.has(e.source) && !leafIds.has(e.target));
       }
 
@@ -415,7 +417,7 @@ async function handleTopologyRestoreV2(file, params) {
     res.end();
   }
 
-  return result.data;
+  return result;
 }
 
 async function handlePodDetails(file, params) {
