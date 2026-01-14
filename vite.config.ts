@@ -8,7 +8,30 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
-    setupFiles: ['./src/test/setup.ts'],
+    setupFiles: ['./test/helpers/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html', 'lcov'],
+      exclude: [
+        'node_modules/',
+        'test/',
+        '**/*.d.ts',
+        '**/*.config.*',
+        '**/mockData.ts',
+        'dist/',
+        'coverage/',
+        '**/*.test.ts',
+        '**/*.spec.ts'
+      ],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 75,
+        statements: 80
+      }
+    },
+    testTimeout: 10000,
+    hookTimeout: 10000
   },
   server: {
     host: '0.0.0.0', // 允许外部访问

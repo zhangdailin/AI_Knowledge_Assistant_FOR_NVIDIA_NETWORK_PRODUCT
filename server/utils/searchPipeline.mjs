@@ -2,6 +2,7 @@
  * 搜索管道 - 将搜索流程分解为清晰的步骤
  */
 import { LIMITS, CACHE, SCORING } from '../constants.mjs';
+import { hybridRetrieval, determineRetrievalStrategy } from '../hybridRetrieval.mjs';
 
 export class SearchPipeline {
   constructor(options = {}) {
@@ -14,6 +15,8 @@ export class SearchPipeline {
     this.semanticCache = options.semanticCache;
     this.findSimilarCachedQuery = options.findSimilarCachedQuery;
     this.cosineSimilarity = options.cosineSimilarity;
+    this.hybridRetrieval = options.hybridRetrieval || hybridRetrieval;
+    this.determineRetrievalStrategy = options.determineRetrievalStrategy || determineRetrievalStrategy;
   }
 
   /**
@@ -269,10 +272,22 @@ export class SearchPipeline {
       { searchLimit, config }
     );
 
-    // 6. Reranking
+    // 6. 知识图谱增强（新增）
+    const enableKnowledgeGraph = config.enableKnowledgeGraph !== false; // 默认启用
+    if (enableKnowledgeGraph && this.hybridRetrieval && this.determineRetrievalStrategy) {
+      try {
+        const strategy = this.determineRetrievalStrategy(query);
+        fusedResults = await this.hybridRetrieval(query, fusedResults, strategy);
+        console.log(`[SearchPipeline] 知识图谱增强完成 (策略: ${strategy.strategy})`);
+      } catch (error) {
+        console.warn('[SearchPipeline] 知识图谱增强失败，使用原始结果:', error.message);
+      }
+    }
+
+    // 7. Reranking
     const finalResults = await this.rerank(fusedResults, query, { rerankTopN });
 
-    // 7. 保存到缓存
+    // 8. 保存到缓存
     if (cacheKey) {
       this.saveToCache(cacheKey, query, finalResults, queryEmbedding);
     }

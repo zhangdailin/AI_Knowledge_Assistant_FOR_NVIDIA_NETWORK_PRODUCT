@@ -3191,6 +3191,83 @@ app.post('/api/v1/webhooks/:webhookId/test', apiAuth.requireApiKey(['write']), a
   res.json({ ok: result.success, ...result });
 }));
 
+// ========== 知识图谱 API ==========
+
+import * as knowledgeGraph from './knowledgeGraph.mjs';
+import { buildKnowledgeGraphFromDocuments, getHybridRetrievalStats } from './hybridRetrieval.mjs';
+
+// 初始化知识图谱连接
+app.post('/api/knowledge-graph/init', asyncHandler(async (req, res) => {
+  try {
+    await knowledgeGraph.initNeo4j();
+    res.json({ ok: true, message: '知识图谱连接成功' });
+  } catch (error) {
+    console.error('初始化知识图谱失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 构建知识图谱（处理所有文档或指定文档）
+app.post('/api/knowledge-graph/build', asyncHandler(async (req, res) => {
+  try {
+    const { documentIds } = req.body;
+    const stats = await buildKnowledgeGraphFromDocuments(documentIds);
+    res.json({ ok: true, stats });
+  } catch (error) {
+    console.error('构建知识图谱失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 处理单个文档
+app.post('/api/knowledge-graph/process/:documentId', asyncHandler(async (req, res) => {
+  try {
+    const { documentId } = req.params;
+    const result = await knowledgeGraph.processDocument(documentId);
+    res.json({ ok: true, result });
+  } catch (error) {
+    console.error('处理文档失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 查询知识图谱
+app.post('/api/knowledge-graph/query', asyncHandler(async (req, res) => {
+  try {
+    const { query, limit = 10 } = req.body;
+    if (!query) {
+      return res.status(400).json({ ok: false, error: '缺少查询参数' });
+    }
+    const results = await knowledgeGraph.queryKnowledgeGraph(query, limit);
+    res.json({ ok: true, results });
+  } catch (error) {
+    console.error('查询知识图谱失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 获取知识图谱统计信息
+app.get('/api/knowledge-graph/stats', asyncHandler(async (req, res) => {
+  try {
+    const stats = await getHybridRetrievalStats();
+    res.json({ ok: true, ...stats });
+  } catch (error) {
+    console.error('获取知识图谱统计失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 清空知识图谱
+app.delete('/api/knowledge-graph/clear', asyncHandler(async (req, res) => {
+  try {
+    await knowledgeGraph.clearGraph();
+    res.json({ ok: true, message: '知识图谱已清空' });
+  } catch (error) {
+    console.error('清空知识图谱失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
 // 增加 V8 内存限制提示
 const v8 = await import('v8');
 const totalHeapSize = v8.getHeapStatistics().total_available_size / 1024 / 1024;
