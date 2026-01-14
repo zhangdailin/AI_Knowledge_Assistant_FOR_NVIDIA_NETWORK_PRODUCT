@@ -35,9 +35,25 @@ export function parseTopologyFile(fileBuffer, fileName) {
   }
   if (ext === 'xlsx' || ext === 'xls') {
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+
+    // 验证工作簿是否有工作表
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      throw new Error('Excel 文件没有工作表');
+    }
+
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
+
+    if (!worksheet) {
+      throw new Error('无法读取 Excel 工作表');
+    }
+
     const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Excel 文件没有数据');
+    }
+
     return { kind: 'excel', data };
   }
 
@@ -95,7 +111,7 @@ export function parseCSVPortMap(csvContent) {
     portMap.set(`${sys}|${port}`, { peer, peerPort });
   }
 
-  console.log(`[TopologyRestore] CSV解析完成: ${portMap.size} 条端口映射. Sample: ${Array.from(portMap.keys())[0]}`);
+  console.log(`[TopologyRestore] CSV解析完成: ${portMap.size} 条端口映射${portMap.size > 0 ? `. Sample: ${Array.from(portMap.keys())[0]}` : ''}`);
   return portMap;
 }
 
@@ -107,12 +123,17 @@ export function parseCSVPortMap(csvContent) {
 export function parseExcelPortMap(data) {
   const portMap = new Map();
 
-  if (!data || data.length === 0) {
-    console.warn('[ParseExcel] 数据为空');
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    console.warn('[ParseExcel] 数据为空或格式无效');
     return portMap;
   }
 
   const firstRow = data[0];
+  if (!firstRow || typeof firstRow !== 'object') {
+    console.error('[ParseExcel] 第一行数据格式无效');
+    return portMap;
+  }
+
   const fieldNames = Object.keys(firstRow);
   console.log(`[ParseExcel] Excel 字段名: ${fieldNames.join(', ')}`);
 
@@ -127,6 +148,8 @@ export function parseExcelPortMap(data) {
   };
 
   for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+
     const sys = findField(row, 'Hostname', 'hostname', 'device', 'system', 'node');
     const port = findField(row, 'Ifname', 'ifname', 'interface', 'port', 'eth');
     const peer = findField(row, 'Peer Node', 'peer node', 'peer hostname', 'peer device', 'peer name', 'remote hostname');

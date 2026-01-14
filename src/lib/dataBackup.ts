@@ -22,6 +22,19 @@ export class DataBackupManager {
   private static readonly BACKUP_FILENAME_PREFIX = 'ai-assistant-backup';
 
   /**
+   * 安全的 JSON 解析辅助函数
+   */
+  private static safeJSONParse<T>(text: string, defaultValue: T): T {
+    try {
+      const parsed = JSON.parse(text);
+      return parsed !== null && parsed !== undefined ? parsed : defaultValue;
+    } catch (error) {
+      console.warn('JSON 解析失败，使用默认值:', error);
+      return defaultValue;
+    }
+  }
+
+  /**
    * 导出用户数据
    */
   static async exportUserData(userId: string, userEmail: string): Promise<void> {
@@ -174,21 +187,52 @@ export class DataBackupManager {
    * 验证备份数据格式
    */
   private static validateBackupData(data: any): void {
+    // 基本类型检查
+    if (!data || typeof data !== 'object') {
+      throw new Error('备份文件格式无效：不是有效的对象');
+    }
+
     const requiredFields = ['version', 'timestamp', 'userId', 'userEmail', 'data'];
     const requiredDataFields = ['conversations', 'messages', 'documents', 'chunks', 'settings'];
-    
+
+    // 验证顶层必需字段
     for (const field of requiredFields) {
       if (!data[field]) {
         throw new Error(`备份文件缺少必要字段: ${field}`);
       }
     }
-    
+
+    // 验证 data 对象存在且为对象
+    if (!data.data || typeof data.data !== 'object') {
+      throw new Error('备份文件数据格式错误: data 字段必须是对象');
+    }
+
+    // 验证 data 子字段
     for (const field of requiredDataFields) {
-      if (!data.data[field] || !Array.isArray(data.data[field])) {
-        if (field !== 'settings') {
-          throw new Error(`备份文件数据格式错误: ${field}`);
+      if (field === 'settings') {
+        // settings 可以是对象或 undefined
+        if (data.data[field] !== undefined && typeof data.data[field] !== 'object') {
+          throw new Error(`备份文件数据格式错误: ${field} 必须是对象`);
+        }
+      } else {
+        // 其他字段必须是数组
+        if (!Array.isArray(data.data[field])) {
+          throw new Error(`备份文件数据格式错误: ${field} 必须是数组`);
         }
       }
+    }
+
+    // 验证字符串字段格式
+    if (typeof data.version !== 'string' || !data.version.match(/^\d+\.\d+\.\d+$/)) {
+      throw new Error('备份文件版本号格式无效');
+    }
+
+    if (typeof data.userId !== 'string' || data.userId.length === 0) {
+      throw new Error('备份文件用户ID无效');
+    }
+
+    if (typeof data.userEmail !== 'string' || !data.userEmail.includes('@')) {
+      throw new Error('备份文件用户邮箱格式无效');
     }
   }
 
