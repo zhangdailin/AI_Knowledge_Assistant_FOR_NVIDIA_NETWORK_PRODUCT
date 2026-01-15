@@ -31,13 +31,23 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
 
   // 只显示被引用的文档（在 highlights 中有记录的）
   const referencedDocs = references.filter((ref, index) => {
-    const refKey = ref.id || `idx-${index}`;
-    const highlight = highlights?.[refKey];
-    // 只保留有引用命令或引用段落的文档
-    return highlight && (
-      (highlight.commands && highlight.commands.length > 0) ||
-      (highlight.excerpts && highlight.excerpts.length > 0)
-    );
+    // 检查多个可能的键形式
+    const possibleKeys = [
+      ref.id,
+      `idx-${index}`,
+      `ref-${index}`
+    ].filter(Boolean) as string[];
+
+    // 只要有任何一个键在 highlights 中有记录，就认为该文档被引用
+    const isReferenced = possibleKeys.some(key => {
+      const highlight = highlights?.[key];
+      return highlight && (
+        (highlight.commands && highlight.commands.length > 0) ||
+        (highlight.excerpts && highlight.excerpts.length > 0)
+      );
+    });
+
+    return isReferenced;
   });
 
   // 如果没有被引用的文档，不显示整个区域
@@ -57,10 +67,26 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
       </div>
       <div className="flex flex-wrap gap-2">
         {referencedDocs.map((ref, index) => {
-          const refKey = ref.id || `idx-${index}`;
-          const highlight = highlights?.[refKey];
+          // 尝试所有可能的键形式来获取 highlight
+          const possibleKeys = [
+            ref.id,
+            `idx-${index}`,
+            `ref-${index}`
+          ].filter(Boolean) as string[];
+
+          // 找到第一个存在的 highlight
+          let highlight: ReferenceHighlight | undefined;
+          let refKey = '';
+          for (const key of possibleKeys) {
+            if (highlights?.[key]) {
+              highlight = highlights[key];
+              refKey = key;
+              break;
+            }
+          }
+
           return (
-            <div key={refKey} className="relative group">
+            <div key={refKey || `ref-${index}`} className="relative group">
             <button
               onClick={() => toggleExpand(index)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs text-blue-700 transition-all"

@@ -34,10 +34,11 @@ type KnowledgeSearchResult = {
 };
 
 
-async function searchKnowledgeBase(query: string): Promise<KnowledgeSearchResult[]> {
+async function searchKnowledgeBase(query: string, categoryId?: string): Promise<KnowledgeSearchResult[]> {
   try {
     // 增加搜索数量以获得更好的结果（从10增加到20）
-    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=20`);
+    const categoryParam = categoryId ? `&categoryId=${encodeURIComponent(categoryId)}` : '';
+    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=20${categoryParam}`);
     if (!res.ok) return [];
     const data = await res.json();
 
@@ -115,6 +116,45 @@ function decomposeComplexQuery(query: string): string[] {
   return [query];
 }
 
+// 自动检测查询应该搜索的分类
+async function detectCategory(query: string): Promise<string | undefined> {
+  const queryLower = query.toLowerCase();
+
+  // 获取所有分类
+  try {
+    const res = await fetch(`${getApiServerUrl()}/api/categories`);
+    if (!res.ok) return undefined;
+    const data = await res.json();
+    const categories = data.tree || [];
+
+    // 递归查找匹配的分类
+    const findMatchingCategory = (nodes: any[]): string | undefined => {
+      for (const node of nodes) {
+        const nameLower = node.name.toLowerCase();
+
+        // 检查分类名称是否在查询中
+        if (queryLower.includes(nameLower)) {
+          console.log(`[CategoryDetect] 检测到分类: ${node.name} (ID: ${node.id})`);
+          return node.id;
+        }
+
+        // 检查子分类
+        if (node.children && node.children.length > 0) {
+          const childMatch = findMatchingCategory(node.children);
+          if (childMatch) return childMatch;
+        }
+      }
+      return undefined;
+    };
+
+    return findMatchingCategory(categories);
+  } catch (error) {
+    console.error('[CategoryDetect] 分类检测失败:', error);
+    return undefined;
+  }
+}
+
+
 // 合并去重多个检索结果
 function mergeSearchResults(resultsList: KnowledgeSearchResult[][]): KnowledgeSearchResult[] {
   const mergedMap = new Map<string, KnowledgeSearchResult>();
@@ -138,7 +178,7 @@ function mergeSearchResults(resultsList: KnowledgeSearchResult[][]): KnowledgeSe
   return Array.from(mergedMap.values()).sort((a, b) => b.score - a.score);
 }
 
-// 多级检索策略（增强版：支持复杂查询自动拆解）
+// 多级检索策略（增强版：支持复杂查询自动拆解 + 自动分类检测）
 async function multiLevelSearch(query: string): Promise<{
   results: KnowledgeSearchResult[];
   searchLevel: number;
@@ -146,7 +186,13 @@ async function multiLevelSearch(query: string): Promise<{
 }> {
   console.log('[Search] 开始多级检索，查询:', query);
 
-  // 步骤0：智能拆解复杂查询
+  // 步骤0A：自动检测分类
+  const detectedCategoryId = await detectCategory(query);
+  if (detectedCategoryId) {
+    console.log(`[Search] 将限制搜索范围到分类: ${detectedCategoryId}`);
+  }
+
+  // 步骤0B：智能拆解复杂查询
   const subQueries = decomposeComplexQuery(query);
   let allResults: KnowledgeSearchResult[] = [];
 
@@ -157,7 +203,7 @@ async function multiLevelSearch(query: string): Promise<{
 
     for (const subQuery of subQueries) {
       console.log('[Search] 检索子查询:', subQuery);
-      const subResults = await searchKnowledgeBase(subQuery);
+      const subResults = await searchKnowledgeBase(subQuery, detectedCategoryId);
       if (subResults.length > 0) {
         resultsList.push(subResults);
       }
@@ -168,7 +214,7 @@ async function multiLevelSearch(query: string): Promise<{
     console.log('[Search] 多轮检索完成，合并后结果数量:', allResults.length);
   } else {
     // 简单查询：直接检索
-    allResults = await searchKnowledgeBase(query);
+    allResults = await searchKnowledgeBase(query, detectedCategoryId);
   }
 
   // 第一级：标准检索
@@ -213,7 +259,7 @@ async function multiLevelSearch(query: string): Promise<{
   if (keywords.length > 0) {
     console.log('[Search] 提取关键词:', keywords);
     const keywordQuery = keywords.slice(0, 3).join(' '); // 取前3个关键词
-    const keywordResults = await searchKnowledgeBase(keywordQuery);
+    const keywordResults = await searchKnowledgeBase(keywordQuery, detectedCategoryId);
     const keywordMaxScore = keywordResults.reduce((max, r) => Math.max(max, r.score), 0);
     const keywordMaxRerankScore = keywordResults.reduce((max, r) => Math.max(max, r.rerankScore || 0), 0);
     const keywordHasRerank = keywordMaxRerankScore > 0;
@@ -385,7 +431,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : '相关知识库内容（关键词匹配）：';
 
         knowledgeContext = '\n\n' + contextPrefix + '\n' +
-          topReferences.map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n');
+          topReferences.map((r, i) => `[参考${i + 1}] 标题：${r.title || '无标题'}\n内容：${r.content}`).join('\n\n---\n\n');
       } else {
         // 知识库没有相关内容，使用 Gemini
         useGemini = true;
@@ -407,11 +453,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? `你是一个专业的AI助手，名叫"小张"。当前日期是${dateStr}。请用中文回答用户的问题，回答要准确、专业、有条理。如果需要查询实时信息，请使用联网搜索。`
         : `你是一个专业的AI知识助手，名叫"小张"。你的任务是基于知识库内容回答用户问题。
 
-规则：
-1. 优先使用知识库中的内容回答问题
-2. 如果知识库中没有相关内容，可以基于你的知识回答，但要说明这不是来自知识库
-3. 回答要准确、专业、有条理
-4. 使用中文回答${knowledgeContext}`;
+重要规则：
+1. **必须严格基于下方提供的参考文档内容回答问题**
+2. 回答中的命令、配置、技术细节必须来自参考文档，不要编造或使用你自己的知识
+3. 如果参考文档中没有相关内容，明确告知用户"知识库中暂无相关信息"
+4. 回答要准确、专业、有条理
+5. 使用中文回答
+${knowledgeContext}`;
 
       // Use backend proxy to avoid CORS
       const response = await fetch(`${getApiServerUrl()}/api/chat`, {

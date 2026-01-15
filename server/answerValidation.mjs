@@ -328,14 +328,18 @@ export function validateAnswerConsistency(answer, references = [], question = ''
     const matchedWords = referenceWords.filter(word => answerNormalized.includes(word));
     const contentMatchRate = referenceWords.length > 0 ? matchedWords.length / referenceWords.length : 0;
 
+    // 改进：考虑回答长度，避免给予过高的置信度
+    const answerLength = answer.trim().length;
+
     if (contentMatchRate > 0.3) {
-      confidenceScore = 0.85; // 高内容匹配度
+      confidenceScore = answerLength > 200 ? 0.85 : 0.75; // 高内容匹配度
       validationMethod = 'content-match-high';
     } else if (contentMatchRate > 0.1) {
-      confidenceScore = 0.7; // 中等内容匹配度
+      confidenceScore = answerLength > 200 ? 0.7 : 0.6; // 中等内容匹配度
       validationMethod = 'content-match-medium';
     } else {
-      confidenceScore = 0.5; // 低内容匹配度
+      // 低匹配度：可能是幻觉回答
+      confidenceScore = answerLength > 200 ? 0.5 : 0.4; // 低内容匹配度
       validationMethod = 'content-match-low';
     }
   } else {

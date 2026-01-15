@@ -701,6 +701,15 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     if (!file.endsWith('.json')) continue;
     const docId = file.replace('.json', '');
     const doc = docMap.get(docId);
+
+    // 分类过滤：如果指定了分类，只处理匹配分类的文档
+    if (categoryIds && categoryIds.length > 0 && doc) {
+      const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
+      if (!categoryIds.includes(docCatId)) {
+        continue; // 跳过不匹配的分类
+      }
+    }
+
     let filenameScoreBonus = 0;
     let categoryScoreBonus = 0;
 
@@ -710,12 +719,9 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
         if (filenameLower.includes(word)) filenameScoreBonus += 1;
       }
 
-      // 分类优先加分：如果指定了分类，匹配分类的文档获得加分
+      // 分类匹配加分（现在只有匹配的文档会走到这里）
       if (categoryIds && categoryIds.length > 0) {
-        const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
-        if (categoryIds.includes(docCatId)) {
-          categoryScoreBonus = 6; // 分类匹配加分
-        }
+        categoryScoreBonus = 6; // 分类匹配加分
       }
     }
 
@@ -891,6 +897,14 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
     const docId = file.replace('.json', '');
     const doc = docMap.get(docId);
 
+    // 分类过滤：如果指定了分类，只处理匹配分类的文档
+    if (categoryIds && categoryIds.length > 0 && doc) {
+      const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
+      if (!categoryIds.includes(docCatId)) {
+        continue; // 跳过不匹配的分类
+      }
+    }
+
     const chunks = await getChunksFromFile(file);
 
     for (const chunk of chunks) {
@@ -913,12 +927,9 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
 
         let score = queryNorm > 0 && chunkNorm > 0 ? dot / (queryNorm * chunkNorm) : 0;
 
-        // 分类优先加分：如果指定了分类，匹配分类的结果获得加分
-        if (categoryIds && categoryIds.length > 0 && doc) {
-          const docCatId = resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId);
-          if (categoryIds.includes(docCatId)) {
-            score += 0.05; // 分类匹配加分（向量分数范围 0-1）
-          }
+        // 分类匹配加分（现在只有匹配的文档会走到这里）
+        if (categoryIds && categoryIds.length > 0) {
+          score += 0.05; // 分类匹配加分（向量分数范围 0-1）
         }
 
         // 只保留相似度足够的结果

@@ -627,8 +627,12 @@ const ChatInterface: React.FC = () => {
                 const referenceBadgeEntries = Object.entries(referenceHighlightMap);
                 const referenceLookup = new Map<string, (typeof referenceDocuments)[number]>();
                 referenceDocuments.forEach((ref, idx) => {
-                  const key = ref.id || `idx-${idx}`;
-                  referenceLookup.set(key, ref);
+                  // 添加多个键来确保匹配：原始ID、索引形式、ref-索引形式
+                  if (ref.id) {
+                    referenceLookup.set(ref.id, ref);
+                  }
+                  referenceLookup.set(`idx-${idx}`, ref);
+                  referenceLookup.set(`ref-${idx}`, ref);
                 });
                 const hasReferenceBadges = referenceBadgeEntries.length > 0;
 
