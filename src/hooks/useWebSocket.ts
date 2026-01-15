@@ -9,21 +9,48 @@ interface WebSocketMessage {
 export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const isUnmountedRef = useRef(false);
+  const pingIntervalRef = useRef<NodeJS.Timeout>();
+  const pongTimeoutRef = useRef<NodeJS.Timeout>();
 
   const connect = useCallback(() => {
+    if (isUnmountedRef.current) return;
+
     const apiUrl = getApiServerUrl();
-    const wsUrl = apiUrl.replace(/^http/, 'ws');
+    const wsUrl = apiUrl.replace(/^https?/, (match) => match === 'https' ? 'wss' : 'ws');
 
     try {
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         console.log('[WebSocket] 已连接');
+
+        // Start heartbeat
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+
+            // Expect pong within 5 seconds
+            pongTimeoutRef.current = setTimeout(() => {
+              console.log('[WebSocket] 心跳超时，重连...');
+              ws.close();
+            }, 5000);
+          }
+        }, 30000);
       };
 
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+
+          // Handle pong response
+          if (message.type === 'pong') {
+            if (pongTimeoutRef.current) {
+              clearTimeout(pongTimeoutRef.current);
+            }
+            return;
+          }
+
           onMessage(message);
         } catch (error) {
           console.error('[WebSocket] 解析消息失败:', error);
@@ -36,13 +63,26 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
 
       ws.onclose = () => {
         console.log('[WebSocket] 已断开，5秒后重连...');
-        reconnectTimeoutRef.current = setTimeout(connect, 5000);
+
+        // Clear heartbeat timers
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        if (pongTimeoutRef.current) {
+          clearTimeout(pongTimeoutRef.current);
+        }
+
+        if (!isUnmountedRef.current) {
+          reconnectTimeoutRef.current = setTimeout(connect, 5000);
+        }
       };
 
       wsRef.current = ws;
     } catch (error) {
       console.error('[WebSocket] 连接失败:', error);
-      reconnectTimeoutRef.current = setTimeout(connect, 5000);
+      if (!isUnmountedRef.current) {
+        reconnectTimeoutRef.current = setTimeout(connect, 5000);
+      }
     }
   }, [onMessage]);
 
@@ -50,8 +90,15 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
     connect();
 
     return () => {
+      isUnmountedRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+      if (pongTimeoutRef.current) {
+        clearTimeout(pongTimeoutRef.current);
       }
       if (wsRef.current) {
         wsRef.current.close();

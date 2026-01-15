@@ -71,30 +71,41 @@ export async function getDocument(documentId) {
 }
 
 export async function createDocument(documentData) {
-  const documents = await getAllDocuments();
-  const newDocument = {
-    userId: documentData.userId || 'shared',
-    ...documentData,
-    id: documentData.id || `doc-${Date.now()}`,
-    uploadedAt: documentData.uploadedAt || new Date().toISOString()
-  };
-  documents.push(newDocument);
-  await writeJSON(DOCUMENTS_FILE, documents);
-  if (searchCacheInvalidator) searchCacheInvalidator('createDocument');
-  return newDocument;
+  const release = await acquireWriteLock(DOCUMENTS_FILE);
+  try {
+    const documents = await getAllDocuments();
+    const newDocument = {
+      userId: documentData.userId || 'shared',
+      ...documentData,
+      id: documentData.id || `doc-${Date.now()}`,
+      uploadedAt: documentData.uploadedAt || new Date().toISOString()
+    };
+    documents.push(newDocument);
+    await writeJSON(DOCUMENTS_FILE, documents);
+    if (searchCacheInvalidator) searchCacheInvalidator('createDocument');
+    return newDocument;
+  } finally {
+    release();
+  }
 }
 
 export async function updateDocument(documentId, updates) {
-  const documents = await getAllDocuments();
-  const index = documents.findIndex(d => d.id === documentId);
-  if (index === -1) return null;
-  documents[index] = { ...documents[index], ...updates };
-  await writeJSON(DOCUMENTS_FILE, documents);
-  if (searchCacheInvalidator) searchCacheInvalidator('updateDocument');
-  return documents[index];
+  const release = await acquireWriteLock(DOCUMENTS_FILE);
+  try {
+    const documents = await getAllDocuments();
+    const index = documents.findIndex(d => d.id === documentId);
+    if (index === -1) return null;
+    documents[index] = { ...documents[index], ...updates };
+    await writeJSON(DOCUMENTS_FILE, documents);
+    if (searchCacheInvalidator) searchCacheInvalidator('updateDocument');
+    return documents[index];
+  } finally {
+    release();
+  }
 }
 
 export async function deleteDocument(documentId) {
+  const release = await acquireWriteLock(DOCUMENTS_FILE);
   try {
     const documents = await getAllDocuments();
     const filtered = documents.filter(d => d.id !== documentId);
@@ -111,6 +122,8 @@ export async function deleteDocument(documentId) {
   } catch (error) {
     console.error(`[storage] 删除文档失败:`, error);
     throw error;
+  } finally {
+    release();
   }
 }
 
@@ -617,7 +630,72 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
   const results = [];
 
-  // Pre-compile word patterns for faster matching if needed, but includes is often faster for simple strings
+  // 优化：提前计算 intent 相关的正则表达式
+  const intentPatterns = {
+    command: intent.isCommand ? /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/ : null,
+    concept: intent.isConcept ? /\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/ : null
+  };
+
+  const intentKeywords = {
+    command: intent.isCommand ? ['nv config', 'nv show', 'nv set', '```'] : [],
+    troubleshoot: intent.isTroubleshooting ? ['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'] : []
+  };
+
+  // 优化：使用 MinHeap 来维护 top-k 结果
+  class MinHeap {
+    constructor(maxSize) {
+      this.maxSize = maxSize;
+      this.heap = [];
+    }
+
+    push(item) {
+      if (this.heap.length < this.maxSize) {
+        this.heap.push(item);
+        this._heapifyUp(this.heap.length - 1);
+      } else if (item.score > this.heap[0].score) {
+        this.heap[0] = item;
+        this._heapifyDown(0);
+      }
+    }
+
+    toSortedArray() {
+      return this.heap.sort((a, b) => b.score - a.score);
+    }
+
+    _heapifyUp(index) {
+      while (index > 0) {
+        const parentIndex = Math.floor((index - 1) / 2);
+        if (this.heap[index].score >= this.heap[parentIndex].score) break;
+        [this.heap[index], this.heap[parentIndex]] = [this.heap[parentIndex], this.heap[index]];
+        index = parentIndex;
+      }
+    }
+
+    _heapifyDown(index) {
+      while (true) {
+        let smallest = index;
+        const left = 2 * index + 1;
+        const right = 2 * index + 2;
+
+        if (left < this.heap.length && this.heap[left].score < this.heap[smallest].score) {
+          smallest = left;
+        }
+        if (right < this.heap.length && this.heap[right].score < this.heap[smallest].score) {
+          smallest = right;
+        }
+        if (smallest === index) break;
+
+        [this.heap[index], this.heap[smallest]] = [this.heap[smallest], this.heap[index]];
+        index = smallest;
+      }
+    }
+
+    size() {
+      return this.heap.length;
+    }
+  }
+
+  const topResults = new MinHeap(limit * 3);
 
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
@@ -654,10 +732,11 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
       if (hasExactMatch) score += 10;
 
+      // 优化：批量计算词频，减少字符串操作
       for (const word of expandedQueryWords) {
         if (!word) continue;
 
-        // Use a more efficient way to count occurrences without creating arrays
+        // 优化：使用更高效的计数方法
         let count = 0;
         let pos = contentLower.indexOf(word);
         while (pos !== -1) {
@@ -682,13 +761,12 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
       score += docScoreBonus;
 
       if (score > 2) {
+        // 优化：使用预编译的模式和关键词列表
         if (intent.isCommand) {
-          const hasCommandKeywords = contentLower.includes('nv config') ||
-            contentLower.includes('nv show') ||
-            contentLower.includes('nv set') ||
-            /(nv|show|netq|vtysh)\s+(config|show|ip|interface|platform)/.test(contentLower);
+          const hasCommandKeywords = intentKeywords.command.some(kw => contentLower.includes(kw)) ||
+                                     (intentPatterns.command && intentPatterns.command.test(contentLower));
 
-          if (hasCommandKeywords || contentLower.includes('```')) {
+          if (hasCommandKeywords) {
             score += 10;
             if ((queryLower.includes('show') || queryLower.includes('显示')) && contentLower.includes('show')) score += 5;
             if ((queryLower.includes('config') || queryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
@@ -698,27 +776,22 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
         }
 
         if (intent.isConcept) {
-          if (/\sis a\s|\srefers to\s|\sdescribes\s|是.*(?:一种|一个|用于)|指的是|定义为/.test(contentLower)) score += 15;
+          if (intentPatterns.concept && intentPatterns.concept.test(contentLower)) score += 15;
           if (contentLower.startsWith('#')) score += 10;
         }
 
         if (intent.isTroubleshooting) {
-          if (['error', 'fail', 'failure', 'down', 'drop', 'discard', 'troubleshoot', 'debug', 'log', 'problem', 'issue'].some(t => contentLower.includes(t))) score += 15;
+          if (intentKeywords.troubleshoot.some(t => contentLower.includes(t))) score += 15;
         }
       }
 
       if (score > 0) {
-        results.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
+        topResults.push({ chunk: { ...chunk, score, debug_intent: intent }, score });
       }
-    }
-
-    if (results.length > limit * 50) {
-      results.sort((a, b) => b.score - a.score);
-      results.length = limit * 25;
     }
   }
 
-  return results.sort((a, b) => b.score - a.score).slice(0, limit).map(r => r.chunk);
+  return topResults.toSortedArray().slice(0, limit).map(r => r.chunk);
 }
 
 function cosine(a, b) {
@@ -736,7 +809,6 @@ function cosine(a, b) {
 export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds = null) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
-  let topResults = [];
   let mismatchCount = 0;
   let totalEmbeddings = 0;
   let mismatchExample = null;
@@ -753,7 +825,67 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
   const categoryNameToId = new Map();
   collectCategoryMaps(categoriesData.tree || [], categoryIdSet, categoryNameToId);
 
-  // 第一步：从所有文件中收集所有chunks
+  // 优化：使用 MinHeap 来维护 top-k 结果，避免存储所有结果
+  class MinHeap {
+    constructor(maxSize, compareFn) {
+      this.maxSize = maxSize;
+      this.heap = [];
+      this.compareFn = compareFn;
+    }
+
+    push(item) {
+      if (this.heap.length < this.maxSize) {
+        this.heap.push(item);
+        this._heapifyUp(this.heap.length - 1);
+      } else if (this.compareFn(item, this.heap[0]) > 0) {
+        this.heap[0] = item;
+        this._heapifyDown(0);
+      }
+    }
+
+    toSortedArray() {
+      return this.heap.sort((a, b) => this.compareFn(b, a));
+    }
+
+    _heapifyUp(index) {
+      while (index > 0) {
+        const parentIndex = Math.floor((index - 1) / 2);
+        if (this.compareFn(this.heap[index], this.heap[parentIndex]) >= 0) break;
+        [this.heap[index], this.heap[parentIndex]] = [this.heap[parentIndex], this.heap[index]];
+        index = parentIndex;
+      }
+    }
+
+    _heapifyDown(index) {
+      while (true) {
+        let smallest = index;
+        const left = 2 * index + 1;
+        const right = 2 * index + 2;
+
+        if (left < this.heap.length && this.compareFn(this.heap[left], this.heap[smallest]) < 0) {
+          smallest = left;
+        }
+        if (right < this.heap.length && this.compareFn(this.heap[right], this.heap[smallest]) < 0) {
+          smallest = right;
+        }
+        if (smallest === index) break;
+
+        [this.heap[index], this.heap[smallest]] = [this.heap[smallest], this.heap[index]];
+        index = smallest;
+      }
+    }
+  }
+
+  const topResults = new MinHeap(limit * 2, (a, b) => a.score - b.score);
+
+  // 预计算查询向量的范数（优化）
+  let queryNorm = 0;
+  for (let i = 0; i < queryEmbedding.length; i++) {
+    queryNorm += queryEmbedding[i] * queryEmbedding[i];
+  }
+  queryNorm = Math.sqrt(queryNorm);
+
+  // 第一步：从所有文件中收集top-k chunks
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const docId = file.replace('.json', '');
@@ -770,7 +902,16 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
           continue;
         }
 
-        let score = cosine(queryEmbedding, chunk.embedding);
+        // 优化的余弦相似度计算（使用预计算的查询范数）
+        let dot = 0;
+        let chunkNorm = 0;
+        for (let i = 0; i < queryEmbedding.length; i++) {
+          dot += queryEmbedding[i] * chunk.embedding[i];
+          chunkNorm += chunk.embedding[i] * chunk.embedding[i];
+        }
+        chunkNorm = Math.sqrt(chunkNorm);
+
+        let score = queryNorm > 0 && chunkNorm > 0 ? dot / (queryNorm * chunkNorm) : 0;
 
         // 分类优先加分：如果指定了分类，匹配分类的结果获得加分
         if (categoryIds && categoryIds.length > 0 && doc) {
@@ -798,9 +939,8 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
     console.warn(`[vectorSearch] ${severity} embedding dimension mismatch: query=${queryEmbedding.length}${detail}, skipped=${mismatchSummary}. Consider regenerating embeddings.`);
   }
 
-  // 第二步：排序并返回前limit个结果
-  // 注意：不在循环中进行剪枝，而是在最后统一排序
-  return topResults.sort((a, b) => b.score - a.score).slice(0, limit);
+  // 第二步：获取排序后的top-k结果
+  return topResults.toSortedArray().slice(0, limit);
 }
 
 // 搜索特定模式的块 (不加载全部内容到内存)
@@ -861,18 +1001,23 @@ export async function getApiKey(provider) {
 
 export async function addQueryLog(query, responseTime = 0) {
   await initStorage();
-  const logs = await readJSON(QUERY_LOGS_FILE, []);
-  logs.push({
-    id: `log-${Date.now()}`,
-    query,
-    responseTime,
-    timestamp: new Date().toISOString()
-  });
-  // 只保留最近 1000 条日志
-  if (logs.length > 1000) {
-    logs.splice(0, logs.length - 1000);
+  const release = await acquireWriteLock(QUERY_LOGS_FILE);
+  try {
+    const logs = await readJSON(QUERY_LOGS_FILE, []);
+    logs.push({
+      id: `log-${Date.now()}`,
+      query,
+      responseTime,
+      timestamp: new Date().toISOString()
+    });
+    // 只保留最近 1000 条日志
+    if (logs.length > 1000) {
+      logs.splice(0, logs.length - 1000);
+    }
+    await writeJSON(QUERY_LOGS_FILE, logs);
+  } finally {
+    release();
   }
-  await writeJSON(QUERY_LOGS_FILE, logs);
 }
 
 export async function getQueryStats() {
@@ -927,19 +1072,24 @@ export async function getQueryStats() {
 
 export async function addFeedbackEntry(entry) {
   await initStorage();
-  const feedback = await readJSON(FEEDBACK_FILE, []);
-  feedback.push(entry);
-  if (feedback.length > 2000) {
-    feedback.splice(0, feedback.length - 2000);
-  }
-  await writeJSON(FEEDBACK_FILE, feedback);
+  const release = await acquireWriteLock(FEEDBACK_FILE);
+  try {
+    const feedback = await readJSON(FEEDBACK_FILE, []);
+    feedback.push(entry);
+    if (feedback.length > 2000) {
+      feedback.splice(0, feedback.length - 2000);
+    }
+    await writeJSON(FEEDBACK_FILE, feedback);
 
-  // 负样本学习：如果是负面反馈，记录(query, documentId)对
-  if (entry.verdict === 'down' && entry.question && entry.metadata?.references) {
-    await recordNegativeSample(entry.question, entry.metadata.references);
-  }
+    // 负样本学习：如果是负面反馈，记录(query, documentId)对
+    if (entry.verdict === 'down' && entry.question && entry.metadata?.references) {
+      await recordNegativeSample(entry.question, entry.metadata.references);
+    }
 
-  return entry;
+    return entry;
+  } finally {
+    release();
+  }
 }
 
 export async function getFeedbackMetrics() {
@@ -974,27 +1124,32 @@ const NEGATIVE_SAMPLES_FILE = path.join(DATA_DIR, 'negative_samples.json');
  * @param {Array} references - 参考文档列表
  */
 async function recordNegativeSample(query, references) {
-  const negativeSamples = await readJSON(NEGATIVE_SAMPLES_FILE, {});
+  const release = await acquireWriteLock(NEGATIVE_SAMPLES_FILE);
+  try {
+    const negativeSamples = await readJSON(NEGATIVE_SAMPLES_FILE, {});
 
-  // 规范化query（小写、去空格）
-  const normalizedQuery = query.toLowerCase().trim();
+    // 规范化query（小写、去空格）
+    const normalizedQuery = query.toLowerCase().trim();
 
-  if (!negativeSamples[normalizedQuery]) {
-    negativeSamples[normalizedQuery] = {};
-  }
+    if (!negativeSamples[normalizedQuery]) {
+      negativeSamples[normalizedQuery] = {};
+    }
 
-  // 记录每个参考文档的负反馈次数
-  if (Array.isArray(references)) {
-    for (const ref of references) {
-      const docId = ref.documentId || ref.id;
-      if (docId) {
-        negativeSamples[normalizedQuery][docId] = (negativeSamples[normalizedQuery][docId] || 0) + 1;
+    // 记录每个参考文档的负反馈次数
+    if (Array.isArray(references)) {
+      for (const ref of references) {
+        const docId = ref.documentId || ref.id;
+        if (docId) {
+          negativeSamples[normalizedQuery][docId] = (negativeSamples[normalizedQuery][docId] || 0) + 1;
+        }
       }
     }
-  }
 
-  await writeJSON(NEGATIVE_SAMPLES_FILE, negativeSamples);
-  console.log(`[NegativeSample] 已记录负样本: query="${normalizedQuery}", docs=${Object.keys(negativeSamples[normalizedQuery]).length}`);
+    await writeJSON(NEGATIVE_SAMPLES_FILE, negativeSamples);
+    console.log(`[NegativeSample] 已记录负样本: query="${normalizedQuery}", docs=${Object.keys(negativeSamples[normalizedQuery]).length}`);
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -1059,114 +1214,129 @@ export async function saveCategories(categories) {
 }
 
 export async function addCategory(parentId, category) {
-  const categories = await getCategories();
-  const newCat = {
-    id: `cat-${Date.now()}`,
-    name: category.name,
-    icon: category.icon || 'folder',
-    children: []
-  };
-
-  if (!parentId) {
-    categories.tree.push(newCat);
-  } else {
-    const addToParent = (nodes) => {
-      for (const node of nodes) {
-        if (node.id === parentId) {
-          node.children = node.children || [];
-          node.children.push(newCat);
-          return true;
-        }
-        if (node.children && addToParent(node.children)) return true;
-      }
-      return false;
+  const release = await acquireWriteLock(CATEGORIES_FILE);
+  try {
+    const categories = await getCategories();
+    const newCat = {
+      id: `cat-${Date.now()}`,
+      name: category.name,
+      icon: category.icon || 'folder',
+      children: []
     };
-    addToParent(categories.tree);
-  }
 
-  await saveCategories(categories);
-  if (searchCacheInvalidator) searchCacheInvalidator('addCategory');
-  return newCat;
+    if (!parentId) {
+      categories.tree.push(newCat);
+    } else {
+      const addToParent = (nodes) => {
+        for (const node of nodes) {
+          if (node.id === parentId) {
+            node.children = node.children || [];
+            node.children.push(newCat);
+            return true;
+          }
+          if (node.children && addToParent(node.children)) return true;
+        }
+        return false;
+      };
+      addToParent(categories.tree);
+    }
+
+    await saveCategories(categories);
+    if (searchCacheInvalidator) searchCacheInvalidator('addCategory');
+    return newCat;
+  } finally {
+    release();
+  }
 }
 
 export async function updateCategory(categoryId, updates) {
-  const categories = await getCategories();
-  let previousName = null;
+  const release = await acquireWriteLock(CATEGORIES_FILE);
+  try {
+    const categories = await getCategories();
+    let previousName = null;
 
-  const update = (nodes) => {
-    for (const node of nodes) {
-      if (node.id === categoryId) {
-        previousName = node.name;
-        Object.assign(node, updates);
-        return true;
+    const update = (nodes) => {
+      for (const node of nodes) {
+        if (node.id === categoryId) {
+          previousName = node.name;
+          Object.assign(node, updates);
+          return true;
+        }
+        if (node.children && update(node.children)) return true;
       }
-      if (node.children && update(node.children)) return true;
+      return false;
+    };
+    update(categories.tree);
+
+    await saveCategories(categories);
+
+    if (previousName) {
+      const documents = await getAllDocuments();
+      const updatedDocuments = documents.map(doc => {
+        const matchesId = doc.categoryId === categoryId;
+        const matchesName = doc.category === previousName;
+        const matchesLegacyId = doc.categoryId === previousName;
+        if (matchesId || matchesName || matchesLegacyId) {
+          return {
+            ...doc,
+            categoryId,
+            category: updates.name || doc.category || previousName
+          };
+        }
+        return doc;
+      });
+      await writeJSON(DOCUMENTS_FILE, updatedDocuments);
     }
-    return false;
-  };
-  update(categories.tree);
 
-  await saveCategories(categories);
-
-  if (previousName) {
-    const documents = await getAllDocuments();
-    const updatedDocuments = documents.map(doc => {
-      const matchesId = doc.categoryId === categoryId;
-      const matchesName = doc.category === previousName;
-      const matchesLegacyId = doc.categoryId === previousName;
-      if (matchesId || matchesName || matchesLegacyId) {
-        return {
-          ...doc,
-          categoryId,
-          category: updates.name || doc.category || previousName
-        };
-      }
-      return doc;
-    });
-    await writeJSON(DOCUMENTS_FILE, updatedDocuments);
+    if (searchCacheInvalidator) searchCacheInvalidator('updateCategory');
+    return categories;
+  } finally {
+    release();
   }
-
-  if (searchCacheInvalidator) searchCacheInvalidator('updateCategory');
-  return categories;
 }
 
 export async function deleteCategory(categoryId) {
   if (categoryId === 'default') return false;
 
-  const categories = await getCategories();
-  let removedName = null;
+  const release = await acquireWriteLock(CATEGORIES_FILE);
+  try {
+    const categories = await getCategories();
+    let removedName = null;
 
-  const remove = (nodes, parent) => {
-    for (let i = 0; i < nodes.length; i++) {
-      if (nodes[i].id === categoryId) {
-        removedName = nodes[i].name;
-        nodes.splice(i, 1);
-        return true;
+    const remove = (nodes, parent) => {
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === categoryId) {
+          removedName = nodes[i].name;
+          nodes.splice(i, 1);
+          return true;
+        }
+        if (nodes[i].children && remove(nodes[i].children, nodes[i])) return true;
       }
-      if (nodes[i].children && remove(nodes[i].children, nodes[i])) return true;
-    }
-    return false;
-  };
-  remove(categories.tree, null);
+      return false;
+    };
+    remove(categories.tree, null);
 
-  await saveCategories(categories);
+    await saveCategories(categories);
 
-  // 将该分类下的文档移到默认分类
-  const documents = await getAllDocuments();
-  const defaultName = DEFAULT_CATEGORIES.tree[0]?.name || '默认分类';
-  const updated = documents.map(doc => {
-    const matchesId = doc.categoryId === categoryId;
-    const matchesName = removedName && doc.category === removedName;
-    const matchesLegacyId = removedName && doc.categoryId === removedName;
-    if (matchesId || matchesName || matchesLegacyId) {
-      return { ...doc, categoryId: 'default', category: defaultName, categoryPath: ['default'] };
-    }
-    return doc;
-  });
-  await writeJSON(DOCUMENTS_FILE, updated);
+    // 将该分类下的文档移到默认分类
+    const documents = await getAllDocuments();
+    const defaultName = DEFAULT_CATEGORIES.tree[0]?.name || '默认分类';
+    const updated = documents.map(doc => {
+      const matchesId = doc.categoryId === categoryId;
+      const matchesName = removedName && doc.category === removedName;
+      const matchesLegacyId = removedName && doc.categoryId === removedName;
+      if (matchesId || matchesName || matchesLegacyId) {
+        return { ...doc, categoryId: 'default', category: defaultName, categoryPath: ['default'] };
+      }
+      return doc;
+    });
+    await writeJSON(DOCUMENTS_FILE, updated);
 
-  if (searchCacheInvalidator) searchCacheInvalidator('deleteCategory');
-  return true;
+    if (searchCacheInvalidator) searchCacheInvalidator('deleteCategory');
+    return true;
+  } finally {
+    release();
+  }
 }
 
 /**

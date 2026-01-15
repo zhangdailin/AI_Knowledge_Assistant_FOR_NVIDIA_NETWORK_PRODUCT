@@ -175,16 +175,18 @@ export function addQueryContext(query, recentQueries = []) {
   // 如果当前查询很短且没有技术术语，尝试添加上下文
   if (query.length < 15 && recentTerms.size > 0) {
     const queryLower = query.toLowerCase();
-    let hasRelevantTerm = false;
-    for (const term of recentTerms) {
+
+    // 检查当前查询是否已经包含任何技术术语
+    let hasAnyTechnicalTerm = false;
+    for (const term of technicalTerms) {
       if (queryLower.includes(term)) {
-        hasRelevantTerm = true;
+        hasAnyTechnicalTerm = true;
         break;
       }
     }
 
-    // 如果当前查询没有明确的技术术语，可能是在延续之前的话题
-    if (!hasRelevantTerm) {
+    // 只有当前查询完全没有技术术语时，才添加上下文
+    if (!hasAnyTechnicalTerm) {
       for (const term of recentTerms) {
         contextualQuery.expanded.push(`${query} ${term}`);
         contextualQuery.expanded.push(`${term} ${query}`);

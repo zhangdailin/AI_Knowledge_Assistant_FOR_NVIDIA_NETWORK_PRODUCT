@@ -94,16 +94,21 @@ const KnowledgeBase: React.FC = () => {
 
   const loadDocuments = useCallback(async () => {
     if (user) {
-      const result = await unifiedStorageManager.getDocumentsWithPagination(user.id, {
-        page: currentPage,
-        limit: pageSize,
-        category: selectedCategoryId || undefined,
-        search: searchTerm || undefined
-      });
-      setDocuments(result.documents);
-      if (result.pagination) {
-        setTotalPages(result.pagination.totalPages);
-        setTotalDocs(result.pagination.total);
+      try {
+        const result = await unifiedStorageManager.getDocumentsWithPagination(user.id, {
+          page: currentPage,
+          limit: pageSize,
+          category: selectedCategoryId || undefined,
+          search: searchTerm || undefined
+        });
+        setDocuments(result.documents);
+        if (result.pagination) {
+          setTotalPages(result.pagination.totalPages);
+          setTotalDocs(result.pagination.total);
+        }
+      } catch (error) {
+        console.error('加载文档失败:', error);
+        // 保持现有文档列表，避免清空
       }
     }
   }, [user, currentPage, selectedCategoryId, searchTerm]);
@@ -114,6 +119,11 @@ const KnowledgeBase: React.FC = () => {
       loadCategories();
     }
   }, [user, loadDocuments, loadCategories]);
+
+  // 当搜索词或分类变化时，重置到第一页
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedCategoryId]);
 
 
 
@@ -151,7 +161,7 @@ const KnowledgeBase: React.FC = () => {
 
   // WebSocket 实时更新
   const handleWebSocketMessage = useCallback((message: any) => {
-    if (message.type === 'document_update' && message.document) {
+    if (message.type === 'document_update' && message.document && typeof message.document === 'object' && message.document.id) {
       setDocuments(prev => {
         const index = prev.findIndex(d => d.id === message.document.id);
         if (index >= 0) {
@@ -422,10 +432,7 @@ const KnowledgeBase: React.FC = () => {
             <CategoryTree
               categories={categories}
               selectedId={selectedCategoryId}
-              onSelect={(id) => {
-                setSelectedCategoryId(id);
-                setCurrentPage(1); // 重置页码
-              }}
+              onSelect={setSelectedCategoryId}
               onAdd={handleAddCategory}
               onUpdate={handleUpdateCategory}
               onDelete={handleDeleteCategory}
@@ -445,10 +452,7 @@ const KnowledgeBase: React.FC = () => {
                     type="text"
                     placeholder="搜索文档..."
                     value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value);
-                      setCurrentPage(1); // 重置页码
-                    }}
+                    onChange={(e) => setSearchTerm(e.target.value)}
                     className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -570,7 +574,17 @@ const KnowledgeBase: React.FC = () => {
               {filteredDocuments.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full py-16 text-gray-400">
                   <FolderOpen className="w-12 h-12 mb-3 opacity-50" />
-                  <p>{searchTerm ? '没有找到匹配的文档' : '暂无文档，请上传'}</p>
+                  {searchTerm || selectedCategoryId ? (
+                    <>
+                      <p className="text-base mb-2">没有找到匹配的文档</p>
+                      <p className="text-sm">尝试调整搜索条件或分类筛选</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-base mb-2">暂无文档</p>
+                      <p className="text-sm">点击上方"上传文档"按钮开始添加</p>
+                    </>
+                  )}
                 </div>
               ) : viewMode === 'table' ? (
                 /* 表格视图 */

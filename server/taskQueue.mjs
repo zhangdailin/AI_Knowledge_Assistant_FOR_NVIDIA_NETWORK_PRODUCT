@@ -78,6 +78,7 @@ export function completeTask(taskId, result = {}) {
     task.updatedAt = new Date().toISOString();
     task.result = result;
   }
+  cleanupOldTasks();
 }
 
 // 任务失败
@@ -88,6 +89,7 @@ export function failTask(taskId, error) {
     task.updatedAt = new Date().toISOString();
     task.error = error instanceof Error ? error.message : String(error);
   }
+  cleanupOldTasks();
 }
 
 // 处理 embedding 生成任务
