@@ -1,0 +1,84 @@
+{
+  "timestamp": "2026-01-14T14:03:01.875Z",
+  "summary": {
+    "total": 12,
+    "successful": 10,
+    "failed": 2,
+    "successRate": 83.3,
+    "avgDuration": 39.25009025000001
+  },
+  "metrics": [
+    {
+      "operation": "存储-创建读取文档",
+      "duration": 17.539624999999944,
+      "success": true,
+      "timestamp": 1768399381402
+    },
+    {
+      "operation": "存储-批量读取",
+      "duration": 4.815208000000041,
+      "success": true,
+      "timestamp": 1768399381407
+    },
+    {
+      "operation": "分块-Markdown文档",
+      "duration": 12.775041999999985,
+      "success": false,
+      "timestamp": 1768399381421
+    },
+    {
+      "operation": "分块-大型文档",
+      "duration": 2.353207999999995,
+      "success": false,
+      "timestamp": 1768399381427
+    },
+    {
+      "operation": "搜索-基本搜索",
+      "duration": 0.11216699999999946,
+      "success": true,
+      "timestamp": 1768399381428
+    },
+    {
+      "operation": "缓存-写入",
+      "duration": 0.0005419999999958236,
+      "success": true,
+      "timestamp": 1768399381428
+    },
+    {
+      "operation": "缓存-读取",
+      "duration": 0.0003330000000119071,
+      "success": true,
+      "timestamp": 1768399381428
+    },
+    {
+      "operation": "缓存-过期处理",
+      "duration": 100,
+      "success": true,
+      "timestamp": 1768399381539
+    },
+    {
+      "operation": "一致性-文档chunks",
+      "duration": 328.940708,
+      "success": true,
+      "timestamp": 1768399381869
+    },
+    {
+      "operation": "错误处理-不存在文档",
+      "duration": 2.6539999999999964,
+      "success": true,
+      "timestamp": 1768399381872
+    },
+    {
+      "operation": "错误处理-无效输入",
+      "duration": 0.31837500000006,
+      "success": true,
+      "timestamp": 1768399381873
+    },
+    {
+      "operation": "并发-读取(10次)",
+      "duration": 1.49187500000005,
+      "success": true,
+      "timestamp": 1768399381874
+    }
+  ]
+}

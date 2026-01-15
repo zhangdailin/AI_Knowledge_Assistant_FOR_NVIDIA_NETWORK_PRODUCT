@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-01-15T02:34:46.402Z",
+  "summary": {
+    "total": 12,
+    "passed": 12,
+    "failed": 0,
+    "passRate": 100,
+    "avgDuration": 195.80492383333333,
+    "maxDuration": 1059.7783339999999,
+    "minDuration": 0.02279199999998127
+  },
+  "results": [
+    {
+      "operation": "存储-文档读取",
+      "duration": 10.298292000000004,
+      "threshold": 100,
+      "passed": true,
+      "timestamp": 1768444484031
+    },
+    {
+      "operation": "存储-文档写入",
+      "duration": 21.601084000000014,
+      "threshold": 200,
+      "passed": true,
+      "timestamp": 1768444484055
+    },
+    {
+      "operation": "缓存-命中",
+      "duration": 0.02279199999998127,
+      "threshold": 10,
+      "passed": true,
+      "timestamp": 1768444484055
+    },
+    {
+      "operation": "分块-中等文档",
+      "duration": 0.10554100000001654,
+      "threshold": 500,
+      "passed": true,
+      "timestamp": 1768444484056
+    },
+    {
+      "operation": "Embedding-单个文本",
+      "duration": 101.02420899999998,
+      "threshold": 500,
+      "passed": true,
+      "timestamp": 1768444484158
+    },
+    {
+      "operation": "Embedding-批量(10个)",
+      "duration": 301.908625,
+      "threshold": 2000,
+      "passed": true,
+      "timestamp": 1768444484460
+    },
+    {
+      "operation": "向量搜索-1000文档",
+      "duration": 0.48937499999999545,
+      "threshold": 1000,
+      "passed": true,
+      "timestamp": 1768444484483
+    },
+    {
+      "operation": "混合检索-完整流程",
+      "duration": 0.1200420000000122,
+      "threshold": 1500,
+      "passed": true,
+      "timestamp": 1768444484483
+    },
+    {
+      "operation": "重排序-20文档",
+      "duration": 201.1868340000001,
+      "threshold": 1000,
+      "passed": true,
+      "timestamp": 1768444484685
+    },
+    {
+      "operation": "知识图谱-实体查询",
+      "duration": 151.57287499999984,
+      "threshold": 800,
+      "passed": true,
+      "timestamp": 1768444484837
+    },
+    {
+      "operation": "完整检索流程",
+      "duration": 1059.7783339999999,
+      "threshold": 3000,
+      "passed": true,
+      "timestamp": 1768444485897
+    },
+    {
+      "operation": "并发查询-10个",
+      "duration": 501.5510830000003,
+      "threshold": 6000,
+      "passed": true,
+      "timestamp": 1768444486401
+    }
+  ],
+  "thresholds": {
+    "EMBEDDING_SINGLE": 500,
+    "EMBEDDING_BATCH": 2000,
+    "VECTOR_SEARCH": 1000,
+    "HYBRID_SEARCH": 1500,
+    "KNOWLEDGE_GRAPH": 800,
+    "RERANK": 1000,
+    "CHUNKING": 500,
+    "STORAGE_READ": 100,
+    "STORAGE_WRITE": 200,
+    "CACHE_HIT": 10,
+    "FULL_RETRIEVAL": 3000
+  }
+}
