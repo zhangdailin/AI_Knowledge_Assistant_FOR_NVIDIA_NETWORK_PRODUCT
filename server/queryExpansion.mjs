@@ -7,6 +7,7 @@
  * 提取查询实体（命令、技术术语等）
  */
 function extractEntities(query) {
+  const safeQuery = typeof query === 'string' ? query : '';
   const entities = {
     commands: [],
     protocols: [],
@@ -14,7 +15,11 @@ function extractEntities(query) {
     objects: []
   };
 
-  const queryLower = query.toLowerCase();
+  if (!safeQuery) {
+    return entities;
+  }
+
+  const queryLower = safeQuery.toLowerCase();
 
   // 命令模式
   const commandPatterns = [
@@ -43,7 +48,7 @@ function extractEntities(query) {
   // 动作词
   const actionKeywords = ['配置', '查看', '检查', '显示', '设置', '删除', '启用', '禁用', '验证', '调试'];
   for (const action of actionKeywords) {
-    if (query.includes(action)) {
+    if (safeQuery.includes(action)) {
       entities.actions.push(action);
     }
   }
@@ -51,7 +56,7 @@ function extractEntities(query) {
   // 对象词
   const objectKeywords = ['接口', '路由', '邻居', '状态', '配置', '日志', '错误', '性能'];
   for (const obj of objectKeywords) {
-    if (query.includes(obj)) {
+    if (safeQuery.includes(obj)) {
       entities.objects.push(obj);
     }
   }
@@ -63,9 +68,14 @@ function extractEntities(query) {
  * 生成查询变体
  */
 export function expandQuery(query) {
-  const variants = [query]; // 原始查询
-  const queryLower = query.toLowerCase();
-  const entities = extractEntities(query);
+  const normalizedQuery = typeof query === 'string' ? query : '';
+  const variants = [normalizedQuery]; // 原始查询
+  if (!normalizedQuery) {
+    return variants;
+  }
+
+  const queryLower = normalizedQuery.toLowerCase();
+  const entities = extractEntities(normalizedQuery);
 
   // 1. 中英文互转
   const translations = {
@@ -82,8 +92,8 @@ export function expandQuery(query) {
   };
 
   for (const [cn, en] of Object.entries(translations)) {
-    if (query.includes(cn)) {
-      variants.push(query.replace(new RegExp(cn, 'g'), en));
+    if (normalizedQuery.includes(cn)) {
+      variants.push(normalizedQuery.replace(new RegExp(cn, 'g'), en));
     }
   }
 
@@ -99,13 +109,13 @@ export function expandQuery(query) {
 
   for (const [abbr, full] of Object.entries(abbreviations)) {
     if (queryLower.includes(abbr)) {
-      variants.push(query.replace(new RegExp(abbr, 'gi'), full));
+      variants.push(normalizedQuery.replace(new RegExp(abbr, 'gi'), full));
     }
   }
 
   // 3. 问句转换为陈述句
-  if (query.includes('如何') || query.includes('怎么')) {
-    const withoutHow = query
+  if (normalizedQuery.includes('如何') || normalizedQuery.includes('怎么')) {
+    const withoutHow = normalizedQuery
       .replace(/如何|怎么|怎样/g, '')
       .replace(/？|\?/g, '')
       .trim();
@@ -129,7 +139,7 @@ export function expandQuery(query) {
     const synonyms = actionSynonyms[action];
     if (synonyms) {
       for (const syn of synonyms) {
-        variants.push(query.replace(action, syn));
+        variants.push(normalizedQuery.replace(action, syn));
       }
     }
   }

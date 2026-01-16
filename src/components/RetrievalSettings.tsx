@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Zap, Search, Database, Save, Check, RotateCcw, Info } from 'lucide-react';
+import { Settings, Zap, Search, Database, Save, Check, RotateCcw, Info, Share2 } from 'lucide-react';
 
 import { getApiServerUrl } from '../utils/apiUtils';
 interface RetrievalConfig {
@@ -13,6 +13,13 @@ interface RetrievalConfig {
     vectorWeight: number;
     vectorMinScore: number;
     rerankTopN: number;
+    enableKnowledgeGraph: boolean;
+}
+
+interface Neo4jConfig {
+    uri: string;
+    username: string;
+    password: string;
 }
 
 const defaultConfig: RetrievalConfig = {
@@ -25,12 +32,20 @@ const defaultConfig: RetrievalConfig = {
     keywordWeight: 1.0,
     vectorWeight: 1.0,
     vectorMinScore: 0.2,
-    rerankTopN: 10
+    rerankTopN: 10,
+    enableKnowledgeGraph: true
+};
+
+const defaultNeo4jConfig: Neo4jConfig = {
+    uri: 'bolt://localhost:7687',
+    username: 'neo4j',
+    password: ''
 };
 
 
 export default function RetrievalSettings() {
     const [config, setConfig] = useState<RetrievalConfig>(defaultConfig);
+    const [neo4jConfig, setNeo4jConfig] = useState<Neo4jConfig>(defaultNeo4jConfig);
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
     const [loading, setLoading] = useState(true);
 
@@ -46,6 +61,9 @@ export default function RetrievalSettings() {
                 if (data.settings?.retrieval) {
                     setConfig({ ...defaultConfig, ...data.settings.retrieval });
                 }
+                if (data.settings?.neo4j) {
+                    setNeo4jConfig({ ...defaultNeo4jConfig, ...data.settings.neo4j });
+                }
             }
         } catch (e) {
             console.error('加载检索设置失败:', e);
@@ -60,7 +78,10 @@ export default function RetrievalSettings() {
             await fetch(`${getApiServerUrl()}/api/settings`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ retrieval: config })
+                body: JSON.stringify({
+                    retrieval: config,
+                    neo4j: neo4jConfig
+                })
             });
             setSaveStatus('saved');
             setTimeout(() => setSaveStatus('idle'), 2000);
@@ -73,11 +94,19 @@ export default function RetrievalSettings() {
     const handleReset = () => {
         if (confirm('确定要重置为默认值吗？')) {
             setConfig(defaultConfig);
+            setNeo4jConfig(defaultNeo4jConfig);
         }
     };
 
     const updateConfig = (key: keyof RetrievalConfig, value: number) => {
         setConfig(prev => ({ ...prev, [key]: value }));
+    };
+
+    const updateNeo4jConfig = (key: keyof Neo4jConfig, value: string) => {
+        setNeo4jConfig(prev => ({ ...prev, [key]: value }));
+    };
+    const toggleKnowledgeGraph = () => {
+        setConfig(prev => ({ ...prev, enableKnowledgeGraph: !prev.enableKnowledgeGraph }));
     };
 
     // 配置项组件
@@ -288,6 +317,73 @@ export default function RetrievalSettings() {
                             max={0.8}
                             step={0.05}
                         />
+                    </div>
+                </div>
+
+                {/* 知识图谱 & Neo4j 设置 */}
+                <div className="admin-card p-6 space-y-4">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <Share2 className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div>
+                            <h2 className="text-lg font-semibold text-gray-900">知识图谱 & Neo4j</h2>
+                            <p className="text-sm text-gray-500">配置是否启用知识图谱以及 Neo4j 连接参数</p>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col gap-4">
+                        <div className="flex items-start justify-between p-4 admin-card-muted rounded-xl">
+                            <div>
+                                <p className="text-sm font-medium text-gray-900">启用知识图谱增强</p>
+                                <p className="text-xs text-gray-500 mt-1">
+                                    若关闭，则检索流程将使用纯向量/关键词模式。
+                                </p>
+                            </div>
+                            <button
+                                onClick={toggleKnowledgeGraph}
+                                className={`relative inline-flex h-6 w-12 items-center rounded-full transition-colors duration-200 ${config.enableKnowledgeGraph ? 'bg-blue-500' : 'bg-gray-300'
+                                    }`}
+                            >
+                                <span
+                                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-200 ${config.enableKnowledgeGraph ? 'translate-x-6' : 'translate-x-1'
+                                        }`}
+                                />
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-medium text-gray-700">Neo4j URI</label>
+                                <input
+                                    type="text"
+                                    value={neo4jConfig.uri}
+                                    onChange={(e) => updateNeo4jConfig('uri', e.target.value)}
+                                    placeholder="bolt://localhost:7687"
+                                    className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-sm"
+                                />
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-medium text-gray-700">用户名</label>
+                                <input
+                                    type="text"
+                                    value={neo4jConfig.username}
+                                    onChange={(e) => updateNeo4jConfig('username', e.target.value)}
+                                    placeholder="neo4j"
+                                    className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-sm"
+                                />
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-medium text-gray-700">密码</label>
+                                <input
+                                    type="password"
+                                    value={neo4jConfig.password}
+                                    onChange={(e) => updateNeo4jConfig('password', e.target.value)}
+                                    placeholder="输入连接密码"
+                                    className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-sm"
+                                />
+                            </div>
+                        </div>
                     </div>
                 </div>
 

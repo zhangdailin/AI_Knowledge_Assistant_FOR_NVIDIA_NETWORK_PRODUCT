@@ -3210,7 +3210,7 @@ app.post('/api/knowledge-graph/init', asyncHandler(async (req, res) => {
 // 构建知识图谱（处理所有文档或指定文档）
 app.post('/api/knowledge-graph/build', asyncHandler(async (req, res) => {
   try {
-    const { documentIds } = req.body;
+    const { documentIds } = req.body || {};
     const stats = await buildKnowledgeGraphFromDocuments(documentIds);
     res.json({ ok: true, stats });
   } catch (error) {

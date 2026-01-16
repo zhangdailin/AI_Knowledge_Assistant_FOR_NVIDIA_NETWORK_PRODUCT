@@ -1,6 +1,24 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Upload, File as FileIcon, Search, Trash2, Download, Eye, Plus, FolderOpen, RefreshCw, MoreVertical, FileText, Table, Grid, Move } from 'lucide-react';
+import {
+  Upload,
+  File as FileIcon,
+  Search,
+  Trash2,
+  Download,
+  Eye,
+  Plus,
+  FolderOpen,
+  RefreshCw,
+  MoreVertical,
+  FileText,
+  Table,
+  Grid,
+  Move,
+  Share2,
+  Activity,
+  AlertTriangle
+} from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { unifiedStorageManager, Document } from '../lib/localStorage';
 import { serverStorageManager } from '../lib/serverStorage';
@@ -10,6 +28,21 @@ import CategoryTree from './CategoryTree';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 type ViewMode = 'grid' | 'table';
+type KnowledgeGraphStats = {
+  devices: number;
+  commands: number;
+  parameters: number;
+  protocols: number;
+  relationships: number;
+};
+
+const defaultKgStats: KnowledgeGraphStats = {
+  devices: 0,
+  commands: 0,
+  parameters: 0,
+  protocols: 0,
+  relationships: 0
+};
 
 const getCategoryAndChildrenIds = (categoryId: string, cats: Category[]): string[] => {
   const ids: string[] = [categoryId];
@@ -78,6 +111,12 @@ const KnowledgeBase: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalDocs, setTotalDocs] = useState(0);
+  const [kgStats, setKgStats] = useState<KnowledgeGraphStats>(defaultKgStats);
+  const [kgStatus, setKgStatus] = useState<'idle' | 'active' | 'error'>('idle');
+  const [kgLoading, setKgLoading] = useState(false);
+  const [kgMessage, setKgMessage] = useState('');
+  const [kgLastUpdated, setKgLastUpdated] = useState<Date | null>(null);
+  const [kgAction, setKgAction] = useState<'idle' | 'init' | 'build' | 'refresh'>('idle');
   const pageSize = 50;
 
   const { user } = useAuthStore();
@@ -119,6 +158,44 @@ const KnowledgeBase: React.FC = () => {
       loadCategories();
     }
   }, [user, loadDocuments, loadCategories]);
+
+  const fetchKnowledgeGraphStatus = useCallback(async (markAction: boolean = false) => {
+    if (kgLoading) return;
+    if (markAction) setKgAction('refresh');
+    setKgLoading(true);
+    setKgMessage('');
+    try {
+      const data = await serverStorageManager.getKnowledgeGraphStats();
+      console.log('[KnowledgeBase] 知识图谱状态响应:', data);
+
+      // 检查响应数据结构
+      if (!data || typeof data !== 'object') {
+        throw new Error('无效的响应数据');
+      }
+
+      const stats = data.knowledgeGraph || {};
+      setKgStats({ ...defaultKgStats, ...stats });
+      setKgStatus((data.status as 'active' | 'error') || 'active');
+
+      if (data.error) {
+        setKgMessage(`警告: ${data.error}`);
+      } else {
+        setKgMessage('');
+      }
+      setKgLastUpdated(new Date());
+    } catch (error) {
+      console.error('[KnowledgeBase] 获取知识图谱状态失败:', error);
+      setKgStatus('error');
+      setKgMessage(error instanceof Error ? error.message : '无法获取知识图谱状态');
+    } finally {
+      setKgLoading(false);
+      setKgAction('idle');
+    }
+  }, []); // 移除 kgLoading 依赖，避免无限循环
+
+  useEffect(() => {
+    fetchKnowledgeGraphStatus();
+  }, []); // 只在组件挂载时执行一次
 
   // 当搜索词或分类变化时，重置到第一页
   useEffect(() => {
@@ -175,6 +252,37 @@ const KnowledgeBase: React.FC = () => {
   }, []);
 
   useWebSocket(handleWebSocketMessage);
+
+  const handleInitKnowledgeGraph = async () => {
+    setKgAction('init');
+    setKgMessage('正在初始化知识图谱连接...');
+    try {
+      await serverStorageManager.initKnowledgeGraph();
+      setKgMessage('初始化完成');
+      await fetchKnowledgeGraphStatus();
+    } catch (error) {
+      setKgMessage(error instanceof Error ? error.message : '初始化失败');
+    } finally {
+      setKgAction('idle');
+    }
+  };
+
+  const handleBuildKnowledgeGraph = async () => {
+    if (!window.confirm('确定要手动触发知识图谱构建吗？该操作可能需要一些时间。')) {
+      return;
+    }
+    setKgAction('build');
+    setKgMessage('正在构建知识图谱...');
+    try {
+      await serverStorageManager.buildKnowledgeGraph();
+      setKgMessage('构建任务已启动');
+      await fetchKnowledgeGraphStatus();
+    } catch (error) {
+      setKgMessage(error instanceof Error ? error.message : '构建失败');
+    } finally {
+      setKgAction('idle');
+    }
+  };
 
   const openChunkViewer = async (doc: Document) => {
     try {
@@ -423,6 +531,84 @@ const KnowledgeBase: React.FC = () => {
         <div className="mb-6">
           <h1 className="text-xl font-bold text-gray-900">知识库管理</h1>
           <p className="text-sm text-gray-500 mt-1">上传和管理您的文档资料</p>
+        </div>
+
+        {/* 知识图谱状态 */}
+        <div className="admin-card p-5 mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <Share2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  知识图谱状态
+                  {kgLoading && <RefreshCw className="w-4 h-4 animate-spin text-gray-400" />}
+                </h2>
+                <p className="text-sm text-gray-500">
+                  {kgLastUpdated ? `最近更新：${kgLastUpdated.toLocaleString()}` : '尚未获取最新状态'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className={`px-3 py-1 text-xs font-medium rounded-full ${kgStatus === 'active'
+                  ? 'bg-green-100 text-green-700'
+                  : kgStatus === 'error'
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-gray-100 text-gray-700'
+                  }`}
+              >
+                {kgStatus === 'active' ? '运行中' : kgStatus === 'error' ? '异常' : '待检测'}
+              </span>
+              <button
+                onClick={() => fetchKnowledgeGraphStatus(true)}
+                disabled={kgAction !== 'idle'}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
+              >
+                <RefreshCw className="w-4 h-4" />
+                刷新状态
+              </button>
+              <button
+                onClick={handleInitKnowledgeGraph}
+                disabled={kgAction !== 'idle'}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border border-blue-100 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+              >
+                <Activity className="w-4 h-4" />
+                初始化连接
+              </button>
+              <button
+                onClick={handleBuildKnowledgeGraph}
+                disabled={kgAction !== 'idle'}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Share2 className="w-4 h-4" />
+                手动构建
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-5">
+            {[
+              { label: '设备', key: 'devices' },
+              { label: '命令', key: 'commands' },
+              { label: '参数', key: 'parameters' },
+              { label: '协议', key: 'protocols' },
+              { label: '关系', key: 'relationships' }
+            ].map(item => (
+              <div key={item.key} className="p-3 rounded-xl bg-gray-50">
+                <p className="text-xs text-gray-500">{item.label}</p>
+                <p className="text-xl font-semibold text-gray-900 mt-1">
+                  {kgLoading ? '...' : kgStats[item.key as keyof typeof kgStats] ?? 0}
+                </p>
+              </div>
+            ))}
+          </div>
+          {kgMessage && (
+            <div className={`mt-4 flex items-center gap-2 text-sm ${kgStatus === 'error' ? 'text-red-600' : 'text-gray-600'}`}>
+              <AlertTriangle className="w-4 h-4" />
+              {kgMessage}
+            </div>
+          )}
         </div>
 
         <div className="flex gap-4 h-[calc(100%-80px)]">

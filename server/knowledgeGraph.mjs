@@ -415,6 +415,7 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 
   const session = driver.session();
   try {
+    const safeLimit = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 10));
     const results = [];
 
     // 1. 从查询中提取关键实体
@@ -504,7 +505,7 @@ export async function queryKnowledgeGraph(query, limit = 10) {
         RETURN node, collect(DISTINCT related) as related, score
         ORDER BY score DESC
         LIMIT $limit
-      `, { query: query, limit: limit });
+      `, { query: query, limit: neo4j.int(safeLimit) });
 
       for (const record of searchResult.records) {
         results.push({
@@ -516,7 +517,7 @@ export async function queryKnowledgeGraph(query, limit = 10) {
       }
     }
 
-    return results.slice(0, limit);
+    return results.slice(0, safeLimit);
   } catch (error) {
     console.error('[KnowledgeGraph] 查询失败:', error.message);
     return [];
@@ -540,7 +541,15 @@ export async function processDocument(documentId) {
     let totalEntities = { devices: 0, commands: 0, parameters: 0, protocols: 0 };
 
     for (const chunk of chunks) {
-      const entities = extractEntities(chunk.text, {
+      const chunkText = typeof chunk.text === 'string'
+        ? chunk.text
+        : (typeof chunk.content === 'string' ? chunk.content : '');
+
+      if (!chunkText || !chunkText.trim()) {
+        continue;
+      }
+
+      const entities = extractEntities(chunkText, {
         documentId: documentId,
         chunkId: chunk.id
       });

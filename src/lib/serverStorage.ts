@@ -213,6 +213,56 @@ class ServerStorageManager {
     }
   }
 
+  // 知识图谱
+  async getKnowledgeGraphStats(): Promise<{ knowledgeGraph: Record<string, number>; status: string; error?: string }> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/knowledge-graph/stats`);
+      if (!res.ok) {
+        throw new Error(`获取知识图谱状态失败: ${res.statusText}`);
+      }
+      const data = await res.json();
+      return data;
+    } catch (error) {
+      console.error('获取知识图谱状态失败:', error);
+      throw error;
+    }
+  }
+
+  async initKnowledgeGraph(): Promise<{ ok: boolean; message?: string }> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/knowledge-graph/init`, {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `初始化知识图谱失败: ${res.statusText}`);
+      }
+      return await res.json();
+    } catch (error) {
+      console.error('初始化知识图谱失败:', error);
+      throw error;
+    }
+  }
+
+  async buildKnowledgeGraph(documentId?: string): Promise<{ ok: boolean; message?: string }> {
+    const endpoint = documentId
+      ? `/api/knowledge-graph/process/${documentId}`
+      : '/api/knowledge-graph/build';
+    try {
+      const res = await fetch(`${this.apiUrl}${endpoint}`, {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `构建知识图谱失败: ${res.statusText}`);
+      }
+      return await res.json();
+    } catch (error) {
+      console.error('构建知识图谱失败:', error);
+      throw error;
+    }
+  }
+
   async uploadDocument(formData: FormData): Promise<Document> {
     const url = getApiServerUrl();
     try {

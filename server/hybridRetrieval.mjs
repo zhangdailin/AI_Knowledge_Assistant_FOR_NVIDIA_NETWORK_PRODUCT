@@ -112,18 +112,25 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
   // 1. 提取知识图谱中的关键实体
   const kgEntities = new Set();
   for (const result of kgResults) {
-    if (result.type === 'device' && result.device) {
+    if (result.type === 'device' && result.device?.name) {
       kgEntities.add(result.device.name.toLowerCase());
-    } else if (result.type === 'command' && result.command) {
+    } else if (result.type === 'command' && result.command?.name) {
       kgEntities.add(result.command.name.toLowerCase());
-    } else if (result.type === 'protocol' && result.protocol) {
+    } else if (result.type === 'protocol' && result.protocol?.name) {
       kgEntities.add(result.protocol.name.toLowerCase());
     }
   }
 
   // 2. 为包含知识图谱实体的结果提升分数
   for (const result of enhancedResults) {
-    const textLower = result.text.toLowerCase();
+    const textContent = typeof result.text === 'string'
+      ? result.text
+      : (typeof result.content === 'string' ? result.content : '');
+    if (!textContent) {
+      continue;
+    }
+
+    const textLower = textContent.toLowerCase();
     let entityMatchCount = 0;
 
     for (const entity of kgEntities) {
@@ -141,21 +148,7 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
     }
   }
 
-  // 3. 添加知识图谱上下文作为额外的结果项（如果有价值）
-  if (kgContext && kgContext.length > 50) {
-    enhancedResults.push({
-      text: `【知识图谱相关信息】\n${kgContext}`,
-      score: kgWeight * 0.5,
-      source: 'knowledge_graph',
-      isKnowledgeGraph: true,
-      metadata: {
-        type: 'knowledge_graph_context',
-        resultCount: kgResults.length
-      }
-    });
-  }
-
-  // 4. 重新排序结果
+  // 3. 重新排序结果
   enhancedResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   return enhancedResults;
