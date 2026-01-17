@@ -45,6 +45,22 @@ describe('Knowledge Graph Module', () => {
       expect(entities.vendors.some(v => v.name === 'Acme Networks')).toBe(true);
     });
 
+    it('should honor allowHeuristicVendors=false when vendorName is provided', () => {
+      const text = `
+        Vendor: Huron Systems
+        The Acme Networks platform is deployed in the lab.
+      `;
+
+      const entities = extractEntities(text, {
+        vendorName: 'NVIDIA',
+        allowHeuristicVendors: false,
+        source: 'test'
+      });
+
+      expect(entities.vendors).toHaveLength(1);
+      expect(entities.vendors[0].name).toBe('NVIDIA');
+    });
+
     it('should extract command entities (nv set, ip route)', () => {
       const text = `
         Run nv set interface eth0 to configure the interface.

@@ -274,6 +274,7 @@ function extractVendorCandidates(text, options = {}) {
   const textLower = text.toLowerCase();
   const vendorNames = Array.isArray(options.vendorNames) ? options.vendorNames : [];
   const explicitVendor = options.vendorName;
+  const allowHeuristic = options.allowHeuristic !== false;
 
   const addCandidate = (name) => {
     const cleanName = normalizeVendorName(name);
@@ -297,53 +298,55 @@ function extractVendorCandidates(text, options = {}) {
     }
   }
 
-  const vendorLabelRegex = new RegExp(
-    `(?:${VENDOR_LABEL_TERMS.join('|')})\\s*[:：]?\\s*([A-Za-z0-9&.\\- ]{2,40}|[\\u4e00-\\u9fa5]{2,10})`,
-    'gi'
-  );
-  for (const match of text.matchAll(vendorLabelRegex)) {
-    addCandidate(match[1]);
-  }
-
-  const suffixPattern = new RegExp(
-    `\\b([A-Z][A-Za-z0-9&.\\-]{1,}(?:\\s+[A-Z][A-Za-z0-9&.\\-]{1,}){0,2})\\s+(${VENDOR_SUFFIXES.join('|')})\\b`,
-    'g'
-  );
-  for (const match of text.matchAll(suffixPattern)) {
-    const phrase = normalizeWhitespace(match[1]);
-    const suffix = match[2];
-    const candidate = VENDOR_STRIP_SUFFIXES.has(suffix) ? phrase : `${phrase} ${suffix}`;
-    addCandidate(candidate);
-  }
-
-  for (const match of text.matchAll(/\b[A-Z][a-z][A-Za-z0-9&.\-]{2,}\b/g)) {
-    const token = match[0];
-    if (isStopwordVendor(token)) continue;
-    if (typeof match.index === 'number') {
-      const windowStart = Math.max(0, match.index - 20);
-      const windowEnd = Math.min(textLower.length, match.index + token.length + 20);
-      const windowText = textLower.slice(windowStart, windowEnd);
-      const hasContext = VENDOR_CONTEXT_TERMS.some(term => windowText.includes(term));
-      if (!hasContext) continue;
-    } else {
-      continue;
+  if (allowHeuristic) {
+    const vendorLabelRegex = new RegExp(
+      `(?:${VENDOR_LABEL_TERMS.join('|')})\\s*[:：]?\\s*([A-Za-z0-9&.\\- ]{2,40}|[\\u4e00-\\u9fa5]{2,10})`,
+      'gi'
+    );
+    for (const match of text.matchAll(vendorLabelRegex)) {
+      addCandidate(match[1]);
     }
-    addCandidate(token);
-  }
 
-  for (const match of text.matchAll(/\b[A-Z][A-Z0-9&.\-]{2,}\b/g)) {
-    const token = match[0];
-    const upperToken = token.toUpperCase();
-    const minLength = /\d/.test(upperToken) ? 3 : 5;
-    if (upperToken.length < minLength) continue;
-    if (FUNCTION_ACRONYM_STOPWORDS.has(upperToken)) continue;
-    if (typeof match.index === 'number' && upperToken.length <= 5) {
-      const windowStart = Math.max(0, match.index - 30);
-      const windowEnd = Math.min(textLower.length, match.index + token.length + 30);
-      const windowText = textLower.slice(windowStart, windowEnd);
-      if (FUNCTION_CONTEXT_REGEX.test(windowText)) continue;
+    const suffixPattern = new RegExp(
+      `\\b([A-Z][A-Za-z0-9&.\\-]{1,}(?:\\s+[A-Z][A-Za-z0-9&.\\-]{1,}){0,2})\\s+(${VENDOR_SUFFIXES.join('|')})\\b`,
+      'g'
+    );
+    for (const match of text.matchAll(suffixPattern)) {
+      const phrase = normalizeWhitespace(match[1]);
+      const suffix = match[2];
+      const candidate = VENDOR_STRIP_SUFFIXES.has(suffix) ? phrase : `${phrase} ${suffix}`;
+      addCandidate(candidate);
     }
-    addCandidate(token);
+
+    for (const match of text.matchAll(/\b[A-Z][a-z][A-Za-z0-9&.\-]{2,}\b/g)) {
+      const token = match[0];
+      if (isStopwordVendor(token)) continue;
+      if (typeof match.index === 'number') {
+        const windowStart = Math.max(0, match.index - 20);
+        const windowEnd = Math.min(textLower.length, match.index + token.length + 20);
+        const windowText = textLower.slice(windowStart, windowEnd);
+        const hasContext = VENDOR_CONTEXT_TERMS.some(term => windowText.includes(term));
+        if (!hasContext) continue;
+      } else {
+        continue;
+      }
+      addCandidate(token);
+    }
+
+    for (const match of text.matchAll(/\b[A-Z][A-Z0-9&.\-]{2,}\b/g)) {
+      const token = match[0];
+      const upperToken = token.toUpperCase();
+      const minLength = /\d/.test(upperToken) ? 3 : 5;
+      if (upperToken.length < minLength) continue;
+      if (FUNCTION_ACRONYM_STOPWORDS.has(upperToken)) continue;
+      if (typeof match.index === 'number' && upperToken.length <= 5) {
+        const windowStart = Math.max(0, match.index - 30);
+        const windowEnd = Math.min(textLower.length, match.index + token.length + 30);
+        const windowText = textLower.slice(windowStart, windowEnd);
+        if (FUNCTION_CONTEXT_REGEX.test(windowText)) continue;
+      }
+      addCandidate(token);
+    }
   }
 
   return Array.from(candidates.values());
@@ -468,7 +471,8 @@ export function extractEntities(text, metadata = {}) {
   // 1. 提取厂商实体（文档元数据 + 文本模式）
   const vendorCandidates = extractVendorCandidates(text, {
     vendorName: metadata.vendorName,
-    vendorNames: metadata.vendorNames
+    vendorNames: metadata.vendorNames,
+    allowHeuristic: metadata.allowHeuristicVendors !== false
   });
 
   for (const vendorName of vendorCandidates) {
@@ -981,6 +985,7 @@ export async function processDocument(documentId) {
 
     const vendorName = await resolveVendorName(documentId);
     const vendorNames = await getVendorNames();
+    const allowHeuristicVendors = !vendorName;
 
     // 改进去重机制 - 跨 chunk 去重
     const allEntities = {
@@ -1004,7 +1009,8 @@ export async function processDocument(documentId) {
         documentId: documentId,
         chunkId: chunk.id,
         vendorName,
-        vendorNames
+        vendorNames,
+        allowHeuristicVendors
       });
 
       // 跨 chunk 去重 - 使用 Map 存储唯一实体
