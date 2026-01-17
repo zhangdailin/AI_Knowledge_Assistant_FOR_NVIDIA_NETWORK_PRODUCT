@@ -7,34 +7,36 @@
 
 ## 📖 项目简介
 
-AI Knowledge Assistant 是一个基于 RAG (Retrieval-Augmented Generation) 架构的智能知识库系统，专为复杂的网络设备文档（如 IB、RoCE 交换机配置）设计。它结合了传统关键词搜索与现代向量语义搜索，提供高精度的问答服务，并具备强大的网络拓扑可视化能力。
+AI Knowledge Assistant 是一个基于 RAG (Retrieval-Augmented Generation) 架构的知识库系统，面向复杂网络设备文档（IB、RoCE 等）。系统同时提供知识图谱、文档质量评估、检索性能监控和网络拓扑还原，既可通过 UI 使用，也可通过 API 集成。
 
-经过**七个阶段**的深度优化，系统在准确性、响应速度和用户体验上都达到了生产级标准。
+## ✨ 核心能力
 
-## ✨ 核心功能
+### 1. 🧠 智能问答与检索
+- **混合检索**：关键词 + 向量检索融合（RRF），支持重排与多阶段召回。
+- **查询智能化**：查询扩展、同义词/缩写展开、上下文优化、负样本学习。
+- **抗幻觉机制**：命令/参数一致性校验，引用来源可追溯。
+- **流式响应**：WebSocket 打字机式输出，低延迟体验。
+- **缓存与性能**：精确缓存 + 语义缓存，支持 TTL 与 LRU。
 
-### 1. 🧠 智能问答与检索 (RAG)
-- **混合检索引擎**：结合 Elasticsearch (关键词) 和 向量数据库 (语义)，采用动态 RRF 权重融合算法。
-- **抗幻觉机制**：多重验证层，包含命令逐字校验、参数一致性检查，杜绝 AI 编造命令。
-- **流式响应 (Streaming)**：支持打字机效果的实时答案生成，首 Token 延迟 < 1s。
-- **多轮对话**：支持上下文记忆，能够理解"它"、"这个"等指代词。
-- **置信度评分**：每个答案附带置信度评分和来源引用，透明可信。
+### 2. 🧩 知识图谱增强
+- **实体抽取**：厂商、功能、命令、参数自动抽取并建模。
+- **Neo4j 集成**：图谱持久化与查询，检索策略自动加权。
+- **可控开关**：可按需启用/禁用图谱增强。
 
-### 2. 🕸️ 网络拓扑还原与可视化
-- **多协议支持**：支持 InfiniBand (UFM CSV) 和 RoCE (NetQ Excel) 网络拓扑。
-- **自动化层级识别**：基于图论度数分析，自动识别 Core、Spine、Leaf 层级。
-- **智能布局**：专门针对 CLOS 三层架构优化的可视化布局。
-- **POD 管理**：支持通过正则或前缀自动提取和过滤 POD。
-- **交互式分析**：支持路径追溯、节点搜索、层级过滤。
+### 3. 🕸️ 网络拓扑还原与可视化
+- **多协议支持**：InfiniBand (UFM CSV)、RoCE (NetQ Excel)。
+- **自动层级识别**：Core/Spine/Leaf 结构推断。
+- **交互式分析**：路径追溯、节点搜索、层级过滤、POD 识别。
 
-### 3. 📚 文档管理
-- **多格式支持**：PDF, Word, Excel, Markdown。
-- **智能分块**：针对技术文档优化的分块策略，保留表格和代码块结构。
-- **向量化**：使用高性能 Embedding 模型将文档转化为向量索引。
+### 4. 📚 文档管理与质量评估
+- **多格式支持**：PDF、Word、Excel、Markdown。
+- **智能分块**：保留代码块/表格结构，适配技术文档。
+- **质量评分**：多维度评分与报告（结构、技术密度、反馈等）。
 
-### 4. 📊 仪表盘与统计
-- **全景视图**：文档数量、存储状态、检索日志统计。
-- **分类管理**：灵活的树形分类系统。
+### 5. 🔌 平台化与扩展
+- **API & Webhook**：API Key 管理、批量任务、回调通知。
+- **插件系统**：内置 topology-restore、sn-topology、sn-iblf、sn-address、nvidia-doc-pdf、ai-tools 等插件。
+- **性能监控**：检索指标与系统健康度可视化。
 
 ## 🛠️ 技术栈
 
@@ -47,87 +49,103 @@ AI Knowledge Assistant 是一个基于 RAG (Retrieval-Augmented Generation) 架�
 
 ### 后端 (Backend)
 - **运行时**: Node.js (ES Modules)
-- **Web 框架**: Express
-- **向量/AI**: 兼容 OpenAI 接口的 Embedding 和 Chat API
+- **Web 框架**: Express + WebSocket
+- **知识图谱**: Neo4j (可选)
+- **文档解析**: pdf-parse + mammoth + xlsx + Playwright
 - **存储**: 本地文件系统 (JSON) + 内存向量索引
 
 ## 🚀 快速开始
 
-### 1. 环境准备
-- Node.js >= 18.0.0
-- npm 或 pnpm
+### 方式一：Docker 部署（推荐）
 
-### 2. 安装依赖
+```bash
+docker compose up --build
+```
+
+- 前端地址: http://localhost:5173
+- 后端地址: http://localhost:8787
+- 数据持久化: `./data` 映射到容器 `/app/data`
+
+### 方式二：本地开发
+
 ```bash
 npm install
-```
 
-### 3. 配置
-在设置页面或 `data/settings.json` 中配置 AI 模型 API Key（支持 SiliconFlow, OpenAI 等兼容接口）。
-
-### 4. 启动开发环境
-```bash
 # 同时启动前端和后端服务
 npm run server
-
-# 访问地址: http://localhost:5173
 ```
 
-### 5. 构建生产版本
+### 构建生产版本
+
 ```bash
 npm run build
+npm run server:backend
 npm run preview
 ```
+
+> `npm run preview` 默认在 4173 端口启动静态站点，可按需改用任意静态服务器部署 `dist/`。
+
+## ⚙️ 配置与端口
+
+### 常用端口
+- `5173`: 前端开发/容器前端
+- `8787`: 后端 API
+- `7474/7687`: Neo4j（可选，浏览器/bolt）
+
+### 常用配置项
+- `data/settings.json`: 模型 API Key、检索与知识图谱配置
+- `VITE_API_SERVER_URL`: 前端 API 地址（构建时注入）
+- `PORT`: 后端监听端口（默认 8787）
+- `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD`: 知识图谱连接
+- `CORS_ORIGINS`/`CORS_ALLOW_ANY`/`ALLOW_NO_ORIGIN`: 跨域策略
+
+## 🧭 知识图谱快速启用（可选）
+
+1. 启动 Neo4j（示例）
+   ```bash
+   docker run -d --name neo4j -p 7474:7474 -p 7687:7687 \
+     -e NEO4J_AUTH=neo4j/password123 neo4j:latest
+   ```
+2. 配置 `data/settings.json` 或环境变量
+3. 初始化并构建图谱（详见文档）
 
 ## 📂 项目结构
 
 ```
 ├── src/                    # 前端源码
 │   ├── components/         # 通用 UI 组件
-│   ├── lib/                # 核心逻辑 (RAG, 验证, API)
+│   ├── lib/                # 核心逻辑 (RAG, 检索, 存储)
 │   ├── plugins/            # 插件系统
-│   │   ├── topology-restore/ # 拓扑还原插件
-│   │   └── ...
-│   ├── stores/             # Zustand 状态管理
+│   ├── stores/             # 状态管理
 │   └── main.tsx            # 入口文件
 ├── server/                 # 后端服务
-│   ├── index.mjs           # API 入口
-│   ├── topology.mjs        # 拓扑算法实现
-│   └── ...
 ├── data/                   # 数据存储 (文档, 索引, 设置)
-├── doc/                    # 详细项目文档
+├── docker/                 # Docker 相关配置
+├── doc/                    # 项目文档
 └── test/                   # 测试脚本与基准测试
 ```
 
-## 📝 详细文档
-
-项目包含详尽的开发和设计文档，位于 `doc/` 目录下：
-
-### 核心特性
-- **[系统优化总结](doc/COMPLETE_SUMMARY.md)**: 了解七阶段优化的完整历程。
-- **[准确性提升](doc/ACCURACY_IMPROVEMENT_V2.md)**: RAG 精度优化和抗幻觉技术细节。
-- **[流式响应](doc/PHASE7_STREAMING.md)**: 流式 API 和前端实现细节。
-
-### 拓扑功能
-- **[拓扑功能总结](doc/TOPOLOGY_SUMMARY.md)**: 拓扑还原功能的完整概述。
-- **[快速开始](doc/TOPOLOGY_QUICKSTART.md)**: 拓扑功能使用指南。
-- **[实现细节](doc/TOPOLOGY_IMPLEMENTATION.md)**: 算法与架构设计。
-
-### 测试与开发
-- **[测试指南](doc/TOPOLOGY_TESTING.md)**: 如何运行测试和验证功能。
-- **[API 参考](doc/QUICK_REFERENCE.md)**: 核心 API 和配置说明。
-
-## 🔍 验证与测试
-
-项目包含完善的测试套件，用于验证检索精度和系统稳定性：
+## 🧪 测试与验证
 
 ```bash
-# 运行检索精度基准测试
-npm run test:benchmark
-
 # 运行单元测试
-npm run test
+npm run test:unit
+
+# 运行所有测试
+npm test
+
+# 检索性能基准测试
+npm run test:benchmark
 ```
+
+## 📎 文档索引
+
+- API 文档: `doc/API.md`
+- 知识图谱: `doc/KNOWLEDGE_GRAPH_QUICKSTART.md`, `doc/KNOWLEDGE_GRAPH_GUIDE.md`
+- 性能与优化: `doc/PERFORMANCE_IMPROVEMENTS.md`, `doc/QUERY_OPTIMIZATION_FIX.md`
+- 测试体系: `doc/TEST_ARCHITECTURE.md`, `doc/TEST_IMPLEMENTATION_SUMMARY.md`
+- 历史与发布: `doc/WORK_HISTORY.md`
+- 开发工具: `doc/PUSH_GUIDE.md`
 
 ## 📜 License
 
