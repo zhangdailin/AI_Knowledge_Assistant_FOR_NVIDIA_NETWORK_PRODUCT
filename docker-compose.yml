@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+      # Optional build arg:
+      # args:
+      #   VITE_API_SERVER_URL: http://localhost:8787
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

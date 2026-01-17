@@ -1,0 +1,14 @@
+node_modules
+dist
+data
+logs
+coverage
+.git
+.gitignore
+.DS_Store
+.vscode
+npm-debug.log
+*.log
+**/*.tsbuildinfo
+test
+doc
