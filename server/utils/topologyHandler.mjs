@@ -301,7 +301,8 @@ async function handleTopologyRestoreV2(file, params) {
   const networkType = params.networkType || 'ib';
   const configStr = params.config;
   const config = configStr ? JSON.parse(configStr) : {};
-  const isLazy = params.isLazy || false;
+  const lazyParam = params.isLazy ?? params.mode ?? params.lazy;
+  const isLazy = lazyParam === true || lazyParam === 'true' || lazyParam === 'lazy' || lazyParam === '1';
 
   // 获取响应对象以便流式传输
   const { res } = params; // Assuming res is passed in params
@@ -341,11 +342,13 @@ async function handleTopologyRestoreV2(file, params) {
 
   // 错误处理
   if (!result || !result.success) {
+    const errorMessage = '拓扑构建失败：' + (result?.error || '未知错误');
     if (res) {
-      res.write(`data: ${JSON.stringify({ type: 'error', error: '拓扑构建失败：' + (result?.error || '未知错误') })}\n`);
+      res.write(JSON.stringify({ type: 'error', error: errorMessage }) + '\n');
       res.end();
+      return { success: false, error: errorMessage, streamed: true };
     }
-    throw new Error('拓扑构建失败：' + (result?.error || '未知错误'));
+    throw new Error(errorMessage);
   }
 
   // 流式响应拓扑数据

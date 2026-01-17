@@ -7,20 +7,22 @@
     "siliconflow": "sk-vfiiyizfqtxlhsfurukjvjdhhjoujoziniixmskejftkcqfn"
   },
   "modelSelection": {
-    "llm": "",
+    "llm": "Qwen/Qwen3-32B",
     "embedding": "",
     "reranking": "BAAI/bge-reranker-v2-m3"
   },
   "retrieval": {
     "searchCacheSize": 200,
+    "searchCacheTTL": 30000,
     "chunkCacheTTL": 30000,
     "chunkCacheMaxEntries": 20,
-    "searchLimit": 30,
+    "searchLimit": 50,
     "rrfK": 60,
-    "keywordWeight": 1.0,
-    "vectorWeight": 1.0,
-    "vectorMinScore": 0.2,
-    "rerankTopN": 10
+    "keywordWeight": 1.2,
+    "vectorWeight": 1,
+    "vectorMinScore": 0.15,
+    "rerankTopN": 15,
+    "enableKnowledgeGraph": true
   },
   "providers": {
     "siliconflow": {
@@ -32,8 +34,13 @@
     "gemini": {
       "name": "Gemini",
       "enabled": true,
-      "apiKey": "Zhang1996",
-      "baseUrl": "https://gemini.chinablog.xyz"
+      "apiKey": "sk-3f5e88f13063589b2ba15f9470be887930fec872d8c5b6d3209f9d367d8a3b6b",
+      "baseUrl": "https://www.chinablog.xyz/antigravity"
     }
+  },
+  "neo4j": {
+    "uri": "neo4j+s://937ddfa0.databases.neo4j.io",
+    "username": "neo4j",
+    "password": "hD4xgP6awOKpiCWC15Vf4tB1fktHv4W63VoCoY1Qp0A"
   }
 }

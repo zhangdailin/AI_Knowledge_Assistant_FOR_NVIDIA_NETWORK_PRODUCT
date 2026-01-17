@@ -116,12 +116,12 @@ export const expectToBeValidEntity = (entity: any, type: string) => {
   expect(typeof entity.name).toBe('string');
   expect(entity.source).toBeDefined();
 
-  if (type === 'device') {
-    expect(entity.type).toBeDefined();
-  } else if (type === 'command') {
+  if (type === 'command') {
     expect(entity.category).toBeDefined();
   } else if (type === 'parameter') {
     expect(entity.type).toBeDefined();
+  } else if (type === 'vendor' || type === 'function') {
+    expect(entity.name.length).toBeGreaterThan(0);
   }
 };
 

@@ -93,10 +93,12 @@ export const createMockConversation = (overrides: Partial<Conversation> = {}): C
  * 创建 Mock 实体数据（用于知识图谱测试）
  */
 export const createMockEntities = () => ({
-  devices: [
-    { name: 'IBCR-01', type: 'switch', source: 'doc-test-1' },
-    { name: 'IBSP-02', type: 'switch', source: 'doc-test-1' },
-    { name: 'GPU-node-1', type: 'compute_node', source: 'doc-test-1' }
+  vendors: [
+    { name: 'NVIDIA', source: 'doc-test-1' }
+  ],
+  functions: [
+    { name: 'BGP', source: 'doc-test-1' },
+    { name: 'EVPN', source: 'doc-test-1' }
   ],
   commands: [
     { name: 'nv set interface', category: 'nvue', source: 'doc-test-1' },
@@ -107,15 +109,11 @@ export const createMockEntities = () => ({
     { name: '192.168.1.1/24', type: 'ip_address', source: 'doc-test-1' },
     { name: 'eth0', type: 'interface', source: 'doc-test-1' }
   ],
-  protocols: [
-    { name: 'BGP', source: 'doc-test-1' },
-    { name: 'OSPF', source: 'doc-test-1' },
-    { name: 'EVPN', source: 'doc-test-1' }
-  ],
   relationships: [
-    { from: 'IBCR-01', to: 'nv set interface', type: 'USES_COMMAND', fromType: 'Device', toType: 'Command' },
+    { from: 'NVIDIA', to: 'BGP', type: 'HAS_FUNCTION', fromType: 'Vendor', toType: 'Function' },
+    { from: 'BGP', to: 'nv set interface', type: 'HAS_COMMAND', fromType: 'Function', toType: 'Command' },
     { from: 'nv set interface', to: 'eth0', type: 'HAS_PARAMETER', fromType: 'Command', toType: 'Parameter' },
-    { from: 'IBCR-01', to: 'BGP', type: 'SUPPORTS_PROTOCOL', fromType: 'Device', toType: 'Protocol' }
+    { from: 'NVIDIA', to: 'EVPN', type: 'HAS_FUNCTION', fromType: 'Vendor', toType: 'Function' }
   ]
 });
 

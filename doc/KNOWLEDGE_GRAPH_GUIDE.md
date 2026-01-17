@@ -6,8 +6,8 @@
 
 知识图谱模块通过以下方式提升检索准确率：
 
-1. **实体抽取**：从文档中自动提取设备、命令、参数、协议等实体
-2. **关系建模**：构建实体之间的关系（如设备使用命令、命令包含参数等）
+1. **实体抽取**：从文档中自动提取厂商、功能、命令、参数等实体
+2. **关系建模**：构建实体之间的关系（如厂商包含功能、功能包含命令、命令包含参数等）
 3. **混合检索**：结合向量检索和知识图谱查询，提供更精准的结果
 4. **智能路由**：根据查询类型自动调整检索策略
 
@@ -17,30 +17,29 @@
 
 #### 节点类型（Entities）
 
-1. **Device（设备）**
-   - 属性：name, type, sources
-   - 类型：switch, network_device, compute_node
-   - 示例：IBCR-01, CSW-02, GPU-node-1
+1. **Vendor（厂商）**
+   - 属性：name, sources
+   - 示例：NVIDIA, Mellanox, Cumulus
 
-2. **Command（命令）**
+2. **Function（功能）**
+   - 属性：name, sources
+   - 示例：BGP, OSPF, EVPN, VXLAN, ACL, VLAN
+
+3. **Command（命令）**
    - 属性：name, category, sources
    - 类别：nvue, linux, config
    - 示例：nv set interface, ip route show
 
-3. **Parameter（参数）**
+4. **Parameter（参数）**
    - 属性：name, type, sources
    - 类型：network_param, ip_address, port, interface
    - 示例：vlan100, 192.168.1.1/24, eth0
 
-4. **Protocol（协议）**
-   - 属性：name, sources
-   - 示例：BGP, OSPF, EVPN, VXLAN, MLAG
-
 #### 关系类型（Relationships）
 
-1. **USES_COMMAND**：设备 → 命令
-2. **HAS_PARAMETER**：命令 → 参数
-3. **SUPPORTS_PROTOCOL**：设备 → 协议
+1. **HAS_FUNCTION**：厂商 → 功能
+2. **HAS_COMMAND**：功能 → 命令
+3. **HAS_PARAMETER**：命令 → 参数
 
 ### 混合检索策略
 
@@ -48,9 +47,9 @@
 
 | 查询类型 | 知识图谱权重 | 最大结果数 | 适用场景 |
 |---------|------------|----------|---------|
-| device-focused | 0.4 | 8 | 设备相关查询 |
+| vendor-focused | 0.4 | 8 | 厂商相关查询 |
 | command-focused | 0.35 | 6 | 命令配置查询 |
-| protocol-focused | 0.3 | 5 | 协议相关查询 |
+| function-focused | 0.3 | 5 | 功能/协议相关查询 |
 | concept-focused | 0.2 | 3 | 概念性查询 |
 | balanced | 0.25 | 5 | 默认策略 |
 
@@ -133,7 +132,7 @@ curl -X POST http://localhost:8787/api/knowledge-graph/process/doc-123
 ```bash
 curl -X POST http://localhost:8787/api/knowledge-graph/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "IBCR-01 BGP 配置", "limit": 10}'
+  -d '{"query": "NVIDIA BGP 配置", "limit": 10}'
 ```
 
 ### 3. 获取统计信息
@@ -148,10 +147,14 @@ curl http://localhost:8787/api/knowledge-graph/stats
 {
   "ok": true,
   "knowledgeGraph": {
-    "devices": 45,
+    "vendors": 12,
+    "vendorsTotal": 36,
+    "functions": 45,
+    "functionsTotal": 96,
     "commands": 128,
+    "commandsTotal": 512,
     "parameters": 256,
-    "protocols": 12,
+    "parametersTotal": 1024,
     "relationships": 432
   },
   "status": "active"
@@ -179,17 +182,23 @@ curl -X DELETE http://localhost:8787/api/knowledge-graph/clear
 
 ## 实体抽取规则
 
-### 设备识别模式
+### 厂商识别方式
+
+- 厂商节点来自知识库目录/分类名称（支持中文厂商名）
+- 文本模式自动识别：vendor/厂商标签、公司后缀（Networks/Systems 等）、上下文触发的专有名词
+- 文档中识别到的厂商会自动进入知识图谱，后续查询可直接命中
+
+### 功能识别模式
 
 ```javascript
-// 网络设备命名
-IBCR|IBSP|IBLF|CSW|SSW|ASW + 编号
-core|spine|leaf|tor + switch + 编号
-router|switch|gateway|firewall + 编号
+// 协议/功能缩写（自动识别）
+// 例如: BGP/OSPF/EVPN/VXLAN/MLAG/LACP/RoCE/ACL/VLAN/VRF
 
-// GPU/计算节点
-GPU|DGX|H100|A100|H800|A800 + 编号
-node|host|server + 编号
+// 领域关键词映射
+routing|interface|qos|security|monitoring|telemetry|system|switching
+
+// 语境触发模式（TitleCase + 领域词）
+<Name> + (protocol|feature|service|routing|overlay|tunneling)
 ```
 
 ### 命令识别模式
@@ -280,7 +289,7 @@ curl http://localhost:7474
 
 ```
 原因：文档内容不包含可识别的实体
-解决：检查文档内容，确保包含设备名、命令等信息
+解决：检查文档内容，确保包含厂商名、功能关键词、命令等信息
 ```
 
 #### 3. 知识图谱查询慢
@@ -323,9 +332,9 @@ const config = {
 
 根据查询类型，预期准确率提升：
 
-- **设备相关查询**：15-25%
+- **厂商相关查询**：15-25%
 - **命令配置查询**：10-20%
-- **协议相关查询**：8-15%
+- **功能相关查询**：8-15%
 - **概念性查询**：5-10%
 - **平均提升**：10-15%
 
@@ -336,11 +345,12 @@ const config = {
 修改 `server/knowledgeGraph.mjs` 中的 `extractEntities` 函数：
 
 ```javascript
-// 添加自定义设备模式
-const devicePatterns = [
-  { regex: /YOUR_PATTERN/gi, type: 'custom_device' },
-  // ... 现有模式
-];
+// 添加功能领域映射
+FUNCTION_DOMAIN_TERMS.set('your-domain', 'YourFunction');
+
+// 扩展厂商标签/后缀
+VENDOR_LABEL_TERMS.push('your-vendor-label');
+VENDOR_SUFFIXES.push('YourSuffix');
 ```
 
 ### 自定义检索策略
@@ -390,7 +400,7 @@ docker exec neo4j neo4j-admin load --from=/backups/neo4j-backup.dump
 ### v1.0.0 (2026-01-14)
 
 - ✅ 实现基础知识图谱功能
-- ✅ 支持设备、命令、参数、协议实体抽取
+- ✅ 支持厂商、功能、命令、参数实体抽取
 - ✅ 实现混合检索（RAG + 知识图谱）
 - ✅ 智能检索策略路由
 - ✅ 完整的 API 端点

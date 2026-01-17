@@ -68,10 +68,14 @@ curl http://localhost:8787/api/knowledge-graph/stats
 {
   "ok": true,
   "knowledgeGraph": {
-    "devices": 45,
+    "vendors": 12,
+    "vendorsTotal": 36,
+    "functions": 45,
+    "functionsTotal": 96,
     "commands": 128,
+    "commandsTotal": 512,
     "parameters": 256,
-    "protocols": 12,
+    "parametersTotal": 1024,
     "relationships": 432
   },
   "status": "active"
@@ -98,7 +102,7 @@ node test/test_knowledge_graph.mjs
 
 知识图谱会自动集成到搜索管道中。当用户进行查询时：
 
-1. 系统自动识别查询类型（设备、命令、协议等）
+1. 系统自动识别查询类型（厂商、功能、命令等）
 2. 从知识图谱中检索相关实体和关系
 3. 使用知识图谱信息增强向量检索结果
 4. 返回更准确、更相关的结果
@@ -145,24 +149,25 @@ docker start neo4j
 **A:** 使用 Neo4j Browser (http://localhost:7474) 执行查询：
 
 ```cypher
-// 查看所有设备
-MATCH (d:Device) RETURN d LIMIT 25
+// 查看所有厂商
+MATCH (v:Vendor) RETURN v LIMIT 25
 
-// 查看设备和命令的关系
-MATCH (d:Device)-[r:USES_COMMAND]->(c:Command)
-RETURN d, r, c LIMIT 25
+// 查看厂商和功能的关系
+MATCH (v:Vendor)-[r:HAS_FUNCTION]->(f:Function)
+RETURN v, r, f LIMIT 25
 
-// 查看协议支持情况
-MATCH (d:Device)-[r:SUPPORTS_PROTOCOL]->(p:Protocol)
-RETURN d.name, collect(p.name) as protocols
+// 查看功能关联的命令
+MATCH (f:Function)-[r:HAS_COMMAND]->(c:Command)
+RETURN f.name, collect(c.name) as commands
 ```
 
 ### Q: 准确率提升不明显？
 
 **A:** 可能的原因：
-1. 文档中实体较少 - 添加更多包含设备、命令的文档
-2. 查询类型不匹配 - 知识图谱对设备/命令查询效果最好
+1. 文档中实体较少 - 添加更多包含厂商、功能、命令的文档
+2. 查询类型不匹配 - 知识图谱对厂商/功能/命令查询效果最好
 3. 需要更多数据 - 处理更多文档以丰富知识图谱
+4. 新厂商未标注分类 - 可直接在文档中出现，系统会自动学习并写入图谱
 
 ## 下一步
 

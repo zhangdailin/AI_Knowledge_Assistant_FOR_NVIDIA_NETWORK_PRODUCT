@@ -17,11 +17,64 @@ export class EnhancedNetworkKeywordExtractor {
     bgp: ['bgp', 'border gateway protocol', 'ebgp', 'ibgp', 'neighbor', 'peer', 'as', 'autonomous system', 'asn'],
     // 路由相关
     routing: ['route', 'router', 'routing', 'ip route', 'static route'],
-    // 厂商相关
-    vendors: ['nvidia', 'mellanox', 'cumulus', 'broadcom', '思科', 'cisco', 'nv', 'nvos'],
+    // 厂商相关（动态识别）
+    vendors: [],
     // 配置相关
     config: ['configure', 'configuration', 'setup', 'enable', 'disable', 'show', 'set', 'apply', 'nv', 'acl', 'access control list']
   };
+
+  private vendorLabelTerms = [
+    'vendor', 'manufacturer', 'company', 'corp', 'corporation', 'supplier', 'provider',
+    '厂商', '供应商', '公司', '集团', '品牌'
+  ];
+
+  private vendorSuffixes = [
+    'networks', 'systems', 'technologies', 'technology', 'communications',
+    'software', 'solutions', 'labs', 'group', 'holdings', 'inc', 'corp',
+    'corporation', 'ltd', 'limited', 'company', 'co'
+  ];
+
+  private vendorStopwords = new Set([
+    'pfc', 'ecn', 'roce', 'rdma', 'qos', 'bgp', 'ospf', 'evpn', 'vxlan',
+    'acl', 'vlan', 'vrf', 'nv', 'nvos', 'ib', 'ip', 'tcp', 'udp', 'ssh',
+    'cli', 'api', 'sdk', 'os', 'cpu', 'gpu', 'nic'
+  ]);
+
+  private extractVendorsFromQuery(query: string): string[] {
+    const vendors = new Set<string>();
+    const queryLower = query.toLowerCase();
+
+    const labelPattern = new RegExp(
+      `(?:${this.vendorLabelTerms.join('|')})\\s*[:：]?\\s*([A-Za-z0-9&.\\- ]{2,40}|[\\u4e00-\\u9fa5]{2,10})`,
+      'gi'
+    );
+    for (const match of query.matchAll(labelPattern)) {
+      const name = match[1]?.trim().toLowerCase();
+      if (name && !this.vendorStopwords.has(name)) {
+        vendors.add(name);
+      }
+    }
+
+    const suffixPattern = new RegExp(
+      `\\b([A-Z][A-Za-z0-9&.\\-]{1,}(?:\\s+[A-Z][A-Za-z0-9&.\\-]{1,}){0,2})\\s+(${this.vendorSuffixes.join('|')})\\b`,
+      'g'
+    );
+    for (const match of query.matchAll(suffixPattern)) {
+      const name = `${match[1]} ${match[2]}`.trim().toLowerCase();
+      if (name && !this.vendorStopwords.has(name)) {
+        vendors.add(name);
+      }
+    }
+
+    for (const match of query.matchAll(/\b[A-Z][A-Z0-9&.\-]{2,}\b/g)) {
+      const token = match[0].toLowerCase();
+      if (!this.vendorStopwords.has(token)) {
+        vendors.add(token);
+      }
+    }
+
+    return Array.from(vendors);
+  }
 
   extractKeywords(query: string) {
     const keywords: string[] = [];
@@ -45,6 +98,9 @@ export class EnhancedNetworkKeywordExtractor {
         }
       });
     });
+
+    // 1.1 动态提取厂商名称
+    vendors.push(...this.extractVendorsFromQuery(query));
 
     // 显式提取 ACL
     if (queryLower.includes('acl') || queryLower.includes('access control list')) {

@@ -3,9 +3,55 @@
  * 提升检索准确率和相关性
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import * as knowledgeGraph from './knowledgeGraph.mjs';
 import { embedText } from './embedding.mjs';
 import * as storage from './storage.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CATEGORIES_FILE = path.join(__dirname, '..', 'data', 'categories.json');
+const DEFAULT_CATEGORY_NAMES = new Set(['default', '默认分类']);
+
+let cachedVendorNames = null;
+let cachedVendorMtime = 0;
+
+function isDefaultCategoryName(name) {
+  if (!name) return true;
+  return DEFAULT_CATEGORY_NAMES.has(String(name).toLowerCase());
+}
+
+function collectVendorNames(nodes, names) {
+  for (const node of nodes || []) {
+    if (node?.name && !isDefaultCategoryName(node.name)) {
+      names.push(node.name);
+    }
+    if (node.children) collectVendorNames(node.children, names);
+  }
+}
+
+function loadVendorNamesFromCategories() {
+  try {
+    const stats = fs.statSync(CATEGORIES_FILE);
+    if (cachedVendorNames && stats.mtimeMs === cachedVendorMtime) {
+      return cachedVendorNames;
+    }
+    const raw = fs.readFileSync(CATEGORIES_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    const names = [];
+    collectVendorNames(data?.tree || [], names);
+    cachedVendorNames = names;
+    cachedVendorMtime = stats.mtimeMs;
+    return names;
+  } catch (error) {
+    if (!cachedVendorNames) {
+      cachedVendorNames = [];
+    }
+    return cachedVendorNames;
+  }
+}
 
 /**
  * 混合检索：结合向量检索和知识图谱
@@ -64,33 +110,37 @@ function formatKnowledgeGraphResults(kgResults) {
   const contextParts = [];
 
   for (const result of kgResults) {
-    if (result.type === 'device') {
-      const device = result.device;
+    if (result.type === 'vendor') {
+      const vendor = result.vendor;
+      const functions = result.functions.map(f => f.name).join(', ');
       const commands = result.commands.map(c => c.name).join(', ');
-      const protocols = result.protocols.map(p => p.name).join(', ');
 
       contextParts.push(
-        `设备 ${device.name} (类型: ${device.type}):\n` +
-        (commands ? `  - 支持命令: ${commands}\n` : '') +
-        (protocols ? `  - 支持协议: ${protocols}\n` : '')
+        `厂商 ${vendor.name}:\n` +
+        (functions ? `  - 功能: ${functions}\n` : '') +
+        (commands ? `  - 相关命令: ${commands}\n` : '')
+      );
+    } else if (result.type === 'function') {
+      const func = result.function;
+      const vendors = result.vendors.map(v => v.name).join(', ');
+      const commands = result.commands.map(c => c.name).join(', ');
+
+      contextParts.push(
+        `功能 ${func.name}:\n` +
+        (vendors ? `  - 相关厂商: ${vendors}\n` : '') +
+        (commands ? `  - 相关命令: ${commands}\n` : '')
       );
     } else if (result.type === 'command') {
       const command = result.command;
-      const devices = result.devices.map(d => d.name).join(', ');
+      const vendors = result.vendors.map(v => v.name).join(', ');
+      const functions = result.functions.map(f => f.name).join(', ');
       const parameters = result.parameters.map(p => p.name).join(', ');
 
       contextParts.push(
         `命令 ${command.name} (类别: ${command.category}):\n` +
-        (devices ? `  - 适用设备: ${devices}\n` : '') +
+        (vendors ? `  - 相关厂商: ${vendors}\n` : '') +
+        (functions ? `  - 相关功能: ${functions}\n` : '') +
         (parameters ? `  - 相关参数: ${parameters}\n` : '')
-      );
-    } else if (result.type === 'protocol') {
-      const protocol = result.protocol;
-      const devices = result.devices.map(d => d.name).join(', ');
-
-      contextParts.push(
-        `协议 ${protocol.name}:\n` +
-        (devices ? `  - 支持设备: ${devices}\n` : '')
       );
     }
   }
@@ -112,20 +162,27 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
   // 1. 提取知识图谱中的关键实体
   const kgEntities = new Set();
   for (const result of kgResults) {
-    if (result.type === 'device' && result.device?.name) {
-      kgEntities.add(result.device.name.toLowerCase());
+    if (result.type === 'vendor' && result.vendor?.name) {
+      kgEntities.add(result.vendor.name.toLowerCase());
+    } else if (result.type === 'function' && result.function?.name) {
+      kgEntities.add(result.function.name.toLowerCase());
     } else if (result.type === 'command' && result.command?.name) {
       kgEntities.add(result.command.name.toLowerCase());
-    } else if (result.type === 'protocol' && result.protocol?.name) {
-      kgEntities.add(result.protocol.name.toLowerCase());
+    } else if (result.type === 'parameter' && result.parameter?.name) {
+      kgEntities.add(result.parameter.name.toLowerCase());
     }
   }
 
   // 2. 为包含知识图谱实体的结果提升分数
   for (const result of enhancedResults) {
-    const textContent = typeof result.text === 'string'
+    let textContent = typeof result.text === 'string'
       ? result.text
       : (typeof result.content === 'string' ? result.content : '');
+    if (!textContent && result.chunk) {
+      textContent = typeof result.chunk.content === 'string'
+        ? result.chunk.content
+        : (typeof result.chunk.text === 'string' ? result.chunk.text : '');
+    }
     if (!textContent) {
       continue;
     }
@@ -160,35 +217,46 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
  * @returns {Object} 检索策略配置
  */
 export function determineRetrievalStrategy(query) {
-  const queryLower = query.toLowerCase();
+  const safeQuery = typeof query === 'string' ? query : '';
+  const queryLower = safeQuery.toLowerCase();
 
-  // 1. 设备相关查询 - 高权重知识图谱
-  const devicePatterns = [
-    /\b(IBCR|IBSP|IBLF|CSW|SSW|ASW)[-_]?\w*\d+/i,
-    /设备|device|switch|router/i,
-    /拓扑|topology/i
+  const vendorNames = loadVendorNamesFromCategories();
+  const queryEntities = knowledgeGraph.extractEntities(safeQuery, {
+    vendorNames,
+    source: 'query',
+    allowDefaultFunction: false
+  });
+
+  const hasVendors = queryEntities.vendors?.length > 0;
+  const hasCommands = queryEntities.commands?.length > 0;
+  const hasFunctions = queryEntities.functions?.length > 0;
+
+  const vendorSignals = [
+    /厂商|vendor|manufacturer|supplier|provider/i,
+    /供应商|公司|集团|品牌/i
   ];
 
-  for (const pattern of devicePatterns) {
-    if (pattern.test(query)) {
-      return {
-        strategy: 'device-focused',
-        enableKnowledgeGraph: true,
-        kgWeight: 0.4,
-        maxKgResults: 8
-      };
-    }
+  // 1. 厂商相关查询 - 高权重知识图谱
+  if (hasVendors || vendorSignals.some(pattern => pattern.test(queryLower))) {
+    return {
+      strategy: 'vendor-focused',
+      enableKnowledgeGraph: true,
+      kgWeight: 0.4,
+      maxKgResults: 8
+    };
   }
 
   // 2. 命令相关查询 - 中等权重知识图谱
   const commandPatterns = [
     /\bnv\s+(set|show|config|unset)/i,
-    /命令|command|配置|config/i,
-    /如何|怎么|how to/i
+    /\b(show|display|list|get)\b\s+\w+/i,
+    /命令|command|cli/i,
+    /(如何|怎么|怎样).*(配置|设置|启用|禁用)/i,
+    /(configure|enable|disable)\s+\w+/i
   ];
 
   for (const pattern of commandPatterns) {
-    if (pattern.test(query)) {
+    if (hasCommands || pattern.test(query)) {
       return {
         strategy: 'command-focused',
         enableKnowledgeGraph: true,
@@ -198,16 +266,16 @@ export function determineRetrievalStrategy(query) {
     }
   }
 
-  // 3. 协议相关查询 - 中等权重知识图谱
-  const protocolPatterns = [
-    /\b(BGP|OSPF|EVPN|VXLAN|MLAG|LACP|RoCE)\b/i,
-    /协议|protocol/i
+  // 3. 功能相关查询 - 中等权重知识图谱
+  const functionPatterns = [
+    /\b(BGP|OSPF|EVPN|VXLAN|MLAG|LACP|RoCE|ACL|VLAN|VRF)\b/i,
+    /功能|feature|protocol|协议/i
   ];
 
-  for (const pattern of protocolPatterns) {
-    if (pattern.test(query)) {
+  for (const pattern of functionPatterns) {
+    if (hasFunctions || pattern.test(query)) {
       return {
-        strategy: 'protocol-focused',
+        strategy: 'function-focused',
         enableKnowledgeGraph: true,
         kgWeight: 0.3,
         maxKgResults: 5
@@ -261,10 +329,10 @@ export async function buildKnowledgeGraphFromDocuments(documentIds = null) {
       processedDocuments: 0,
       failedDocuments: 0,
       totalEntities: {
-        devices: 0,
+        vendors: 0,
+        functions: 0,
         commands: 0,
-        parameters: 0,
-        protocols: 0
+        parameters: 0
       }
     };
 
@@ -272,10 +340,10 @@ export async function buildKnowledgeGraphFromDocuments(documentIds = null) {
       try {
         const result = await knowledgeGraph.processDocument(docId);
         stats.processedDocuments++;
-        stats.totalEntities.devices += result.devices;
+        stats.totalEntities.vendors += result.vendors;
+        stats.totalEntities.functions += result.functions;
         stats.totalEntities.commands += result.commands;
         stats.totalEntities.parameters += result.parameters;
-        stats.totalEntities.protocols += result.protocols;
       } catch (error) {
         console.error(`[HybridRetrieval] 处理文档 ${docId} 失败:`, error.message);
         stats.failedDocuments++;
@@ -313,7 +381,17 @@ export async function getHybridRetrievalStats() {
   } catch (error) {
     console.error('[HybridRetrieval] 获取统计信息失败:', error.message);
     return {
-      knowledgeGraph: { devices: 0, commands: 0, parameters: 0, protocols: 0, relationships: 0 },
+      knowledgeGraph: {
+        vendors: 0,
+        vendorsTotal: 0,
+        functions: 0,
+        functionsTotal: 0,
+        commands: 0,
+        commandsTotal: 0,
+        parameters: 0,
+        parametersTotal: 0,
+        relationships: 0
+      },
       status: 'error',
       error: error.message
     };

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockNeo4jDriver } from '../../helpers/mock-factory';
 import { createMockEntities, createMockDocument } from '../../fixtures/mock-data';
-import { expectToBeValidEntity } from '../../helpers/test-utils';
+import { extractEntities } from '../../../server/knowledgeGraph.mjs';
 
 describe('Knowledge Graph Module', () => {
   let neo4jMock: ReturnType<typeof mockNeo4jDriver>;
@@ -17,39 +17,32 @@ describe('Knowledge Graph Module', () => {
   });
 
   describe('extractEntities', () => {
-    it('should extract device entities (IBCR, CSW, GPU)', () => {
+    it('should extract vendor entities from metadata and patterns', () => {
       const text = `
-        Configure IBCR-01 switch for BGP routing.
-        Connect CSW-02 to the spine layer.
-        GPU-node-1 is connected to IBLF-03.
+        Acme Networks builds routers.
+        NVIDIA Cumulus Linux supports BGP routing.
       `;
 
-      // 模拟实体抽取
-      const extractDevices = (text: string) => {
-        const patterns = [
-          /\b(IBCR|IBSP|IBLF|CSW|SSW|ASW)[-_]?\w*\d+/gi,
-          /\b(GPU)[-_]?node[-_]?\d+/gi
-        ];
+      const entities = extractEntities(text, {
+        vendorNames: ['Acme Networks'],
+        source: 'test'
+      });
 
-        const devices = [];
-        for (const pattern of patterns) {
-          const matches = text.match(pattern);
-          if (matches) {
-            devices.push(...matches.map(m => ({
-              name: m,
-              type: m.startsWith('GPU') ? 'compute_node' : 'switch'
-            })));
-          }
-        }
-        return devices;
-      };
+      expect(entities.vendors.length).toBeGreaterThan(0);
+      expect(entities.vendors.some(v => v.name === 'NVIDIA')).toBe(true);
+      expect(entities.vendors.some(v => v.name === 'Acme Networks')).toBe(true);
+    });
 
-      const devices = extractDevices(text);
+    it('should extract vendor entities from text patterns without metadata', () => {
+      const text = `
+        Vendor: Huron Systems
+        The Acme Networks platform is deployed in the lab.
+      `;
 
-      expect(devices.length).toBeGreaterThan(0);
-      expect(devices.some(d => d.name.includes('IBCR-01'))).toBe(true);
-      expect(devices.some(d => d.name.includes('CSW-02'))).toBe(true);
-      expect(devices.some(d => d.name.includes('GPU-node-1'))).toBe(true);
+      const entities = extractEntities(text, { source: 'test' });
+
+      expect(entities.vendors.some(v => v.name === 'Huron Systems')).toBe(true);
+      expect(entities.vendors.some(v => v.name === 'Acme Networks')).toBe(true);
     });
 
     it('should extract command entities (nv set, ip route)', () => {
@@ -121,57 +114,39 @@ describe('Knowledge Graph Module', () => {
       expect(parameters.some(p => p.name === 'eth0')).toBe(true);
     });
 
-    it('should extract protocol entities (BGP, OSPF, EVPN)', () => {
+    it('should extract function entities via patterns', () => {
       const text = `
         Configure BGP routing protocol.
         Enable OSPF on all interfaces.
         Set up EVPN for layer 2 extension.
         Use VXLAN for overlay network.
       `;
+      const entities = extractEntities(text, { source: 'test' });
 
-      const extractProtocols = (text: string) => {
-        const protocols = ['BGP', 'OSPF', 'EVPN', 'VXLAN', 'MLAG', 'LACP'];
-        const found = [];
-
-        for (const protocol of protocols) {
-          const regex = new RegExp(`\\b${protocol}\\b`, 'gi');
-          if (regex.test(text)) {
-            found.push({ name: protocol });
-          }
-        }
-
-        return found;
-      };
-
-      const protocols = extractProtocols(text);
-
-      expect(protocols.length).toBeGreaterThan(0);
-      expect(protocols.some(p => p.name === 'BGP')).toBe(true);
-      expect(protocols.some(p => p.name === 'OSPF')).toBe(true);
-      expect(protocols.some(p => p.name === 'EVPN')).toBe(true);
+      expect(entities.functions.length).toBeGreaterThan(0);
+      expect(entities.functions.some(p => p.name === 'BGP')).toBe(true);
+      expect(entities.functions.some(p => p.name === 'OSPF')).toBe(true);
+      expect(entities.functions.some(p => p.name === 'EVPN')).toBe(true);
     });
 
     it('should identify relationships between entities', () => {
       const text = `
-        IBCR-01 uses nv set interface command with eth0 parameter.
-        The device supports BGP protocol.
+        NVIDIA supports BGP and uses nv set interface command with eth0 parameter.
       `;
 
-      // 模拟关系提取
       const extractRelationships = (text: string, entities: any) => {
         const relationships = [];
 
-        // 设备-命令关系
-        for (const device of entities.devices || []) {
+        for (const func of entities.functions || []) {
           for (const command of entities.commands || []) {
-            const deviceIndex = text.indexOf(device.name);
+            const funcIndex = text.indexOf(func.name);
             const commandIndex = text.indexOf(command.name);
-            if (deviceIndex !== -1 && commandIndex !== -1 &&
-                Math.abs(deviceIndex - commandIndex) < 200) {
+            if (funcIndex !== -1 && commandIndex !== -1 &&
+                Math.abs(funcIndex - commandIndex) < 200) {
               relationships.push({
-                from: device.name,
+                from: func.name,
                 to: command.name,
-                type: 'USES_COMMAND'
+                type: 'HAS_COMMAND'
               });
             }
           }
@@ -181,29 +156,22 @@ describe('Knowledge Graph Module', () => {
       };
 
       const entities = {
-        devices: [{ name: 'IBCR-01', type: 'switch' }],
+        vendors: [{ name: 'NVIDIA' }],
+        functions: [{ name: 'BGP' }],
         commands: [{ name: 'nv set interface', category: 'nvue' }],
-        parameters: [{ name: 'eth0', type: 'interface' }],
-        protocols: [{ name: 'BGP' }]
+        parameters: [{ name: 'eth0', type: 'interface' }]
       };
 
       const relationships = extractRelationships(text, entities);
 
       expect(relationships.length).toBeGreaterThan(0);
-      expect(relationships[0].type).toBe('USES_COMMAND');
+      expect(relationships[0].type).toBe('HAS_COMMAND');
     });
 
     it('should handle text without entities gracefully', () => {
       const text = 'This is just plain text without any network entities.';
-
-      const extractDevices = (text: string) => {
-        const pattern = /\b(IBCR|IBSP|IBLF)[-_]?\w*\d+/gi;
-        return (text.match(pattern) || []).map(m => ({ name: m, type: 'switch' }));
-      };
-
-      const devices = extractDevices(text);
-
-      expect(devices).toHaveLength(0);
+      const entities = extractEntities(text, { source: 'test' });
+      expect(entities.vendors).toHaveLength(0);
     });
   });
 
@@ -212,10 +180,10 @@ describe('Knowledge Graph Module', () => {
       const entities = createMockEntities();
 
       // 模拟存储
-      for (const device of entities.devices) {
+      for (const vendor of entities.vendors) {
         await neo4jMock.session.run(
-          'MERGE (d:Device {name: $name}) SET d.type = $type',
-          { name: device.name, type: device.type }
+          'MERGE (v:Vendor {name: $name}) SET v.name = $name',
+          { name: vendor.name }
         );
       }
 
@@ -243,18 +211,18 @@ describe('Knowledge Graph Module', () => {
     });
 
     it('should merge duplicate entities', async () => {
-      const device = { name: 'IBCR-01', type: 'switch' };
+      const vendor = { name: 'NVIDIA' };
 
       // 第一次创建
       await neo4jMock.session.run(
-        'MERGE (d:Device {name: $name}) SET d.type = $type',
-        device
+        'MERGE (v:Vendor {name: $name}) SET v.name = $name',
+        vendor
       );
 
       // 第二次应该合并而不是创建新节点
       await neo4jMock.session.run(
-        'MERGE (d:Device {name: $name}) SET d.type = $type',
-        device
+        'MERGE (v:Vendor {name: $name}) SET v.name = $name',
+        vendor
       );
 
       expect(neo4jMock.mockRun).toHaveBeenCalledTimes(2);
@@ -262,17 +230,16 @@ describe('Knowledge Graph Module', () => {
     });
 
     it('should track entity sources', async () => {
-      const device = {
-        name: 'IBCR-01',
-        type: 'switch',
+      const vendor = {
+        name: 'NVIDIA',
         source: 'doc-test-1'
       };
 
       await neo4jMock.session.run(
-        `MERGE (d:Device {name: $name})
-         ON CREATE SET d.sources = [$source]
-         ON MATCH SET d.sources = d.sources + $source`,
-        device
+        `MERGE (v:Vendor {name: $name})
+         ON CREATE SET v.sources = [$source]
+         ON MATCH SET v.sources = v.sources + $source`,
+        vendor
       );
 
       expect(neo4jMock.mockRun).toHaveBeenCalledWith(
@@ -284,10 +251,10 @@ describe('Knowledge Graph Module', () => {
 
   describe('queryKnowledgeGraph', () => {
     it('should find entities by name', async () => {
-      const query = 'IBCR-01';
+      const query = 'NVIDIA';
 
       await neo4jMock.session.run(
-        'MATCH (d:Device {name: $name}) RETURN d',
+        'MATCH (v:Vendor {name: $name}) RETURN v',
         { name: query }
       );
 
@@ -299,10 +266,10 @@ describe('Knowledge Graph Module', () => {
 
     it('should traverse relationships', async () => {
       await neo4jMock.session.run(
-        `MATCH (d:Device {name: $name})
-         OPTIONAL MATCH (d)-[:USES_COMMAND]->(c:Command)
-         RETURN d, collect(c) as commands`,
-        { name: 'IBCR-01' }
+        `MATCH (f:Function {name: $name})
+         OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
+         RETURN f, collect(c) as commands`,
+        { name: 'BGP' }
       );
 
       expect(neo4jMock.mockRun).toHaveBeenCalledWith(
@@ -315,7 +282,7 @@ describe('Knowledge Graph Module', () => {
       const query = 'BGP configuration';
 
       await neo4jMock.session.run(
-        `CALL db.index.fulltext.queryNodes('device_search', $query)
+        `CALL db.index.fulltext.queryNodes('kg_search', $query)
          YIELD node, score
          RETURN node, score
          ORDER BY score DESC
@@ -333,7 +300,7 @@ describe('Knowledge Graph Module', () => {
       const limit = 5;
 
       await neo4jMock.session.run(
-        'MATCH (d:Device) RETURN d LIMIT $limit',
+        'MATCH (v:Vendor) RETURN v LIMIT $limit',
         { limit }
       );
 
@@ -347,9 +314,9 @@ describe('Knowledge Graph Module', () => {
   describe('getGraphStats', () => {
     it('should count nodes by type', async () => {
       await neo4jMock.session.run(`
-        MATCH (d:Device) WITH count(d) as deviceCount
-        MATCH (c:Command) WITH deviceCount, count(c) as commandCount
-        RETURN deviceCount, commandCount
+        MATCH (v:Vendor) WITH count(v) as vendorCount
+        MATCH (f:Function) WITH vendorCount, count(f) as functionCount
+        RETURN vendorCount, functionCount
       `);
 
       expect(neo4jMock.mockRun).toHaveBeenCalled();
@@ -373,10 +340,10 @@ describe('Knowledge Graph Module', () => {
       // 模拟处理流程
       const extractAll = (text: string) => {
         return {
-          devices: [],
+          vendors: [],
+          functions: [],
           commands: [],
           parameters: [],
-          protocols: [],
           relationships: []
         };
       };
@@ -384,7 +351,8 @@ describe('Knowledge Graph Module', () => {
       const entities = extractAll(text);
 
       expect(entities).toBeDefined();
-      expect(entities).toHaveProperty('devices');
+      expect(entities).toHaveProperty('vendors');
+      expect(entities).toHaveProperty('functions');
       expect(entities).toHaveProperty('commands');
     });
 
@@ -395,17 +363,18 @@ describe('Knowledge Graph Module', () => {
 
       const extractAll = (text: string) => {
         return {
-          devices: [],
+          vendors: [],
+          functions: [],
           commands: [],
           parameters: [],
-          protocols: [],
           relationships: []
         };
       };
 
       const entities = extractAll(doc.content);
 
-      expect(entities.devices).toHaveLength(0);
+      expect(entities.vendors).toHaveLength(0);
+      expect(entities.functions).toHaveLength(0);
       expect(entities.commands).toHaveLength(0);
     });
   });

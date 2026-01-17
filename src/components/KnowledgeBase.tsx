@@ -29,18 +29,26 @@ import { useWebSocket } from '../hooks/useWebSocket';
 
 type ViewMode = 'grid' | 'table';
 type KnowledgeGraphStats = {
-  devices: number;
+  vendors: number;
+  vendorsTotal: number;
+  functions: number;
+  functionsTotal: number;
   commands: number;
+  commandsTotal: number;
   parameters: number;
-  protocols: number;
+  parametersTotal: number;
   relationships: number;
 };
 
 const defaultKgStats: KnowledgeGraphStats = {
-  devices: 0,
+  vendors: 0,
+  vendorsTotal: 0,
+  functions: 0,
+  functionsTotal: 0,
   commands: 0,
+  commandsTotal: 0,
   parameters: 0,
-  protocols: 0,
+  parametersTotal: 0,
   relationships: 0
 };
 
@@ -589,19 +597,24 @@ const KnowledgeBase: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-5">
             {[
-              { label: '设备', key: 'devices' },
-              { label: '命令', key: 'commands' },
-              { label: '参数', key: 'parameters' },
-              { label: '协议', key: 'protocols' },
+              { label: '厂商', key: 'vendors', totalKey: 'vendorsTotal' },
+              { label: '功能', key: 'functions', totalKey: 'functionsTotal' },
+              { label: '命令', key: 'commands', totalKey: 'commandsTotal' },
+              { label: '参数', key: 'parameters', totalKey: 'parametersTotal' },
               { label: '关系', key: 'relationships' }
-            ].map(item => (
+            ].map(item => {
+              const totalKey = item.totalKey as keyof KnowledgeGraphStats | undefined;
+              const totalValue = totalKey ? kgStats[totalKey] : undefined;
+              const displayValue = totalValue ?? kgStats[item.key as keyof KnowledgeGraphStats] ?? 0;
+              return (
               <div key={item.key} className="p-3 rounded-xl bg-gray-50">
                 <p className="text-xs text-gray-500">{item.label}</p>
                 <p className="text-xl font-semibold text-gray-900 mt-1">
-                  {kgLoading ? '...' : kgStats[item.key as keyof typeof kgStats] ?? 0}
+                  {kgLoading ? '...' : displayValue}
                 </p>
               </div>
-            ))}
+              );
+            })}
           </div>
           {kgMessage && (
             <div className={`mt-4 flex items-center gap-2 text-sm ${kgStatus === 'error' ? 'text-red-600' : 'text-gray-600'}`}>

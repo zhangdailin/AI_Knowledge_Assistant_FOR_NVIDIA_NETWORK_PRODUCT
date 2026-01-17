@@ -3,42 +3,22 @@
  * 测试混合检索（RAG + 知识图谱）功能
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { createMockChunks, createMockEntities } from '../../fixtures/mock-data';
+import { describe, it, expect } from 'vitest';
+import { createMockChunks } from '../../fixtures/mock-data';
+import { determineRetrievalStrategy } from '../../../server/hybridRetrieval.mjs';
 
 describe('Hybrid Retrieval Module', () => {
   describe('determineRetrievalStrategy', () => {
-    it('should use device-focused strategy for device queries', () => {
+    it('should use vendor-focused strategy for vendor queries', () => {
       const queries = [
-        'IBCR-01 配置',
-        'CSW-01 switch 设置',
-        '设备 IBSP-02 状态'
+        'NVIDIA 配置',
+        '英伟达 文档',
+        'Mellanox 手册'
       ];
 
-      const determineStrategy = (query: string) => {
-        const devicePatterns = [
-          /\b(IBCR|IBSP|IBLF|CSW|SSW|ASW)[-_]?\w*\d+/i,
-          /设备|device|switch|router/i,
-          /拓扑|topology/i
-        ];
-
-        for (const pattern of devicePatterns) {
-          if (pattern.test(query)) {
-            return {
-              strategy: 'device-focused',
-              enableKnowledgeGraph: true,
-              kgWeight: 0.4,
-              maxKgResults: 8
-            };
-          }
-        }
-
-        return { strategy: 'balanced', kgWeight: 0.25, maxKgResults: 5 };
-      };
-
       queries.forEach(query => {
-        const strategy = determineStrategy(query);
-        expect(strategy.strategy).toBe('device-focused');
+        const strategy = determineRetrievalStrategy(query);
+        expect(strategy.strategy).toBe('vendor-focused');
         expect(strategy.kgWeight).toBe(0.4);
       });
     });
@@ -50,64 +30,23 @@ describe('Hybrid Retrieval Module', () => {
         '命令行配置 BGP'
       ];
 
-      const determineStrategy = (query: string) => {
-        const commandPatterns = [
-          /\bnv\s+(set|show|config|unset)/i,
-          /命令|command|配置|config/i,
-          /如何|怎么|how to/i
-        ];
-
-        for (const pattern of commandPatterns) {
-          if (pattern.test(query)) {
-            return {
-              strategy: 'command-focused',
-              enableKnowledgeGraph: true,
-              kgWeight: 0.35,
-              maxKgResults: 6
-            };
-          }
-        }
-
-        return { strategy: 'balanced', kgWeight: 0.25, maxKgResults: 5 };
-      };
-
       queries.forEach(query => {
-        const strategy = determineStrategy(query);
+        const strategy = determineRetrievalStrategy(query);
         expect(strategy.strategy).toBe('command-focused');
         expect(strategy.kgWeight).toBe(0.35);
       });
     });
 
-    it('should use protocol-focused strategy for protocol queries', () => {
+    it('should use function-focused strategy for function queries', () => {
       const queries = [
-        'BGP 路由配置',
-        'EVPN 协议设置',
-        'OSPF 配置'
+        'BGP 路由协议',
+        'EVPN 协议说明',
+        'OSPF 功能介绍'
       ];
 
-      const determineStrategy = (query: string) => {
-        const protocolPatterns = [
-          /\b(BGP|OSPF|EVPN|VXLAN|MLAG|LACP|RoCE)\b/i,
-          /协议|protocol/i
-        ];
-
-        for (const pattern of protocolPatterns) {
-          if (pattern.test(query)) {
-            return {
-              strategy: 'protocol-focused',
-              enableKnowledgeGraph: true,
-              kgWeight: 0.3,
-              maxKgResults: 5
-            };
-          }
-        }
-
-        return { strategy: 'balanced', kgWeight: 0.25, maxKgResults: 5 };
-      };
-
       queries.forEach(query => {
-        const strategy = determineStrategy(query);
-        expect(strategy.strategy).toBe('protocol-focused');
+        const strategy = determineRetrievalStrategy(query);
+        expect(strategy.strategy).toBe('function-focused');
         expect(strategy.kgWeight).toBe(0.3);
       });
     });
@@ -115,16 +54,7 @@ describe('Hybrid Retrieval Module', () => {
     it('should use balanced strategy as default', () => {
       const query = '一般性问题';
 
-      const determineStrategy = (query: string) => {
-        return {
-          strategy: 'balanced',
-          enableKnowledgeGraph: true,
-          kgWeight: 0.25,
-          maxKgResults: 5
-        };
-      };
-
-      const strategy = determineStrategy(query);
+      const strategy = determineRetrievalStrategy(query);
 
       expect(strategy.strategy).toBe('balanced');
       expect(strategy.kgWeight).toBe(0.25);
@@ -140,8 +70,8 @@ describe('Hybrid Retrieval Module', () => {
 
       const kgResults = [
         {
-          type: 'device',
-          device: { name: 'IBCR-01', type: 'switch' },
+          type: 'vendor',
+          vendor: { name: 'NVIDIA' },
           commands: [{ name: 'nv set interface' }],
           relevance: 0.9
         }
@@ -154,7 +84,7 @@ describe('Hybrid Retrieval Module', () => {
         // 提取 KG 实体
         const kgEntities = new Set<string>();
         kgResults.forEach(result => {
-          if (result.device) kgEntities.add(result.device.name.toLowerCase());
+          if (result.vendor) kgEntities.add(result.vendor.name.toLowerCase());
         });
 
         // 增强包含 KG 实体的结果
@@ -184,11 +114,11 @@ describe('Hybrid Retrieval Module', () => {
 
     it('should boost scores for KG entity matches', () => {
       const result = {
-        chunk: { ...createMockChunks(1)[0], content: 'Configure IBCR-01 switch' },
+        chunk: { ...createMockChunks(1)[0], content: 'Configure NVIDIA switch' },
         score: 0.7
       };
 
-      const kgEntities = new Set(['ibcr-01']);
+      const kgEntities = new Set(['nvidia']);
       const kgWeight = 0.3;
 
       // 检查匹配
@@ -210,10 +140,11 @@ describe('Hybrid Retrieval Module', () => {
     it('should add KG context to results', () => {
       const kgResults = [
         {
-          type: 'device',
-          device: { name: 'IBCR-01', type: 'switch' },
+          type: 'vendor',
+          vendor: { name: 'NVIDIA' },
+          functions: [{ name: 'BGP' }],
           commands: [{ name: 'nv set interface' }],
-          protocols: [{ name: 'BGP' }]
+          parameters: [{ name: 'eth0' }]
         }
       ];
 
@@ -222,15 +153,15 @@ describe('Hybrid Retrieval Module', () => {
         const parts = [];
 
         for (const result of kgResults) {
-          if (result.type === 'device') {
-            const device = result.device;
+          if (result.type === 'vendor') {
+            const vendor = result.vendor;
+            const functions = result.functions.map((f: any) => f.name).join(', ');
             const commands = result.commands.map((c: any) => c.name).join(', ');
-            const protocols = result.protocols.map((p: any) => p.name).join(', ');
 
             parts.push(
-              `设备 ${device.name} (类型: ${device.type}):\n` +
-              (commands ? `  - 支持命令: ${commands}\n` : '') +
-              (protocols ? `  - 支持协议: ${protocols}\n` : '')
+              `厂商 ${vendor.name}:\n` +
+              (functions ? `  - 功能: ${functions}\n` : '') +
+              (commands ? `  - 相关命令: ${commands}\n` : '')
             );
           }
         }
@@ -240,7 +171,7 @@ describe('Hybrid Retrieval Module', () => {
 
       const context = formatContext(kgResults);
 
-      expect(context).toContain('IBCR-01');
+      expect(context).toContain('NVIDIA');
       expect(context).toContain('nv set interface');
       expect(context).toContain('BGP');
     });
@@ -286,10 +217,10 @@ describe('Hybrid Retrieval Module', () => {
           processedDocuments: 0,
           failedDocuments: 0,
           totalEntities: {
-            devices: 0,
+            vendors: 0,
+            functions: 0,
             commands: 0,
-            parameters: 0,
-            protocols: 0
+            parameters: 0
           }
         };
 
@@ -297,7 +228,8 @@ describe('Hybrid Retrieval Module', () => {
           try {
             // 模拟处理
             stats.processedDocuments++;
-            stats.totalEntities.devices += 2;
+            stats.totalEntities.vendors += 1;
+            stats.totalEntities.functions += 2;
             stats.totalEntities.commands += 3;
           } catch (error) {
             stats.failedDocuments++;
@@ -310,7 +242,7 @@ describe('Hybrid Retrieval Module', () => {
       const stats = await processDocuments(documentIds);
 
       expect(stats.processedDocuments).toBe(3);
-      expect(stats.totalEntities.devices).toBeGreaterThan(0);
+      expect(stats.totalEntities.vendors).toBeGreaterThan(0);
     });
 
     it('should handle processing failures gracefully', async () => {
@@ -347,16 +279,20 @@ describe('Hybrid Retrieval Module', () => {
     it('should return graph statistics', () => {
       const mockStats = {
         knowledgeGraph: {
-          devices: 45,
+          vendors: 45,
+          vendorsTotal: 60,
+          functions: 12,
+          functionsTotal: 20,
           commands: 128,
+          commandsTotal: 150,
           parameters: 256,
-          protocols: 12,
+          parametersTotal: 300,
           relationships: 432
         },
         status: 'active'
       };
 
-      expect(mockStats.knowledgeGraph.devices).toBe(45);
+      expect(mockStats.knowledgeGraph.vendors).toBe(45);
       expect(mockStats.knowledgeGraph.relationships).toBe(432);
       expect(mockStats.status).toBe('active');
     });
@@ -364,10 +300,14 @@ describe('Hybrid Retrieval Module', () => {
     it('should handle error state', () => {
       const errorStats = {
         knowledgeGraph: {
-          devices: 0,
+          vendors: 0,
+          vendorsTotal: 0,
+          functions: 0,
+          functionsTotal: 0,
           commands: 0,
+          commandsTotal: 0,
           parameters: 0,
-          protocols: 0,
+          parametersTotal: 0,
           relationships: 0
         },
         status: 'error',
@@ -380,7 +320,7 @@ describe('Hybrid Retrieval Module', () => {
   });
 
   describe('strategy effectiveness', () => {
-    it('should improve relevance for device queries', () => {
+    it('should improve relevance for vendor queries', () => {
       const baseScore = 0.7;
       const kgBoost = 0.12; // 3 entity matches * 0.4 weight * 0.1
 

@@ -358,11 +358,11 @@ More content here.
             setTimeout(() => {
               resolve({
                 nodes: [
-                  { id: 'device-1', type: 'Device', name: 'IBCR-01' },
-                  { id: 'cmd-1', type: 'Command', name: 'nv set interface' }
+                  { id: 'vendor-1', type: 'Vendor', name: 'NVIDIA' },
+                  { id: 'func-1', type: 'Function', name: 'BGP' }
                 ],
                 relationships: [
-                  { from: 'device-1', to: 'cmd-1', type: 'USES_COMMAND' }
+                  { from: 'vendor-1', to: 'func-1', type: 'HAS_FUNCTION' }
                 ]
               });
             }, 150);
@@ -408,7 +408,7 @@ More content here.
           // Step 5: Knowledge graph (150ms)
           await new Promise(resolve => setTimeout(resolve, 150));
           const kgResults = [
-            { id: 'entity-1', type: 'Protocol', name: 'BGP' }
+            { id: 'entity-1', type: 'Function', name: 'BGP' }
           ];
 
           // Step 6: RRF Fusion (50ms)

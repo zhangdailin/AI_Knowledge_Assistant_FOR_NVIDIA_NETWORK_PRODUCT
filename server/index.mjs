@@ -2299,10 +2299,22 @@ app.post('/api/topology/:operation', upload.single('file'), asyncHandlerV2(async
     return ApiResponse.badRequest(res, 'file required');
   }
 
-  // 处理拓扑操作
-  const result = await handleTopologyOperation(operation, file, params);
+  try {
+    // 处理拓扑操作
+    const result = await handleTopologyOperation(operation, file, params);
 
-  return ApiResponse.success(res, result);
+    if (res.headersSent || res.writableEnded) {
+      return;
+    }
+
+    return ApiResponse.success(res, result);
+  } catch (error) {
+    if (res.headersSent || res.writableEnded) {
+      console.warn('[TopologyRestore] Stream error after headers sent:', error.message);
+      return;
+    }
+    throw error;
+  }
 }));
 
 // ============== 拓扑解析辅助函数 ==============
@@ -3264,6 +3276,17 @@ app.delete('/api/knowledge-graph/clear', asyncHandler(async (req, res) => {
     res.json({ ok: true, message: '知识图谱已清空' });
   } catch (error) {
     console.error('清空知识图谱失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 导出知识图谱数据
+app.get('/api/knowledge-graph/export', asyncHandler(async (req, res) => {
+  try {
+    const graphData = await knowledgeGraph.exportGraphData();
+    res.json({ ok: true, data: graphData });
+  } catch (error) {
+    console.error('导出知识图谱数据失败:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 }));

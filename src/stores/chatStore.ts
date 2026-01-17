@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { localStorageManager, Conversation, Message } from '../lib/localStorage';
 import { AI_MODEL_CONFIG, CONVERSATION_CONFIG } from '../lib/constants';
+import { enhancedNetworkKeywordExtractor } from '../lib/enhancedNetworkKeywordExtractor';
 import { extractSNs } from './toolStore';
 import { getApiServerUrl } from '../utils/apiUtils';
 
@@ -119,6 +120,12 @@ function decomposeComplexQuery(query: string): string[] {
 // 自动检测查询应该搜索的分类
 async function detectCategory(query: string): Promise<string | undefined> {
   const queryLower = query.toLowerCase();
+  const extractedVendors = enhancedNetworkKeywordExtractor.extractKeywords(query).vendors || [];
+  const normalizedVendors = new Set(
+    extractedVendors
+      .map(v => v.toLowerCase().replace(/^the\s+/, '').trim())
+      .filter(Boolean)
+  );
 
   // 获取所有分类
   try {
@@ -131,11 +138,26 @@ async function detectCategory(query: string): Promise<string | undefined> {
     const findMatchingCategory = (nodes: any[]): string | undefined => {
       for (const node of nodes) {
         const nameLower = node.name.toLowerCase();
+        if (nameLower === 'default' || nameLower === '默认分类') {
+          continue;
+        }
 
         // 检查分类名称是否在查询中
         if (queryLower.includes(nameLower)) {
           console.log(`[CategoryDetect] 检测到分类: ${node.name} (ID: ${node.id})`);
           return node.id;
+        }
+
+        if (normalizedVendors.has(nameLower)) {
+          console.log(`[CategoryDetect] 检测到厂商分类: ${node.name} (ID: ${node.id})`);
+          return node.id;
+        }
+
+        for (const vendor of normalizedVendors) {
+          if (vendor.includes(nameLower) || nameLower.includes(vendor)) {
+            console.log(`[CategoryDetect] 模糊匹配厂商分类: ${node.name} (ID: ${node.id})`);
+            return node.id;
+          }
         }
 
         // 检查子分类
