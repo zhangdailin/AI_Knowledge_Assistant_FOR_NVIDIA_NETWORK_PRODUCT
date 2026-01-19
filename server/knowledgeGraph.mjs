@@ -10,6 +10,228 @@ import * as storage from './storage.mjs';
 let driver = null;
 let isConnected = false;
 
+// SiliconFlow API 配置
+const SILICONFLOW_CHAT_URL = 'https://api.siliconflow.cn/v1/chat/completions';
+const DEFAULT_NER_MODEL = 'deepseek-ai/DeepSeek-V3';
+
+/**
+ * 使用 LLM 进行实体抽取（SiliconFlow API）
+ * @param {string} text - 要抽取实体的文本
+ * @param {Object} options - 选项
+ * @returns {Object} 提取的实体（vendors, functions, commands, parameters, relationships）
+ */
+export async function extractEntitiesWithLLM(text, options = {}) {
+  const {
+    model = DEFAULT_NER_MODEL,
+    timeout = 30000,
+    source = 'llm-ner'
+  } = options;
+
+  if (!text || text.trim().length < 10) {
+    return { vendors: [], functions: [], commands: [], parameters: [], relationships: [] };
+  }
+
+  // 截断过长文本
+  const maxTextLength = 3000;
+  const truncatedText = text.length > maxTextLength
+    ? text.substring(0, maxTextLength) + '...'
+    : text;
+
+  try {
+    const apiKey = await storage.getApiKey('siliconflow');
+    if (!apiKey) {
+      console.warn('[KnowledgeGraph] LLM NER 跳过: SiliconFlow API key 未配置');
+      return null; // 返回 null 表示应该降级到正则方式
+    }
+
+    const systemPrompt = `你是一个网络技术文档实体识别专家。从文本中提取以下类型的实体：
+
+1. **厂商 (vendors)**: 网络设备或软件厂商名称（如 NVIDIA, Cisco, Cumulus, Mellanox 等）
+2. **功能 (functions)**: 网络功能或协议名称（如 VXLAN, BGP, MLAG, QoS, ECMP 等）
+3. **命令 (commands)**: CLI 命令或配置命令（如 nv set, show interface, ip route 等）
+4. **参数 (parameters)**: 命令参数或配置选项（如 --verbose, vni, peer-group 等）
+
+请以 JSON 格式返回，格式如下：
+{
+  "vendors": ["厂商1", "厂商2"],
+  "functions": ["功能1", "功能2"],
+  "commands": ["命令1", "命令2"],
+  "parameters": ["参数1", "参数2"]
+}
+
+注意：
+- 只提取明确出现在文本中的实体
+- 命令应保留完整格式（如 "nv set interface" 而不只是 "nv"）
+- 如果某类实体没有找到，返回空数组
+- 只返回 JSON，不要有其他内容`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const response = await fetch(SILICONFLOW_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `请从以下文本中提取网络技术相关实体：\n\n${truncatedText}` }
+        ],
+        temperature: 0.1, // 低温度保证一致性
+        max_tokens: 1000
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error(`[KnowledgeGraph] LLM NER API 错误 ${response.status}: ${errorText.substring(0, 100)}`);
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content?.trim();
+
+    if (!content) {
+      console.warn('[KnowledgeGraph] LLM NER 返回空内容');
+      return null;
+    }
+
+    // 解析 JSON 响应
+    let parsed;
+    try {
+      // 尝试提取 JSON（处理可能有额外文本的情况）
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        parsed = JSON.parse(content);
+      }
+    } catch (parseError) {
+      console.warn('[KnowledgeGraph] LLM NER 解析失败:', content.substring(0, 100));
+      return null;
+    }
+
+    // 转换为标准格式
+    const entities = {
+      vendors: (parsed.vendors || []).map(name => ({ name, source, heuristic: false })),
+      functions: (parsed.functions || []).map(name => ({ name, source, heuristic: false })),
+      commands: (parsed.commands || []).map(name => ({ name, category: 'config', source })),
+      parameters: (parsed.parameters || []).map(name => ({ name, type: 'string', source })),
+      relationships: []
+    };
+
+    console.log(`[KnowledgeGraph] LLM NER 提取: ${entities.vendors.length} 厂商, ${entities.functions.length} 功能, ${entities.commands.length} 命令, ${entities.parameters.length} 参数`);
+
+    return entities;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.warn('[KnowledgeGraph] LLM NER 超时');
+    } else {
+      console.error('[KnowledgeGraph] LLM NER 失败:', error.message);
+    }
+    return null;
+  }
+}
+
+/**
+ * 智能实体抽取：结合 LLM 和正则两种方式
+ * @param {string} text - 文本内容
+ * @param {Object} options - 选项
+ * @returns {Object} 提取的实体
+ */
+export async function smartExtractEntities(text, options = {}) {
+  const {
+    useLLM = 'auto', // 'auto' | 'always' | 'never' | 'hybrid'
+    llmThreshold = 500, // 文本长度阈值，超过则尝试 LLM
+    ...regexOptions
+  } = options;
+
+  // 如果禁用 LLM，直接使用正则
+  if (useLLM === 'never') {
+    return extractEntities(text, regexOptions);
+  }
+
+  // 判断是否应该使用 LLM
+  const shouldUseLLM = useLLM === 'always' ||
+    (useLLM === 'auto' && text.length >= llmThreshold) ||
+    useLLM === 'hybrid';
+
+  if (shouldUseLLM) {
+    const llmResult = await extractEntitiesWithLLM(text, options);
+
+    if (llmResult) {
+      if (useLLM === 'hybrid') {
+        // 混合模式：合并 LLM 和正则结果
+        const regexResult = extractEntities(text, regexOptions);
+        return mergeEntityResults(llmResult, regexResult);
+      }
+      return llmResult;
+    }
+    // LLM 失败，降级到正则
+    console.log('[KnowledgeGraph] LLM 失败，降级到正则方式');
+  }
+
+  return extractEntities(text, regexOptions);
+}
+
+/**
+ * 合并两个实体抽取结果（去重）
+ */
+function mergeEntityResults(result1, result2) {
+  const merged = {
+    vendors: [],
+    functions: [],
+    commands: [],
+    parameters: [],
+    relationships: []
+  };
+
+  const seenVendors = new Set();
+  const seenFunctions = new Set();
+  const seenCommands = new Set();
+  const seenParameters = new Set();
+
+  for (const r of [result1, result2]) {
+    for (const v of r.vendors || []) {
+      const key = v.name?.toLowerCase();
+      if (key && !seenVendors.has(key)) {
+        seenVendors.add(key);
+        merged.vendors.push(v);
+      }
+    }
+    for (const f of r.functions || []) {
+      const key = f.name?.toLowerCase();
+      if (key && !seenFunctions.has(key)) {
+        seenFunctions.add(key);
+        merged.functions.push(f);
+      }
+    }
+    for (const c of r.commands || []) {
+      const key = c.name?.toLowerCase();
+      if (key && !seenCommands.has(key)) {
+        seenCommands.add(key);
+        merged.commands.push(c);
+      }
+    }
+    for (const p of r.parameters || []) {
+      const key = p.name?.toLowerCase();
+      if (key && !seenParameters.has(key)) {
+        seenParameters.add(key);
+        merged.parameters.push(p);
+      }
+    }
+    merged.relationships.push(...(r.relationships || []));
+  }
+
+  return merged;
+}
+
 /**
  * 初始化 Neo4j 连接
  */
@@ -76,6 +298,17 @@ async function initSchema() {
       FOR (p:Parameter) REQUIRE p.name IS UNIQUE
     `);
 
+    // 创建 Chunk 节点约束和索引
+    await session.run(`
+      CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS
+      FOR (ch:Chunk) REQUIRE ch.id IS UNIQUE
+    `);
+
+    await session.run(`
+      CREATE INDEX chunk_document_idx IF NOT EXISTS
+      FOR (ch:Chunk) ON (ch.documentId)
+    `);
+
     // 创建全文索引用于搜索
     await session.run(`
       CREATE FULLTEXT INDEX kg_search IF NOT EXISTS
@@ -105,6 +338,7 @@ export async function closeNeo4j() {
 const DEFAULT_FUNCTION_NAME = 'general';
 
 const FUNCTION_DOMAIN_TERMS = new Map([
+  // === 基础网络功能 ===
   ['routing', 'Routing'],
   ['route', 'Routing'],
   ['interface', 'Interface'],
@@ -119,6 +353,83 @@ const FUNCTION_DOMAIN_TERMS = new Map([
   ['switch', 'Switch'],
   ['switching', 'Switching'],
   ['router', 'Router'],
+
+  // === 数据中心网络 ===
+  ['datacenter', 'Datacenter Networking'],
+  ['data center', 'Datacenter Networking'],
+  ['数据中心', 'Datacenter Networking'],
+  ['fabric', 'Network Fabric'],
+  ['leaf-spine', 'Leaf-Spine'],
+  ['leaf spine', 'Leaf-Spine'],
+  ['underlay', 'Underlay Network'],
+  ['overlay', 'Overlay Network'],
+  ['spine', 'Spine Switch'],
+  ['leaf', 'Leaf Switch'],
+  ['clos', 'Clos Topology'],
+
+  // === SDN 与自动化 ===
+  ['sdn', 'SDN'],
+  ['software defined', 'SDN'],
+  ['netconf', 'NETCONF'],
+  ['yang', 'YANG'],
+  ['ansible', 'Ansible Automation'],
+  ['automation', 'Network Automation'],
+  ['自动化', 'Network Automation'],
+  ['openconfig', 'OpenConfig'],
+  ['restconf', 'RESTCONF'],
+  ['零接触', 'Zero Touch Provisioning'],
+  ['ztp', 'Zero Touch Provisioning'],
+
+  // === NVIDIA 特定技术 ===
+  ['cumulus', 'Cumulus Linux'],
+  ['nvue', 'NVUE'],
+  ['netq', 'NetQ'],
+  ['spectrum', 'Spectrum ASIC'],
+  ['switchx', 'SwitchX'],
+  ['bluefield', 'BlueField DPU'],
+  ['dpu', 'DPU'],
+  ['connectx', 'ConnectX'],
+  ['mellanox', 'Mellanox'],
+
+  // === RoCE / RDMA ===
+  ['rdma', 'RDMA'],
+  ['roce', 'RoCE'],
+  ['rocev2', 'RoCEv2'],
+  ['infiniband', 'InfiniBand'],
+  ['ib', 'InfiniBand'],
+  ['pfc', 'Priority Flow Control'],
+  ['ecn', 'ECN'],
+  ['congestion', 'Congestion Control'],
+  ['拥塞控制', 'Congestion Control'],
+  ['lossless', 'Lossless Networking'],
+  ['无损网络', 'Lossless Networking'],
+
+  // === 高级路由协议 ===
+  ['segment routing', 'Segment Routing'],
+  ['sr', 'Segment Routing'],
+  ['srv6', 'SRv6'],
+  ['mpls', 'MPLS'],
+  ['ldp', 'LDP'],
+  ['rsvp', 'RSVP-TE'],
+
+  // === 其他网络功能 ===
+  ['nat', 'NAT'],
+  ['地址转换', 'NAT'],
+  ['multicast', 'Multicast'],
+  ['组播', 'Multicast'],
+  ['igmp', 'IGMP'],
+  ['pim', 'PIM'],
+  ['spanning tree', 'STP'],
+  ['生成树', 'STP'],
+  ['port channel', 'Port Channel'],
+  ['端口聚合', 'Port Channel'],
+  ['bond', 'Bonding'],
+  ['高可用', 'High Availability'],
+  ['ha', 'High Availability'],
+  ['failover', 'Failover'],
+  ['故障转移', 'Failover'],
+
+  // === 中文映射 ===
   ['路由', 'Routing'],
   ['接口', 'Interface'],
   ['安全', 'Security'],
@@ -220,6 +531,56 @@ const VENDOR_STRIP_SUFFIXES = new Set([
   'Group', 'Holdings', 'Linux', 'OS'
 ]);
 
+const DEFAULT_VENDOR_NAME = 'NVIDIA';
+const VENDOR_ALIAS_GROUPS = [
+  { canonical: 'NVIDIA', aliases: ['nvidia', '英伟达', '英偉達'] },
+  { canonical: 'Mellanox', aliases: ['mellanox', '迈络思', '梅兰诺克斯'] },
+  { canonical: 'Cumulus', aliases: ['cumulus'] },
+  { canonical: 'Cisco', aliases: ['cisco', '思科'] },
+  { canonical: 'Juniper', aliases: ['juniper', '瞻博'] },
+  { canonical: 'Arista', aliases: ['arista', '阿里斯塔'] },
+  { canonical: 'Huawei', aliases: ['huawei', '华为'] },
+  { canonical: 'H3C', aliases: ['h3c', '新华三'] },
+  { canonical: 'Ruijie', aliases: ['ruijie', '锐捷'] },
+  { canonical: 'Dell', aliases: ['dell', '戴尔'] }
+];
+const MULTI_VENDOR_SIGNALS = [
+  /\bvs\b/i,
+  /\bversus\b/i,
+  /\bcompare\b/i,
+  /\bcomparison\b/i,
+  /对比|比较|区别|差异/
+];
+
+// 语义关系模式 - 用于提取命令/功能之间的高级关系
+const SEMANTIC_RELATIONSHIP_PATTERNS = {
+  // REPLACES: 替代/废弃关系
+  replaces: [
+    /(\w+[\w\-\s]+)\s+(?:replaces?|supersedes?|deprecated)\s+(\w+[\w\-\s]+)/gi,
+    /(\w+[\w\-\s]+)\s+(?:is\s+)?(?:the\s+)?(?:new|replacement|successor)\s+(?:for|of|to)\s+(\w+[\w\-\s]+)/gi,
+    /(?:use|prefer)\s+(\w+[\w\-\s]+)\s+instead\s+of\s+(\w+[\w\-\s]+)/gi,
+    /(\w+[\w\-\s]+)\s+取代\s*(?:了)?\s*(\w+[\w\-\s]+)/g,
+    /(\w+[\w\-\s]+)\s+已?(?:弃用|废弃|过时).*?(?:使用|用)\s*(\w+[\w\-\s]+)/g
+  ],
+  // REQUIRES: 依赖关系
+  requires: [
+    /(\w+[\w\-\s]+)\s+(?:requires?|needs?|depends?\s+on)\s+(\w+[\w\-\s]+)/gi,
+    /(?:before|prior\s+to)\s+(?:using|running|enabling)\s+(\w+[\w\-\s]+).*?(?:must|need\s+to|should)\s+(?:enable|configure|set)\s+(\w+[\w\-\s]+)/gi,
+    /(\w+[\w\-\s]+)\s+(?:依赖|需要|前提)\s*(?:是)?\s*(\w+[\w\-\s]+)/g,
+    /(?:启用|使用|配置)\s*(\w+[\w\-\s]+)\s*(?:之前|前).*?(?:需要|必须)\s*(?:先)?\s*(?:启用|配置)\s*(\w+[\w\-\s]+)/g
+  ],
+  // SIMILAR_TO: 相似关系
+  similarTo: [
+    /(\w+[\w\-\s]+)\s+(?:is\s+)?(?:similar|equivalent|comparable)\s+to\s+(\w+[\w\-\s]+)/gi,
+    /(\w+[\w\-\s]+)\s+(?:和|与)\s*(\w+[\w\-\s]+)\s*(?:类似|相似|相当|等效)/g
+  ],
+  // CONFLICTS_WITH: 冲突关系
+  conflictsWith: [
+    /(\w+[\w\-\s]+)\s+(?:conflicts?\s+with|incompatible\s+with|cannot\s+be\s+used\s+with)\s+(\w+[\w\-\s]+)/gi,
+    /(\w+[\w\-\s]+)\s+(?:和|与)\s*(\w+[\w\-\s]+)\s*(?:冲突|不兼容|互斥)/g
+  ]
+};
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -247,6 +608,180 @@ function normalizeVendorName(value) {
 function isStopwordVendor(value) {
   const lowered = value.toLowerCase();
   return VENDOR_STOPWORDS.has(lowered);
+}
+
+function normalizeVendorKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function findVendorNameMatch(vendorNames, target) {
+  const normalized = normalizeVendorKey(target);
+  if (!normalized) return null;
+  return vendorNames.find(name => normalizeVendorKey(name) === normalized) || null;
+}
+
+function resolveVendorGroupName(group, vendorNames) {
+  const candidates = [group.canonical, ...group.aliases];
+  for (const vendorName of vendorNames) {
+    const normalized = normalizeVendorKey(vendorName);
+    if (!normalized) continue;
+    if (candidates.some(candidate => normalizeVendorKey(candidate) === normalized)) {
+      return vendorName;
+    }
+  }
+  return group.canonical;
+}
+
+function resolveVendorAlias(value, vendorNames) {
+  const normalized = normalizeVendorKey(value);
+  if (!normalized) return null;
+  const group = VENDOR_ALIAS_GROUPS.find(entry => {
+    if (normalizeVendorKey(entry.canonical) === normalized) return true;
+    return entry.aliases.some(alias => normalizeVendorKey(alias) === normalized);
+  });
+  if (!group) return null;
+  return resolveVendorGroupName(group, vendorNames);
+}
+
+function resolveVendorNameFromText(value, vendorNames) {
+  return findVendorNameMatch(vendorNames, value) || resolveVendorAlias(value, vendorNames) || value;
+}
+
+/**
+ * 从文本中提取语义关系（替代、依赖、相似、冲突）
+ * @param {string} text - 文本内容
+ * @param {Set} knownEntities - 已知的实体名称集合
+ * @returns {Array} 语义关系列表
+ */
+function extractSemanticRelationships(text, knownEntities = new Set()) {
+  const relationships = [];
+  const seenRelations = new Set();
+
+  const relationshipTypes = {
+    replaces: 'REPLACES',
+    requires: 'REQUIRES',
+    similarTo: 'SIMILAR_TO',
+    conflictsWith: 'CONFLICTS_WITH'
+  };
+
+  for (const [patternType, patterns] of Object.entries(SEMANTIC_RELATIONSHIP_PATTERNS)) {
+    const relType = relationshipTypes[patternType];
+
+    for (const pattern of patterns) {
+      // 重置正则状态
+      pattern.lastIndex = 0;
+      let match;
+
+      while ((match = pattern.exec(text)) !== null) {
+        const entity1 = match[1]?.trim();
+        const entity2 = match[2]?.trim();
+
+        // 验证实体名称合理性
+        if (!entity1 || !entity2 || entity1.length < 2 || entity2.length < 2) continue;
+        if (entity1.length > 50 || entity2.length > 50) continue;
+        if (entity1.toLowerCase() === entity2.toLowerCase()) continue;
+
+        // 创建唯一键避免重复
+        const key = `${entity1.toLowerCase()}|${relType}|${entity2.toLowerCase()}`;
+        if (seenRelations.has(key)) continue;
+        seenRelations.add(key);
+
+        // 确定实体类型（优先使用已知实体）
+        const type1 = knownEntities.has(entity1.toLowerCase()) ? 'Command' : 'Function';
+        const type2 = knownEntities.has(entity2.toLowerCase()) ? 'Command' : 'Function';
+
+        relationships.push({
+          from: entity1,
+          to: entity2,
+          type: relType,
+          fromType: type1,
+          toType: type2
+        });
+      }
+    }
+  }
+
+  return relationships;
+}
+
+function detectVendorMentions(text, vendorNames) {
+  const matches = [];
+  const seen = new Set();
+  const textLower = text.toLowerCase();
+
+  const addMatch = (name, index) => {
+    const key = normalizeVendorKey(name);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    matches.push({ name, index });
+  };
+
+  for (const vendorName of vendorNames) {
+    const vendorLower = normalizeVendorKey(vendorName);
+    if (!vendorLower) continue;
+    const index = indexOfKeyword(textLower, vendorLower);
+    if (index !== -1 || text.includes(vendorName)) {
+      addMatch(vendorName, index === -1 ? textLower.indexOf(vendorLower) : index);
+    }
+  }
+
+  for (const group of VENDOR_ALIAS_GROUPS) {
+    for (const alias of group.aliases) {
+      const aliasLower = normalizeVendorKey(alias);
+      if (!aliasLower) continue;
+      const index = indexOfKeyword(textLower, aliasLower);
+      if (index === -1) continue;
+      const resolved = resolveVendorGroupName(group, vendorNames);
+      addMatch(resolved, index);
+    }
+  }
+
+  matches.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  return matches;
+}
+
+export function detectPreferredVendors(text, vendorNames = [], options = {}) {
+  const safeText = typeof text === 'string' ? text : '';
+  const defaultVendor = resolveVendorNameFromText(
+    options.defaultVendor || process.env.DEFAULT_VENDOR || DEFAULT_VENDOR_NAME,
+    vendorNames
+  );
+  const explicitMatches = detectVendorMentions(safeText, vendorNames);
+  const explicitVendors = explicitMatches.map(match => match.name);
+
+  const allowMultiple = options.allowMultiple === true ||
+    MULTI_VENDOR_SIGNALS.some(pattern => pattern.test(safeText));
+
+  if (explicitVendors.length === 0) {
+    return {
+      explicitVendors: [],
+      preferredVendors: defaultVendor ? [defaultVendor] : [],
+      usedDefault: Boolean(defaultVendor)
+    };
+  }
+
+  if (explicitVendors.length > 1 && !allowMultiple) {
+    let chosen = explicitVendors[0];
+    if (defaultVendor) {
+      const defaultIndex = explicitVendors.findIndex(v =>
+        normalizeVendorKey(v) === normalizeVendorKey(defaultVendor)
+      );
+      if (defaultIndex !== -1) {
+        chosen = explicitVendors[defaultIndex];
+      }
+    }
+    return {
+      explicitVendors,
+      preferredVendors: [chosen],
+      usedDefault: false
+    };
+  }
+
+  return {
+    explicitVendors,
+    preferredVendors: explicitVendors,
+    usedDefault: false
+  };
 }
 
 function normalizeFunctionName(value) {
@@ -595,7 +1130,7 @@ export function extractEntities(text, metadata = {}) {
     // 如果只有功能没有厂商，尝试推断或创建通用厂商
     // 检查是否能从 metadata 或文本推断厂商
     const inferredVendor = metadata.vendorName ||
-                           (metadata.category && !isDefaultCategoryName(metadata.category) ? metadata.category : null);
+      (metadata.category && !isDefaultCategoryName(metadata.category) ? metadata.category : null);
 
     if (inferredVendor) {
       addVendor(inferredVendor);
@@ -644,7 +1179,15 @@ export function extractEntities(text, metadata = {}) {
     }
   }
 
-  // 7. 合理性检查 - 防止过度识别
+  // 7. 提取语义关系（替代、依赖、相似、冲突）
+  const knownEntityNames = new Set([
+    ...entities.commands.map(c => c.name.toLowerCase()),
+    ...entities.functions.map(f => f.name.toLowerCase())
+  ]);
+  const semanticRels = extractSemanticRelationships(text, knownEntityNames);
+  entities.relationships.push(...semanticRels);
+
+  // 8. 合理性检查 - 防止过度识别
   const textLength = text.length;
   const maxCommandsPerKB = 20;
   const maxCommands = Math.max(100, Math.floor(textLength / 1000) * maxCommandsPerKB);
@@ -660,7 +1203,7 @@ export function extractEntities(text, metadata = {}) {
 /**
  * 将实体存储到 Neo4j 知识图谱
  * @param {Object} entities - 提取的实体
- * @param {Object} chunkMetadata - chunk 元数据
+ * @param {Object} chunkMetadata - chunk 元数据 (id, documentId, text)
  */
 export async function storeEntities(entities, chunkMetadata = {}) {
   if (!isConnected) {
@@ -668,7 +1211,22 @@ export async function storeEntities(entities, chunkMetadata = {}) {
   }
 
   const session = driver.session();
+  const chunkId = chunkMetadata.chunkId || chunkMetadata.id;
+  const documentId = chunkMetadata.documentId;
+
   try {
+    // 0. 创建 Chunk 节点（如果提供了 chunkId）
+    if (chunkId && documentId) {
+      await session.run(`
+        MERGE (ch:Chunk {id: $chunkId})
+        ON CREATE SET
+          ch.documentId = $documentId,
+          ch.createdAt = datetime()
+        ON MATCH SET
+          ch.documentId = $documentId
+      `, { chunkId, documentId });
+    }
+
     // 1. 创建厂商节点
     for (const vendor of entities.vendors || []) {
       await session.run(`
@@ -688,6 +1246,17 @@ export async function storeEntities(entities, chunkMetadata = {}) {
         name: vendor.name,
         source: vendor.source
       });
+
+      // 创建 Chunk -> Vendor MENTIONS 关系
+      if (chunkId) {
+        await session.run(`
+          MATCH (ch:Chunk {id: $chunkId})
+          MATCH (v:Vendor {name: $name})
+          MERGE (ch)-[r:MENTIONS]->(v)
+          ON CREATE SET r.weight = 1
+          ON MATCH SET r.weight = r.weight + 1
+        `, { chunkId, name: vendor.name });
+      }
     }
 
     // 2. 创建功能节点
@@ -709,6 +1278,17 @@ export async function storeEntities(entities, chunkMetadata = {}) {
         name: func.name,
         source: func.source
       });
+
+      // 创建 Chunk -> Function MENTIONS 关系
+      if (chunkId) {
+        await session.run(`
+          MATCH (ch:Chunk {id: $chunkId})
+          MATCH (f:Function {name: $name})
+          MERGE (ch)-[r:MENTIONS]->(f)
+          ON CREATE SET r.weight = 1
+          ON MATCH SET r.weight = r.weight + 1
+        `, { chunkId, name: func.name });
+      }
     }
 
     // 3. 创建命令节点
@@ -732,6 +1312,17 @@ export async function storeEntities(entities, chunkMetadata = {}) {
         category: command.category,
         source: command.source
       });
+
+      // 创建 Chunk -> Command MENTIONS 关系
+      if (chunkId) {
+        await session.run(`
+          MATCH (ch:Chunk {id: $chunkId})
+          MATCH (c:Command {name: $name})
+          MERGE (ch)-[r:MENTIONS]->(c)
+          ON CREATE SET r.weight = 1
+          ON MATCH SET r.weight = r.weight + 1
+        `, { chunkId, name: command.name });
+      }
     }
 
     // 4. 创建参数节点
@@ -755,6 +1346,17 @@ export async function storeEntities(entities, chunkMetadata = {}) {
         type: param.type,
         source: param.source
       });
+
+      // 创建 Chunk -> Parameter MENTIONS 关系
+      if (chunkId) {
+        await session.run(`
+          MATCH (ch:Chunk {id: $chunkId})
+          MATCH (p:Parameter {name: $name})
+          MERGE (ch)-[r:MENTIONS]->(p)
+          ON CREATE SET r.weight = 1
+          ON MATCH SET r.weight = r.weight + 1
+        `, { chunkId, name: param.name });
+      }
     }
 
     // 5. 创建关系
@@ -773,7 +1375,8 @@ export async function storeEntities(entities, chunkMetadata = {}) {
       });
     }
 
-    console.log(`[KnowledgeGraph] ✅ 存储实体: ${entities.vendors?.length || 0} 厂商, ${entities.functions?.length || 0} 功能, ${entities.commands?.length || 0} 命令, ${entities.parameters?.length || 0} 参数`);
+    const chunkInfo = chunkId ? `, chunk: ${chunkId}` : '';
+    console.log(`[KnowledgeGraph] ✅ 存储实体: ${entities.vendors?.length || 0} 厂商, ${entities.functions?.length || 0} 功能, ${entities.commands?.length || 0} 命令, ${entities.parameters?.length || 0} 参数${chunkInfo}`);
   } catch (error) {
     console.error('[KnowledgeGraph] 存储实体失败:', error.message);
     throw error;
@@ -858,10 +1461,27 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 
     // 1. 从查询中提取关键实体
     const vendorNames = await getVendorNames();
-    const queryEntities = extractEntities(query, { vendorNames, source: 'query', allowDefaultFunction: false });
+    const vendorDetection = detectPreferredVendors(query, vendorNames, {});
+    const preferredVendor = vendorDetection.preferredVendors[0] || null;
+    const applyVendorFilter = Boolean(preferredVendor);
+
+    const queryEntities = extractEntities(query, {
+      vendorNames,
+      source: 'query',
+      allowDefaultFunction: false,
+      allowHeuristicVendors: false
+    });
+
+    if (preferredVendor && queryEntities.vendors.length === 0) {
+      queryEntities.vendors.push({ name: preferredVendor, source: 'query' });
+    }
+
+    const vendorTargets = applyVendorFilter
+      ? [{ name: preferredVendor }]
+      : queryEntities.vendors;
 
     // 2. 查找厂商相关信息
-    for (const vendor of queryEntities.vendors.slice(0, 3)) {
+    for (const vendor of vendorTargets.slice(0, 3)) {
       const result = await session.run(`
         MATCH (v:Vendor {name: $vendorName})
         OPTIONAL MATCH (v)-[:HAS_FUNCTION]->(f:Function)
@@ -889,17 +1509,28 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 
     // 3. 查找功能相关信息
     for (const func of queryEntities.functions.slice(0, 3)) {
-      const result = await session.run(`
-        MATCH (f:Function {name: $functionName})
-        OPTIONAL MATCH (v:Vendor)-[:HAS_FUNCTION]->(f)
-        OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
-        OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
-        RETURN f,
-               collect(DISTINCT v) as vendors,
-               collect(DISTINCT c) as commands,
-               collect(DISTINCT p) as parameters
-        LIMIT 1
-      `, { functionName: func.name });
+      const result = applyVendorFilter
+        ? await session.run(`
+            MATCH (v:Vendor {name: $vendorName})-[:HAS_FUNCTION]->(f:Function {name: $functionName})
+            OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
+            OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
+            RETURN f,
+                   collect(DISTINCT v) as vendors,
+                   collect(DISTINCT c) as commands,
+                   collect(DISTINCT p) as parameters
+            LIMIT 1
+          `, { functionName: func.name, vendorName: preferredVendor })
+        : await session.run(`
+            MATCH (f:Function {name: $functionName})
+            OPTIONAL MATCH (v:Vendor)-[:HAS_FUNCTION]->(f)
+            OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
+            OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
+            RETURN f,
+                   collect(DISTINCT v) as vendors,
+                   collect(DISTINCT c) as commands,
+                   collect(DISTINCT p) as parameters
+            LIMIT 1
+          `, { functionName: func.name });
 
       if (result.records.length > 0) {
         const record = result.records[0];
@@ -916,17 +1547,27 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 
     // 4. 查找命令相关信息
     for (const command of queryEntities.commands.slice(0, 3)) {
-      const result = await session.run(`
-        MATCH (c:Command {name: $commandName})
-        OPTIONAL MATCH (f:Function)-[:HAS_COMMAND]->(c)
-        OPTIONAL MATCH (v:Vendor)-[:HAS_FUNCTION]->(f)
-        OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
-        RETURN c,
-               collect(DISTINCT f) as functions,
-               collect(DISTINCT v) as vendors,
-               collect(DISTINCT p) as parameters
-        LIMIT 1
-      `, { commandName: command.name });
+      const result = applyVendorFilter
+        ? await session.run(`
+            MATCH (v:Vendor {name: $vendorName})-[:HAS_FUNCTION]->(f:Function)-[:HAS_COMMAND]->(c:Command {name: $commandName})
+            OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
+            RETURN c,
+                   collect(DISTINCT f) as functions,
+                   collect(DISTINCT v) as vendors,
+                   collect(DISTINCT p) as parameters
+            LIMIT 1
+          `, { commandName: command.name, vendorName: preferredVendor })
+        : await session.run(`
+            MATCH (c:Command {name: $commandName})
+            OPTIONAL MATCH (f:Function)-[:HAS_COMMAND]->(c)
+            OPTIONAL MATCH (v:Vendor)-[:HAS_FUNCTION]->(f)
+            OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(p:Parameter)
+            RETURN c,
+                   collect(DISTINCT f) as functions,
+                   collect(DISTINCT v) as vendors,
+                   collect(DISTINCT p) as parameters
+            LIMIT 1
+          `, { commandName: command.name });
 
       if (result.records.length > 0) {
         const record = result.records[0];
@@ -943,14 +1584,27 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 
     // 5. 如果没有找到精确匹配，使用全文搜索
     if (results.length === 0) {
-      const searchResult = await session.run(`
-        CALL db.index.fulltext.queryNodes('kg_search', $query)
-        YIELD node, score
-        MATCH (node)-[r]->(related)
-        RETURN node, collect(DISTINCT related) as related, score
-        ORDER BY score DESC
-        LIMIT $limit
-      `, { query: query, limit: neo4j.int(safeLimit) });
+      const searchResult = applyVendorFilter
+        ? await session.run(`
+            CALL db.index.fulltext.queryNodes('kg_search', $query)
+            YIELD node, score
+            MATCH (v:Vendor {name: $vendorName})
+            WHERE node = v
+               OR (v)-[:HAS_FUNCTION]->(node)
+               OR (v)-[:HAS_FUNCTION]->(:Function)-[:HAS_COMMAND]->(node)
+            OPTIONAL MATCH (node)-[r]->(related)
+            RETURN node, collect(DISTINCT related) as related, score
+            ORDER BY score DESC
+            LIMIT $limit
+          `, { query: query, limit: neo4j.int(safeLimit), vendorName: preferredVendor })
+        : await session.run(`
+            CALL db.index.fulltext.queryNodes('kg_search', $query)
+            YIELD node, score
+            MATCH (node)-[r]->(related)
+            RETURN node, collect(DISTINCT related) as related, score
+            ORDER BY score DESC
+            LIMIT $limit
+          `, { query: query, limit: neo4j.int(safeLimit) });
 
       for (const record of searchResult.records) {
         results.push({
@@ -1013,7 +1667,16 @@ export async function processDocument(documentId) {
         allowHeuristicVendors
       });
 
-      // 跨 chunk 去重 - 使用 Map 存储唯一实体
+      // 存储每个 chunk 的实体，创建 MENTIONS 关系
+      if (entities.vendors.length > 0 || entities.functions.length > 0 ||
+        entities.commands.length > 0 || entities.parameters.length > 0) {
+        await storeEntities(entities, {
+          chunkId: chunk.id,
+          documentId: documentId
+        });
+      }
+
+      // 跨 chunk 去重 - 使用 Map 存储唯一实体（用于统计）
       entities.vendors.forEach(v => {
         const key = v.name.toLowerCase();
         if (!allEntities.vendors.has(key)) {
@@ -1057,7 +1720,8 @@ export async function processDocument(documentId) {
       }
     }
 
-    // 转换为数组并存储
+    // 注意：实体已在每个 chunk 处理时存储，这里只需要存储跨 chunk 的关系
+    // 关系已经在 storeEntities 中处理，此处为保险起见再处理一次
     const uniqueEntities = {
       vendors: Array.from(allEntities.vendors.values()),
       functions: Array.from(allEntities.functions.values()),
@@ -1066,9 +1730,15 @@ export async function processDocument(documentId) {
       relationships: uniqueRelationships
     };
 
-    if (uniqueEntities.vendors.length > 0 || uniqueEntities.functions.length > 0 ||
-        uniqueEntities.commands.length > 0 || uniqueEntities.parameters.length > 0) {
-      await storeEntities(uniqueEntities);
+    // 只存储关系（实体已经在每个 chunk 处理时存储）
+    if (uniqueRelationships.length > 0) {
+      await storeEntities({
+        vendors: [],
+        functions: [],
+        commands: [],
+        parameters: [],
+        relationships: uniqueRelationships
+      });
     }
 
     const totalEntities = {
@@ -1239,6 +1909,416 @@ export async function exportGraphData() {
   } catch (error) {
     console.error('[KnowledgeGraph] 导出图谱数据失败:', error.message);
     throw error;
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 根据实体获取相关的 chunk IDs
+ * @param {string} entityName - 实体名称
+ * @param {string} entityType - 实体类型 (Vendor, Function, Command, Parameter)
+ * @param {number} limit - 返回数量限制
+ * @returns {Array} chunk IDs 和相关信息
+ */
+export async function getChunksByEntity(entityName, entityType = 'Function', limit = 10) {
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    const result = await session.run(`
+      MATCH (ch:Chunk)-[r:MENTIONS]->(e:${entityType} {name: $entityName})
+      RETURN ch.id as chunkId, ch.documentId as documentId, r.weight as weight
+      ORDER BY r.weight DESC
+      LIMIT $limit
+    `, {
+      entityName,
+      limit: neo4j.int(limit)
+    });
+
+    return result.records.map(record => ({
+      chunkId: record.get('chunkId'),
+      documentId: record.get('documentId'),
+      weight: record.get('weight')?.toNumber?.() || record.get('weight') || 1
+    }));
+  } catch (error) {
+    console.error('[KnowledgeGraph] 获取实体相关 chunks 失败:', error.message);
+    return [];
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 获取查询相关的所有 chunk IDs（基于提取的实体）
+ * @param {string} query - 查询文本
+ * @param {number} limit - 每个实体返回的 chunk 数量限制
+ * @returns {Array} chunk IDs 和相关信息
+ */
+export async function getChunksFromQuery(query, limit = 5) {
+  const vendorNames = await getVendorNames();
+  const queryEntities = extractEntities(query, {
+    vendorNames,
+    source: 'query',
+    allowDefaultFunction: false,
+    allowHeuristicVendors: false
+  });
+
+  const allChunks = new Map();
+
+  // 从厂商获取 chunks
+  for (const vendor of queryEntities.vendors.slice(0, 3)) {
+    const chunks = await getChunksByEntity(vendor.name, 'Vendor', limit);
+    for (const chunk of chunks) {
+      const existing = allChunks.get(chunk.chunkId);
+      if (existing) {
+        existing.weight += chunk.weight;
+        existing.matchedEntities.push({ type: 'Vendor', name: vendor.name });
+      } else {
+        allChunks.set(chunk.chunkId, {
+          ...chunk,
+          matchedEntities: [{ type: 'Vendor', name: vendor.name }]
+        });
+      }
+    }
+  }
+
+  // 从功能获取 chunks
+  for (const func of queryEntities.functions.slice(0, 3)) {
+    const chunks = await getChunksByEntity(func.name, 'Function', limit);
+    for (const chunk of chunks) {
+      const existing = allChunks.get(chunk.chunkId);
+      if (existing) {
+        existing.weight += chunk.weight;
+        existing.matchedEntities.push({ type: 'Function', name: func.name });
+      } else {
+        allChunks.set(chunk.chunkId, {
+          ...chunk,
+          matchedEntities: [{ type: 'Function', name: func.name }]
+        });
+      }
+    }
+  }
+
+  // 从命令获取 chunks
+  for (const command of queryEntities.commands.slice(0, 3)) {
+    const chunks = await getChunksByEntity(command.name, 'Command', limit);
+    for (const chunk of chunks) {
+      const existing = allChunks.get(chunk.chunkId);
+      if (existing) {
+        existing.weight += chunk.weight;
+        existing.matchedEntities.push({ type: 'Command', name: command.name });
+      } else {
+        allChunks.set(chunk.chunkId, {
+          ...chunk,
+          matchedEntities: [{ type: 'Command', name: command.name }]
+        });
+      }
+    }
+  }
+
+  // 按权重排序返回
+  return Array.from(allChunks.values())
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, limit * 3);
+}
+
+// ========== GraphRAG: 社区检测 ==========
+
+/**
+ * 检测知识图谱中的社区（基于 Louvain 算法）
+ * 需要 Neo4j GDS 插件，如果不可用则使用简化版本
+ * @param {Object} options - 选项
+ * @returns {Object} 社区检测结果
+ */
+export async function detectCommunities(options = {}) {
+  const {
+    writeProperty = 'communityId',
+    relationshipTypes = ['HAS_FUNCTION', 'HAS_COMMAND', 'MENTIONS'],
+    minCommunitySize = 2
+  } = options;
+
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+
+  try {
+    // 尝试使用 Neo4j GDS Louvain 算法
+    let result;
+    let useGDS = false;
+
+    try {
+      // 检查 GDS 是否可用
+      await session.run('CALL gds.list() YIELD name RETURN name LIMIT 1');
+      useGDS = true;
+    } catch (e) {
+      console.log('[GraphRAG] Neo4j GDS 不可用，使用简化社区检测算法');
+    }
+
+    if (useGDS) {
+      // 创建图投影
+      const graphName = 'community_graph_' + Date.now();
+
+      try {
+        await session.run(`
+          CALL gds.graph.project(
+            $graphName,
+            ['Vendor', 'Function', 'Command', 'Chunk'],
+            $relationshipTypes
+          )
+        `, { graphName, relationshipTypes });
+
+        // 运行 Louvain 社区检测
+        result = await session.run(`
+          CALL gds.louvain.stream($graphName)
+          YIELD nodeId, communityId
+          RETURN gds.util.asNode(nodeId) as node, communityId
+          ORDER BY communityId
+        `, { graphName });
+
+        // 删除图投影
+        await session.run('CALL gds.graph.drop($graphName)', { graphName });
+
+      } catch (gdsError) {
+        console.error('[GraphRAG] GDS 执行失败:', gdsError.message);
+        useGDS = false;
+      }
+    }
+
+    // 简化版社区检测: 基于共享实体的连通分量
+    if (!useGDS) {
+      result = await session.run(`
+        MATCH (v:Vendor)-[:HAS_FUNCTION]->(f:Function)
+        OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
+        WITH v, collect(DISTINCT f) as functions, collect(DISTINCT c) as commands
+        RETURN v.name as vendorName, 
+               [f in functions | f.name] as functionNames,
+               [c in commands | c.name] as commandNames,
+               id(v) as communityId
+        ORDER BY size(functions) DESC
+      `);
+    }
+
+    // 解析结果
+    const communities = new Map();
+
+    if (useGDS) {
+      for (const record of result.records) {
+        const node = record.get('node');
+        const communityId = record.get('communityId');
+
+        if (!communities.has(communityId)) {
+          communities.set(communityId, {
+            id: communityId,
+            members: [],
+            labels: new Set()
+          });
+        }
+
+        const community = communities.get(communityId);
+        const labels = node.labels || [];
+        const name = node.properties?.name || 'Unknown';
+
+        community.members.push({ name, labels });
+        labels.forEach(l => community.labels.add(l));
+      }
+    } else {
+      // 简化版结果解析
+      for (const record of result.records) {
+        const vendorName = record.get('vendorName');
+        const functionNames = record.get('functionNames') || [];
+        const commandNames = record.get('commandNames') || [];
+        const communityId = record.get('communityId');
+
+        communities.set(communityId, {
+          id: communityId,
+          vendor: vendorName,
+          members: [
+            { name: vendorName, labels: ['Vendor'] },
+            ...functionNames.map(n => ({ name: n, labels: ['Function'] })),
+            ...commandNames.map(n => ({ name: n, labels: ['Command'] }))
+          ],
+          labels: new Set(['Vendor', 'Function', 'Command'])
+        });
+      }
+    }
+
+    // 过滤小社区
+    const filteredCommunities = Array.from(communities.values())
+      .filter(c => c.members.length >= minCommunitySize)
+      .map(c => ({
+        ...c,
+        labels: Array.from(c.labels),
+        size: c.members.length
+      }));
+
+    // 写入社区 ID 到节点
+    for (const community of filteredCommunities) {
+      const memberNames = community.members.map(m => m.name);
+      await session.run(`
+        MATCH (n) WHERE n.name IN $memberNames
+        SET n.${writeProperty} = $communityId
+      `, {
+        memberNames,
+        communityId: community.id
+      });
+    }
+
+    console.log(`[GraphRAG] 检测到 ${filteredCommunities.length} 个社区`);
+
+    return {
+      success: true,
+      algorithmUsed: useGDS ? 'gds.louvain' : 'simplified',
+      communities: filteredCommunities,
+      stats: {
+        totalCommunities: filteredCommunities.length,
+        avgSize: filteredCommunities.reduce((s, c) => s + c.size, 0) / filteredCommunities.length || 0,
+        largestCommunity: Math.max(...filteredCommunities.map(c => c.size), 0)
+      }
+    };
+
+  } catch (error) {
+    console.error('[GraphRAG] 社区检测失败:', error.message);
+    return { success: false, error: error.message, communities: [] };
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 获取指定社区的所有成员
+ * @param {number|string} communityId - 社区 ID
+ * @returns {Array} 社区成员列表
+ */
+export async function getCommunityMembers(communityId) {
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    const result = await session.run(`
+      MATCH (n) WHERE n.communityId = $communityId
+      RETURN labels(n) as labels, n.name as name, n.communityId as communityId
+      ORDER BY labels(n)[0], n.name
+    `, { communityId });
+
+    return result.records.map(r => ({
+      name: r.get('name'),
+      labels: r.get('labels'),
+      communityId: r.get('communityId')
+    }));
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 为社区生成摘要（使用 LLM）
+ * @param {number|string} communityId - 社区 ID
+ * @param {Object} options - 选项
+ * @returns {string} 社区摘要
+ */
+export async function generateCommunitySummary(communityId, options = {}) {
+  const { model = 'deepseek-ai/DeepSeek-V3' } = options;
+
+  const members = await getCommunityMembers(communityId);
+
+  if (members.length === 0) {
+    return null;
+  }
+
+  // 按类型分组
+  const byType = {};
+  for (const m of members) {
+    const type = m.labels[0] || 'Unknown';
+    if (!byType[type]) byType[type] = [];
+    byType[type].push(m.name);
+  }
+
+  const memberDescription = Object.entries(byType)
+    .map(([type, names]) => `${type}: ${names.join(', ')}`)
+    .join('\n');
+
+  try {
+    const apiKey = await storage.getApiKey('siliconflow');
+    if (!apiKey) {
+      // 无 API Key，生成简单摘要
+      const vendor = byType['Vendor']?.[0] || '未知厂商';
+      const funcCount = byType['Function']?.length || 0;
+      const cmdCount = byType['Command']?.length || 0;
+      return `${vendor} 相关社区，包含 ${funcCount} 个功能和 ${cmdCount} 个命令。`;
+    }
+
+    const response = await fetch(SILICONFLOW_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{
+          role: 'system',
+          content: '你是一个网络技术专家。请用 1-2 句话简洁地描述以下知识图谱社区的主题和用途。'
+        }, {
+          role: 'user',
+          content: `社区成员:\n${memberDescription}`
+        }],
+        temperature: 0.3,
+        max_tokens: 200
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content?.trim() || null;
+    }
+  } catch (error) {
+    console.error('[GraphRAG] 生成社区摘要失败:', error.message);
+  }
+
+  return null;
+}
+
+/**
+ * 获取所有社区及其摘要
+ * @returns {Array} 社区列表（含摘要）
+ */
+export async function getAllCommunitiesWithSummaries() {
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    // 获取所有社区 ID
+    const result = await session.run(`
+      MATCH (n) WHERE n.communityId IS NOT NULL
+      RETURN DISTINCT n.communityId as communityId, count(n) as size
+      ORDER BY size DESC
+    `);
+
+    const communities = [];
+    for (const record of result.records) {
+      const communityId = record.get('communityId');
+      const size = record.get('size');
+      const members = await getCommunityMembers(communityId);
+      const summary = await generateCommunitySummary(communityId);
+
+      communities.push({
+        id: communityId,
+        size,
+        members: members.slice(0, 10), // 只返回前 10 个成员
+        summary
+      });
+    }
+
+    return communities;
   } finally {
     await session.close();
   }

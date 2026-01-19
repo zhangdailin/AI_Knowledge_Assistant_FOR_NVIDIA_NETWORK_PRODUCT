@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockNeo4jDriver } from '../../helpers/mock-factory';
 import { createMockEntities, createMockDocument } from '../../fixtures/mock-data';
-import { extractEntities } from '../../../server/knowledgeGraph.mjs';
+import { extractEntities, detectPreferredVendors } from '../../../server/knowledgeGraph.mjs';
 
 describe('Knowledge Graph Module', () => {
   let neo4jMock: ReturnType<typeof mockNeo4jDriver>;
@@ -188,6 +188,28 @@ describe('Knowledge Graph Module', () => {
       const text = 'This is just plain text without any network entities.';
       const entities = extractEntities(text, { source: 'test' });
       expect(entities.vendors).toHaveLength(0);
+    });
+  });
+
+  describe('detectPreferredVendors', () => {
+    it('should default to NVIDIA when no vendor is mentioned', () => {
+      const result = detectPreferredVendors('如何配置vxlan', ['英伟达'], {
+        defaultVendor: 'NVIDIA'
+      });
+
+      expect(result.preferredVendors[0]).toBe('英伟达');
+      expect(result.usedDefault).toBe(true);
+      expect(result.explicitVendors).toHaveLength(0);
+    });
+
+    it('should honor explicit vendor mentions', () => {
+      const result = detectPreferredVendors('华为 BGP 配置', ['华为', '英伟达'], {
+        defaultVendor: 'NVIDIA'
+      });
+
+      expect(result.preferredVendors[0]).toBe('华为');
+      expect(result.usedDefault).toBe(false);
+      expect(result.explicitVendors).toContain('华为');
     });
   });
 

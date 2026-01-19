@@ -33,7 +33,7 @@ describe('Hybrid Retrieval Module', () => {
       queries.forEach(query => {
         const strategy = determineRetrievalStrategy(query);
         expect(strategy.strategy).toBe('command-focused');
-        expect(strategy.kgWeight).toBe(0.35);
+        expect(strategy.kgWeight).toBe(0.25);
       });
     });
 
@@ -47,7 +47,7 @@ describe('Hybrid Retrieval Module', () => {
       queries.forEach(query => {
         const strategy = determineRetrievalStrategy(query);
         expect(strategy.strategy).toBe('function-focused');
-        expect(strategy.kgWeight).toBe(0.3);
+        expect(strategy.kgWeight).toBe(0.2);
       });
     });
 
@@ -57,7 +57,7 @@ describe('Hybrid Retrieval Module', () => {
       const strategy = determineRetrievalStrategy(query);
 
       expect(strategy.strategy).toBe('balanced');
-      expect(strategy.kgWeight).toBe(0.25);
+      expect(strategy.enableKnowledgeGraph).toBe(false);
     });
   });
 

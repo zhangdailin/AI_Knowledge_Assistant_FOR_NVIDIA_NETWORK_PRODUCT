@@ -27,6 +27,12 @@ interface ChatState {
 type KnowledgeSearchResult = {
   id?: string;
   documentId?: string;
+  chunkIndex?: number;
+  metadata?: {
+    header?: string;
+    summary?: string;
+    breadcrumbs?: string[];
+  };
   title: string;
   content: string;
   score: number;
@@ -34,12 +40,15 @@ type KnowledgeSearchResult = {
   rerankScore: number;
 };
 
-
-async function searchKnowledgeBase(query: string, categoryId?: string): Promise<KnowledgeSearchResult[]> {
+async function searchKnowledgeBase(
+  query: string,
+  categoryId?: string,
+  limit: number = 20
+): Promise<KnowledgeSearchResult[]> {
   try {
     // 增加搜索数量以获得更好的结果（从10增加到20）
     const categoryParam = categoryId ? `&categoryId=${encodeURIComponent(categoryId)}` : '';
-    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=20${categoryParam}`);
+    const res = await fetch(`${getApiServerUrl()}/api/chunks/search?q=${encodeURIComponent(query)}&limit=${limit}${categoryParam}`);
     if (!res.ok) return [];
     const data = await res.json();
 
@@ -57,6 +66,8 @@ async function searchKnowledgeBase(query: string, categoryId?: string): Promise<
       return {
         id: chunk.id,
         documentId: chunk.documentId,
+        chunkIndex: chunk.chunkIndex,
+        metadata: chunk.metadata,
         title: chunkTitle,
         content: chunk.content,
         score: finalScore,
@@ -73,12 +84,242 @@ async function searchKnowledgeBase(query: string, categoryId?: string): Promise<
   }
 }
 
+type QueryIntent = {
+  isConfig: boolean;
+  isTroubleshoot: boolean;
+  isShow: boolean;
+  isConcept: boolean;
+};
+
+function inferQueryIntent(query: string): QueryIntent {
+  const lower = query.toLowerCase();
+  return {
+    isConfig: /配置|设置|安装|部署|步骤|how to|configure|configuration|setup/i.test(query),
+    isTroubleshoot: /故障|异常|错误|问题|排错|debug|troubleshoot|error|fail|issue/i.test(lower),
+    isShow: /查看|查询|显示|状态|show|display|list|get|status|state/i.test(lower),
+    isConcept: /什么是|含义|定义|原理|概念|overview|introduction|what is|definition/i.test(lower)
+  };
+}
+
+function isConfigHeavyQuery(query: string): boolean {
+  return inferQueryIntent(query).isConfig;
+}
+
 // 提取查询关键词（简单实现）
 function extractKeywords(query: string): string[] {
-  // 移除常见停用词
   const stopWords = ['的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'];
-  const words = query.split(/[\s,，。！？、；：""''（）【】《》\[\]]+/).filter(w => w.length > 1 && !stopWords.includes(w));
+  const words = (query.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]{2,}/g) || [])
+    .filter(w => w.length > 1 && !stopWords.includes(w));
   return words;
+}
+
+function collectIntentTokens(query: string): string[] {
+  const tokens = new Set<string>();
+  const lower = query.toLowerCase();
+
+  if (/配置|设置|安装|部署|步骤|流程|how to|configure|configuration|setup/i.test(query)) {
+    tokens.add('配置');
+    tokens.add('步骤');
+    tokens.add('configure');
+    tokens.add('configuration');
+    tokens.add('setup');
+    tokens.add('steps');
+  }
+
+  if (/示例|例子|example/i.test(query)) {
+    tokens.add('示例');
+    tokens.add('example');
+  }
+
+  if (/要求|前提|依赖|准备|prerequisite|requirement/i.test(query)) {
+    tokens.add('要求');
+    tokens.add('requirements');
+    tokens.add('prerequisite');
+  }
+
+  if (/查看|查询|显示|状态|show|display|list|get|status|state/i.test(lower)) {
+    tokens.add('show');
+    tokens.add('status');
+  }
+
+  if (/故障|异常|错误|问题|排错|debug|troubleshoot|error|fail|issue/i.test(lower)) {
+    tokens.add('troubleshoot');
+    tokens.add('error');
+  }
+
+  return Array.from(tokens);
+}
+
+function buildCoverageTokens(query: string): string[] {
+  const tokens = new Set(extractKeywords(query).map(token => token.toLowerCase()));
+  for (const token of collectIntentTokens(query)) {
+    tokens.add(token.toLowerCase());
+  }
+  const acronyms = query.match(/\b[A-Z]{2,6}\b/g) || [];
+  acronyms.forEach(token => tokens.add(token.toLowerCase()));
+  return Array.from(tokens).filter(Boolean);
+}
+
+function classifyReference(text: string): Set<string> {
+  const lower = text.toLowerCase();
+  const categories = new Set<string>();
+
+  if (/basic configuration|基础配置/.test(lower)) categories.add('basic');
+  if (/configuration example|示例|example/.test(lower)) categories.add('example');
+  if (/requirements|prerequisite|前提|要求/.test(lower)) categories.add('requirements');
+  if (/steps|procedure|步骤|流程|follow these steps/.test(lower) || /(^|\n)\s*(?:step\s*)?\d+\s*[.)]/i.test(text)) {
+    categories.add('steps');
+  }
+  if (/overview|introduction|概述|简介/.test(lower)) categories.add('overview');
+  if (/nv set|\bset\b|\bconfigure\b|\bconfiguration\b/.test(lower)) categories.add('command_set');
+  if (/nv show|\bshow\b|\bdisplay\b|\blist\b|\bget\b/.test(lower)) categories.add('command_show');
+  if (/command|cli|```/.test(lower)) categories.add('commands');
+  if (/troubleshooting|排错|故障|错误/.test(lower)) categories.add('troubleshooting');
+
+  return categories;
+}
+
+function getCategoryWeights(intent: QueryIntent): Record<string, number> {
+  if (intent.isConfig) {
+    return {
+      basic: 3,
+      steps: 4,
+      example: 2.5,
+      requirements: 2,
+      command_set: 2,
+      commands: 1,
+      command_show: -1,
+      troubleshooting: -2,
+      overview: 0.5
+    };
+  }
+
+  if (intent.isTroubleshoot) {
+    return {
+      troubleshooting: 4,
+      command_show: 2,
+      commands: 1.5,
+      steps: 1,
+      basic: 0.5,
+      example: 0.5
+    };
+  }
+
+  if (intent.isShow) {
+    return {
+      command_show: 3,
+      commands: 1.5,
+      basic: 0.5,
+      steps: 0.5,
+      example: 0.5,
+      troubleshooting: 0.5
+    };
+  }
+
+  if (intent.isConcept) {
+    return {
+      overview: 3,
+      basic: 1,
+      steps: 0.5,
+      example: 0.5,
+      commands: -1
+    };
+  }
+
+  return {
+    basic: 1,
+    steps: 1,
+    example: 1,
+    requirements: 0.5,
+    command_set: 0.5,
+    command_show: 0.5
+  };
+}
+
+function selectReferencesForQuery(
+  results: KnowledgeSearchResult[],
+  query: string,
+  maxRefs: number
+): KnowledgeSearchResult[] {
+  if (results.length <= maxRefs) return results;
+
+  const intent = inferQueryIntent(query);
+  const tokens = buildCoverageTokens(query);
+  const coveredTokens = new Set<string>();
+  const coveredCategories = new Set<string>();
+  const selected: KnowledgeSearchResult[] = [];
+  const used = new Set<string>();
+
+  const candidates = results.map(result => {
+    const title = result.title || '';
+    const content = result.content || '';
+    const summary = result.metadata?.summary || '';
+    const combined = `${title}\n${summary}\n${content}`.toLowerCase();
+    const matchedTokens = new Set(tokens.filter(token => combined.includes(token)));
+    const categories = classifyReference(combined);
+    return { result, matchedTokens, categories };
+  });
+
+  const categoryWeights = getCategoryWeights(intent);
+  const primaryDocId = intent.isConfig
+    ? candidates
+      .filter(entry => entry.result.documentId && (entry.categories.has('basic') || entry.categories.has('steps') || entry.categories.has('example')))
+      .sort((a, b) => (b.result.score || 0) - (a.result.score || 0))[0]?.result.documentId
+    : null;
+
+  for (let i = 0; i < maxRefs; i += 1) {
+    let bestIndex = -1;
+    let bestScore = -Infinity;
+
+    for (let idx = 0; idx < candidates.length; idx += 1) {
+      const entry = candidates[idx];
+      const identity = entry.result.id || entry.result.title || String(idx);
+      if (used.has(identity)) continue;
+
+      let tokenGain = 0;
+      for (const token of entry.matchedTokens) {
+        if (!coveredTokens.has(token)) tokenGain += 1;
+      }
+
+      let categoryGain = 0;
+      for (const category of entry.categories) {
+        const weight = categoryWeights[category] ?? 0.5;
+        const novelty = coveredCategories.has(category) ? 0.2 : 1;
+        categoryGain += weight * novelty;
+      }
+
+      const baseScore = typeof entry.result.score === 'number' ? Math.log1p(entry.result.score) : 0;
+      const docAffinity = primaryDocId && entry.result.documentId === primaryDocId ? 1.2 : 0;
+      let adjacencyBonus = 0;
+      if (entry.result.documentId && typeof entry.result.chunkIndex === 'number') {
+        for (const chosen of selected) {
+          if (chosen.documentId !== entry.result.documentId || typeof chosen.chunkIndex !== 'number') continue;
+          const distance = Math.abs(entry.result.chunkIndex - chosen.chunkIndex);
+          if (distance === 1) adjacencyBonus = Math.max(adjacencyBonus, 2.5);
+          else if (distance === 2) adjacencyBonus = Math.max(adjacencyBonus, 1.5);
+          else if (distance === 3) adjacencyBonus = Math.max(adjacencyBonus, 0.8);
+        }
+      }
+      if (intent.isConfig) adjacencyBonus *= 1.2;
+      const score = baseScore + tokenGain * 1.3 + categoryGain + docAffinity + adjacencyBonus;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = idx;
+      }
+    }
+
+    if (bestIndex === -1) break;
+    const chosen = candidates[bestIndex];
+    const chosenId = chosen.result.id || chosen.result.title || String(bestIndex);
+    used.add(chosenId);
+    selected.push(chosen.result);
+
+    for (const token of chosen.matchedTokens) coveredTokens.add(token);
+    for (const category of chosen.categories) coveredCategories.add(category);
+  }
+
+  return selected;
 }
 
 // 智能拆解复杂查询为多个子查询
@@ -109,8 +350,9 @@ function decomposeComplexQuery(query: string): string[] {
 
   // 如果检测到多个技术领域，说明是复杂查询
   if (subQueries.length >= 2) {
-    console.log('[QueryDecompose] 检测到复杂查询，拆解为:', subQueries);
-    return subQueries;
+    const uniqueQueries = Array.from(new Set([query, ...subQueries]));
+    console.log('[QueryDecompose] 检测到复杂查询，拆解为:', uniqueQueries);
+    return uniqueQueries;
   }
 
   // 单一技术领域或无法识别，返回原查询
@@ -207,6 +449,7 @@ async function multiLevelSearch(query: string): Promise<{
   hasRelevantKnowledge: boolean;
 }> {
   console.log('[Search] 开始多级检索，查询:', query);
+  const searchLimit = isConfigHeavyQuery(query) ? 160 : 20;
 
   // 步骤0A：自动检测分类
   const detectedCategoryId = await detectCategory(query);
@@ -225,7 +468,7 @@ async function multiLevelSearch(query: string): Promise<{
 
     for (const subQuery of subQueries) {
       console.log('[Search] 检索子查询:', subQuery);
-      const subResults = await searchKnowledgeBase(subQuery, detectedCategoryId);
+      const subResults = await searchKnowledgeBase(subQuery, detectedCategoryId, searchLimit);
       if (subResults.length > 0) {
         resultsList.push(subResults);
       }
@@ -236,7 +479,7 @@ async function multiLevelSearch(query: string): Promise<{
     console.log('[Search] 多轮检索完成，合并后结果数量:', allResults.length);
   } else {
     // 简单查询：直接检索
-    allResults = await searchKnowledgeBase(query, detectedCategoryId);
+    allResults = await searchKnowledgeBase(query, detectedCategoryId, searchLimit);
   }
 
   // 第一级：标准检索
@@ -281,7 +524,7 @@ async function multiLevelSearch(query: string): Promise<{
   if (keywords.length > 0) {
     console.log('[Search] 提取关键词:', keywords);
     const keywordQuery = keywords.slice(0, 3).join(' '); // 取前3个关键词
-    const keywordResults = await searchKnowledgeBase(keywordQuery, detectedCategoryId);
+    const keywordResults = await searchKnowledgeBase(keywordQuery, detectedCategoryId, searchLimit);
     const keywordMaxScore = keywordResults.reduce((max, r) => Math.max(max, r.score), 0);
     const keywordMaxRerankScore = keywordResults.reduce((max, r) => Math.max(max, r.rerankScore || 0), 0);
     const keywordHasRerank = keywordMaxRerankScore > 0;
@@ -442,15 +685,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let knowledgeContext = '';
       let useGemini = false;
 
-      const topReferences = knowledgeResults.slice(0, 8); // 从5增加到8，提供更丰富的上下文
+      const isConfigQuery = isConfigHeavyQuery(content);
+      const maxReferences = isConfigQuery ? 14 : 8;
+      const topReferences = isConfigQuery
+        ? selectReferencesForQuery(knowledgeResults, content, maxReferences)
+        : knowledgeResults.slice(0, maxReferences);
 
       if (hasRelevantKnowledge) {
         // 取前8条最相关的内容，提供更丰富的上下文
         const contextPrefix = searchLevel === 1
           ? '相关知识库内容：'
           : searchLevel === 2
-          ? '相关知识库内容（扩展搜索）：'
-          : '相关知识库内容（关键词匹配）：';
+            ? '相关知识库内容（扩展搜索）：'
+            : '相关知识库内容（关键词匹配）：';
 
         knowledgeContext = '\n\n' + contextPrefix + '\n' +
           topReferences.map((r, i) => `[参考${i + 1}] 标题：${r.title || '无标题'}\n内容：${r.content}`).join('\n\n---\n\n');
@@ -472,15 +719,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
 
       const systemPrompt = useGemini
-        ? `你是一个专业的AI助手，名叫"小张"。当前日期是${dateStr}。请用中文回答用户的问题，回答要准确、专业、有条理。如果需要查询实时信息，请使用联网搜索。`
-        : `你是一个专业的AI知识助手，名叫"小张"。你的任务是基于知识库内容回答用户问题。
+        ? `你是AI助手"小张" (${dateStr})。请用中文专业、准确地回答问题。`
+        : `你是AI知识助手"小张"。
+任务：基于参考文档回答用户问题。
+规则：
+1. **严格基于参考文档**，禁止编造命令或配置。
+2. 若文档无相关信息，请明确告知。
+3. 保持专业、条理清晰，使用中文。
+${isConfigQuery ? '4. 配置问题请提供完整步骤。' : ''}
 
-重要规则：
-1. **必须严格基于下方提供的参考文档内容回答问题**
-2. 回答中的命令、配置、技术细节必须来自参考文档，不要编造或使用你自己的知识
-3. 如果参考文档中没有相关内容，明确告知用户"知识库中暂无相关信息"
-4. 回答要准确、专业、有条理
-5. 使用中文回答
+参考文档：
 ${knowledgeContext}`;
 
       // Use backend proxy to avoid CORS
@@ -560,7 +808,7 @@ ${knowledgeContext}`;
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: content, responseTime })
-      }).catch(() => {}); // 静默失败
+      }).catch(() => { }); // 静默失败
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -639,12 +887,12 @@ ${knowledgeContext}`;
       messages: state.messages.map(msg =>
         msg.id === messageId
           ? {
-              ...msg,
-              metadata: {
-                ...msg.metadata,
-                feedback: verdict
-              }
+            ...msg,
+            metadata: {
+              ...msg.metadata,
+              feedback: verdict
             }
+          }
           : msg
       )
     }));

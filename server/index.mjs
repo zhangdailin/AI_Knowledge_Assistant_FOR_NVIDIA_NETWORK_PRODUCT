@@ -42,6 +42,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { addFeedbackEntry, getFeedbackMetrics } from './storage.mjs';
+import { assignVariant } from './abTesting.mjs';
 import { smartQueryRewrite } from './queryExpansion.mjs';
 import { calculateDocumentQuality, batchEvaluateDocuments, generateQualityReport } from './documentQuality.mjs';
 import { recordSearchRequest, recordRetrievalMetrics, recordNegativePenalty, getPerformanceSummary, getDetailedMetrics, resetMetrics } from './performanceMonitor.mjs';
@@ -275,10 +276,10 @@ const app = express();
 const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
   : [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173'
-    ];
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173'
+  ];
 
 // 在开发环境中只有明确配置时才允许额外的源
 if (process.env.NODE_ENV === 'development' && process.env.CORS_ALLOW_ANY === 'true') {
@@ -799,6 +800,11 @@ app.get('/api/chunks/search', async (req, res) => {
       categoryIds = storage.getCategoryAndChildrenIds(categoryId, categoryTree);
     }
 
+    // A/B 测试：分配变体
+    const userId = req.query.userId || req.headers['x-user-id'] || 'anonymous';
+    const abVariant = await assignVariant(userId);
+    const experimentConfig = abVariant ? abVariant.config : null;
+
     const cacheKey = JSON.stringify({
       q: query,
       limit: searchLimit,
@@ -810,7 +816,10 @@ app.get('/api/chunks/search', async (req, res) => {
       keywordWeight: retrievalConfig.keywordWeight ?? 'default',
       vectorWeight: retrievalConfig.vectorWeight ?? 'default',
       vectorMinScore: retrievalConfig.vectorMinScore ?? 'default',
-      rerankTopN
+      rerankTopN,
+      // 包含实验配置以隔离缓存
+      abExp: abVariant ? abVariant.experimentId : null,
+      abVar: abVariant ? abVariant.variantId : null
     });
 
     const requestStartTime = Date.now();
@@ -838,7 +847,12 @@ app.get('/api/chunks/search', async (req, res) => {
       searchLimit,
       categoryIds,
       rerankTopN,
-      config: retrievalConfig
+      categoryIds,
+      rerankTopN,
+      config: {
+        ...retrievalConfig,
+        experimentConfig // 传递实验配置
+      }
     });
 
     pendingSearches.set(cacheKey, searchPromise);
@@ -1036,6 +1050,203 @@ app.post('/api/query-log', async (req, res) => {
     console.error('记录查询日志失败:', error);
     res.status(500).json({ ok: false, error: '记录查询日志失败' });
   }
+});
+
+// ========== 反馈收集 API ==========
+
+// 提交用户反馈（负面样本收集）
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const { queryId, query, feedbackType, retrievedChunks, userComment, expectedTopic } = req.body;
+
+    if (!query) {
+      return res.status(400).json({ ok: false, error: '缺少查询内容' });
+    }
+    if (!feedbackType) {
+      return res.status(400).json({ ok: false, error: '缺少反馈类型' });
+    }
+
+    const validFeedbackTypes = ['not_helpful', 'irrelevant', 'outdated', 'wrong_vendor'];
+    if (!validFeedbackTypes.includes(feedbackType)) {
+      return res.status(400).json({
+        ok: false,
+        error: `无效的反馈类型，有效值: ${validFeedbackTypes.join(', ')}`
+      });
+    }
+
+    // 读取现有负面样本
+    const negativeSamplesPath = path.join(__dirname, '..', 'data', 'negative_samples.json');
+    let data = { version: '1.0.0', samples: [], stats: { totalSamples: 0, byFeedbackType: {} } };
+
+    try {
+      const existing = await fs.promises.readFile(negativeSamplesPath, 'utf-8');
+      data = JSON.parse(existing);
+    } catch (e) {
+      // 文件不存在，使用默认值
+    }
+
+    // 添加新样本
+    const sample = {
+      id: `feedback-${Date.now()}`,
+      queryId: queryId || null,
+      query,
+      feedbackType,
+      timestamp: new Date().toISOString(),
+      retrievedChunks: (retrievedChunks || []).slice(0, 10).map(c => ({
+        chunkId: c.chunkId || c.id,
+        documentId: c.documentId,
+        score: c.score
+      })),
+      userComment: userComment || null,
+      expectedTopic: expectedTopic || null
+    };
+
+    data.samples.push(sample);
+    data.lastUpdated = sample.timestamp;
+
+    // 更新统计
+    data.stats.totalSamples = data.samples.length;
+    data.stats.byFeedbackType[feedbackType] = (data.stats.byFeedbackType[feedbackType] || 0) + 1;
+
+    // 保存
+    await fs.promises.writeFile(negativeSamplesPath, JSON.stringify(data, null, 2), 'utf-8');
+
+    console.log(`[Feedback] 收到反馈: ${feedbackType} - "${query.substring(0, 50)}..."`);
+    res.json({ ok: true, sampleId: sample.id });
+  } catch (error) {
+    console.error('记录反馈失败:', error);
+    res.status(500).json({ ok: false, error: '记录反馈失败' });
+  }
+});
+
+// 获取反馈统计
+app.get('/api/feedback/stats', async (req, res) => {
+  try {
+    const negativeSamplesPath = path.join(__dirname, '..', 'data', 'negative_samples.json');
+    let data = { version: '1.0.0', samples: [], stats: { totalSamples: 0, byFeedbackType: {} } };
+
+    try {
+      const existing = await fs.promises.readFile(negativeSamplesPath, 'utf-8');
+      data = JSON.parse(existing);
+    } catch (e) {
+      // 文件不存在
+    }
+
+    // 分析常见问题模式
+    const queryPatterns = {};
+    for (const sample of data.samples.slice(-100)) {
+      const words = sample.query.split(/\s+/).filter(w => w.length >= 2);
+      for (const word of words) {
+        queryPatterns[word] = (queryPatterns[word] || 0) + 1;
+      }
+    }
+
+    const topPatterns = Object.entries(queryPatterns)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    res.json({
+      ok: true,
+      stats: data.stats,
+      lastUpdated: data.lastUpdated || null,
+      recentSamples: data.samples.slice(-5).map(s => ({
+        id: s.id,
+        query: s.query,
+        feedbackType: s.feedbackType,
+        timestamp: s.timestamp
+      })),
+      topPatterns
+    });
+  } catch (error) {
+    console.error('获取反馈统计失败:', error);
+    res.status(500).json({ ok: false, error: '获取反馈统计失败' });
+  }
+});
+
+// ========== A/B 测试 API ==========
+import * as abTesting from './abTesting.mjs';
+
+// 获取所有实验
+app.get('/api/ab/experiments', async (req, res) => {
+  try {
+    const data = await abTesting.listExperiments();
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    console.error('获取实验列表失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 创建实验
+app.post('/api/ab/experiments', async (req, res) => {
+  try {
+    const experiment = await abTesting.createExperiment(req.body);
+    res.json({ ok: true, experiment });
+  } catch (error) {
+    console.error('创建实验失败:', error);
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// 启动实验
+app.post('/api/ab/experiments/:id/start', async (req, res) => {
+  try {
+    const experiment = await abTesting.startExperiment(req.params.id);
+    res.json({ ok: true, experiment });
+  } catch (error) {
+    console.error('启动实验失败:', error);
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// 停止实验
+app.post('/api/ab/experiments/:id/stop', async (req, res) => {
+  try {
+    const experiment = await abTesting.stopExperiment(req.params.id);
+    res.json({ ok: true, experiment });
+  } catch (error) {
+    console.error('停止实验失败:', error);
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// 分析实验结果
+app.get('/api/ab/experiments/:id/analyze', async (req, res) => {
+  try {
+    const analysis = await abTesting.analyzeExperiment(req.params.id);
+    res.json({ ok: true, analysis });
+  } catch (error) {
+    console.error('分析实验失败:', error);
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// 记录实验结果
+app.post('/api/ab/record', async (req, res) => {
+  try {
+    await abTesting.recordResult(req.body);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('记录结果失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 获取当前变体分配
+app.get('/api/ab/variant', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.headers['x-session-id'] || null;
+    const variant = await abTesting.assignVariant(userId);
+    res.json({ ok: true, variant });
+  } catch (error) {
+    console.error('获取变体失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// 获取实验模板
+app.get('/api/ab/templates', (req, res) => {
+  res.json({ ok: true, templates: abTesting.EXPERIMENT_TEMPLATES });
 });
 
 // ========== 分类 API ==========
@@ -1854,10 +2065,10 @@ const generateNvidiaPdf = async (url, filename) => {
         () => Array.from(document.images || []).every((img) => img.complete),
         { timeout: 60_000 }
       );
-    } catch {}
+    } catch { }
     try {
       await page.evaluate(() => document.fonts && document.fonts.ready);
-    } catch {}
+    } catch { }
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.emulateMedia({ media: 'print' });
 

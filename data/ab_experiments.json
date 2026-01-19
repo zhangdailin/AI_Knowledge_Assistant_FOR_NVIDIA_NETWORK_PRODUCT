@@ -1,0 +1,84 @@
+{
+  "version": "1.0.0",
+  "activeExperiment": "exp-dynamic-weight-test",
+  "experiments": [
+    {
+      "id": "exp-1768750323463",
+      "name": "检索策略对比",
+      "description": "对比 Local、Hybrid、Vector-only 三种检索策略的效果",
+      "variants": [
+        {
+          "id": "var-0",
+          "name": "Local Only",
+          "config": {
+            "mode": "local",
+            "enableKnowledgeGraph": true
+          },
+          "trafficPercent": 34
+        },
+        {
+          "id": "var-1",
+          "name": "GraphRAG Hybrid",
+          "config": {
+            "mode": "hybrid",
+            "enableKnowledgeGraph": true
+          },
+          "trafficPercent": 33
+        },
+        {
+          "id": "var-2",
+          "name": "Vector Only",
+          "config": {
+            "mode": "local",
+            "enableKnowledgeGraph": false
+          },
+          "trafficPercent": 33
+        }
+      ],
+      "metrics": [
+        "responseTime",
+        "relevanceScore",
+        "kgHitRate"
+      ],
+      "status": "completed",
+      "startDate": "2026-01-18T15:32:03.467Z",
+      "endDate": "2026-01-18T15:32:03.475Z",
+      "createdAt": "2026-01-18T15:32:03.463Z"
+    },
+    {
+      "id": "exp-dynamic-weight-test",
+      "name": "Dynamic vs Static KG Weights",
+      "description": "Compare default dynamic weighting strategy against fixed high/low weights",
+      "status": "running",
+      "startDate": "2026-01-18T10:00:00Z",
+      "metrics": [
+        "relevanceScore",
+        "responseTime"
+      ],
+      "variants": [
+        {
+          "id": "control",
+          "name": "Default (Dynamic)",
+          "trafficPercent": 34,
+          "config": {}
+        },
+        {
+          "id": "variant-high",
+          "name": "High KG Weight (0.5)",
+          "trafficPercent": 33,
+          "config": {
+            "kgWeight": 0.5
+          }
+        },
+        {
+          "id": "variant-low",
+          "name": "Low KG Weight (0.1)",
+          "trafficPercent": 33,
+          "config": {
+            "kgWeight": 0.1
+          }
+        }
+      ]
+    }
+  ]
+}

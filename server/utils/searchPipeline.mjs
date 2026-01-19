@@ -2,7 +2,8 @@
  * 搜索管道 - 将搜索流程分解为清晰的步骤
  */
 import { LIMITS, CACHE, SCORING } from '../constants.mjs';
-import { hybridRetrieval, determineRetrievalStrategy } from '../hybridRetrieval.mjs';
+import { hybridRetrieval, determineRetrievalStrategyWithAB } from '../hybridRetrieval.mjs';
+import { optimizeReferences } from './referenceOptimizer.mjs';
 
 export class SearchPipeline {
   constructor(options = {}) {
@@ -16,7 +17,8 @@ export class SearchPipeline {
     this.findSimilarCachedQuery = options.findSimilarCachedQuery;
     this.cosineSimilarity = options.cosineSimilarity;
     this.hybridRetrieval = options.hybridRetrieval || hybridRetrieval;
-    this.determineRetrievalStrategy = options.determineRetrievalStrategy || determineRetrievalStrategy;
+    this.determineRetrievalStrategy = options.determineRetrievalStrategy || determineRetrievalStrategyWithAB;
+    this.optimizeReferences = options.optimizeReferences || optimizeReferences;
   }
 
   /**
@@ -276,7 +278,8 @@ export class SearchPipeline {
     const enableKnowledgeGraph = config.enableKnowledgeGraph !== false; // 默认启用
     if (enableKnowledgeGraph && this.hybridRetrieval && this.determineRetrievalStrategy) {
       try {
-        const strategy = this.determineRetrievalStrategy(query);
+        // 传入实验配置 (config.experimentConfig) 如果存在
+        const strategy = this.determineRetrievalStrategy(query, config.experimentConfig);
         fusedResults = await this.hybridRetrieval(query, fusedResults, strategy);
         console.log(`[SearchPipeline] 知识图谱增强完成 (策略: ${strategy.strategy})`);
       } catch (error) {
@@ -285,9 +288,14 @@ export class SearchPipeline {
     }
 
     // 7. Reranking
-    const finalResults = await this.rerank(fusedResults, query, { rerankTopN });
+    const rankedResults = await this.rerank(fusedResults, query, { rerankTopN });
 
-    // 8. 保存到缓存
+    // 8. 引用显示优化 (去重、合并相邻)
+    const finalResults = this.optimizeReferences
+      ? this.optimizeReferences(rankedResults, { maxReferences: rerankTopN })
+      : rankedResults;
+
+    // 9. 保存到缓存
     if (cacheKey) {
       this.saveToCache(cacheKey, query, finalResults, queryEmbedding);
     }

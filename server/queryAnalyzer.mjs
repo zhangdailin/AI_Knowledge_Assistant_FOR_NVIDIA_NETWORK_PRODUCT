@@ -25,14 +25,20 @@ async function loadQueryLogs() {
 }
 
 /**
- * 加载负样本数据
+ * 加载负样本数据（支持新版本数据结构）
  */
 async function loadNegativeSamples() {
   try {
     const content = await fs.readFile(NEGATIVE_SAMPLES_FILE, 'utf-8');
-    return JSON.parse(content);
+    const data = JSON.parse(content);
+    // 支持新版本结构（包含 samples 数组）和旧版本结构（直接是对象）
+    if (data.samples && Array.isArray(data.samples)) {
+      return data;
+    }
+    // 旧版本格式兼容
+    return { samples: [], stats: {}, version: '1.0.0' };
   } catch (e) {
-    return {};
+    return { samples: [], stats: {}, version: '1.0.0' };
   }
 }
 
@@ -186,15 +192,71 @@ function generateRecommendations(patterns, performance, negativeSamples) {
     });
   }
 
-  // 4. 基于负样本的建议
-  const negativeQueryCount = Object.keys(negativeSamples).length;
-  if (negativeQueryCount > 10) {
-    recommendations.push({
-      category: '负样本学习',
-      priority: 'HIGH',
-      message: `已积累${negativeQueryCount}个负样本，建议定期清理或调整惩罚权重`,
-      action: '检查negative_samples.json，清理过时的负样本数据'
-    });
+  // 4. 基于负样本的建议（增强版）
+  const samples = negativeSamples.samples || [];
+  const stats = negativeSamples.stats || {};
+  const totalFeedback = stats.totalSamples || samples.length;
+
+  if (totalFeedback > 0) {
+    // 分析反馈类型分布
+    const byType = stats.byFeedbackType || {};
+    const feedbackEntries = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+
+    if (feedbackEntries.length > 0) {
+      const [topType, topCount] = feedbackEntries[0];
+      const topRatio = (topCount / totalFeedback * 100).toFixed(1);
+
+      const typeMessages = {
+        'not_helpful': {
+          message: `${topRatio}%的反馈表示回答“无帮助”，需改进检索质量`,
+          action: '建议启用知识图谱检索，或调整 rerank 模型参数'
+        },
+        'irrelevant': {
+          message: `${topRatio}%的反馈表示检索结果“不相关”`,
+          action: '检查分类过滤是否正确，考虑增加向量检索的最低分数阈值'
+        },
+        'outdated': {
+          message: `${topRatio}%的反馈表示内容“过时”`,
+          action: '检查文档更新时间，考虑为新文档增加检索权重'
+        },
+        'wrong_vendor': {
+          message: `${topRatio}%的反馈表示“厂商错误”`,
+          action: '检查厂商过滤逻辑，确保 detectPreferredVendors 正确工作'
+        }
+      };
+
+      const typeInfo = typeMessages[topType] || {
+        message: `${topRatio}%的反馈类型为 ${topType}`,
+        action: '分析该类型反馈的具体样本'
+      };
+
+      recommendations.push({
+        category: '负样本分析',
+        priority: totalFeedback > 20 ? 'HIGH' : 'MEDIUM',
+        message: `已收集${totalFeedback}条负反馈。${typeInfo.message}`,
+        action: typeInfo.action
+      });
+    }
+
+    // 分析高频问题查询
+    const queryCounts = {};
+    for (const sample of samples) {
+      const q = sample.query?.toLowerCase()?.substring(0, 50) || '';
+      if (q) queryCounts[q] = (queryCounts[q] || 0) + 1;
+    }
+    const topProblems = Object.entries(queryCounts)
+      .filter(([_, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    if (topProblems.length > 0) {
+      recommendations.push({
+        category: '高频问题查询',
+        priority: 'MEDIUM',
+        message: `以下查询经常被报告为问题: ${topProblems.map(([q, c]) => `"${q}"(${c}次)`).join(', ')}`,
+        action: '建议专门优化这些查询的检索结果'
+      });
+    }
   }
 
   // 5. 基于复杂查询的建议
@@ -304,7 +366,7 @@ export async function analyzeQueries() {
   } else {
     for (const rec of recommendations) {
       const priorityIcon = rec.priority === 'CRITICAL' ? '🔴' :
-                           rec.priority === 'HIGH' ? '🟡' : '🟢';
+        rec.priority === 'HIGH' ? '🟡' : '🟢';
       console.log(`${priorityIcon} [${rec.category}] ${rec.message}`);
       console.log(`   → ${rec.action}`);
       console.log();

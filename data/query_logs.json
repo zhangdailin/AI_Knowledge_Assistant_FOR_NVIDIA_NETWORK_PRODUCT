@@ -364,5 +364,89 @@
     "query": "如何配置MLAG？",
     "responseTime": 49541,
     "timestamp": "2026-01-16T16:43:09.638Z"
+  },
+  {
+    "id": "log-1768715966725",
+    "query": "如何配置MLAG？",
+    "responseTime": 51005,
+    "timestamp": "2026-01-18T05:59:26.725Z"
+  },
+  {
+    "id": "log-1768717018986",
+    "query": "如何配置MLAG？",
+    "responseTime": 63980,
+    "timestamp": "2026-01-18T06:16:58.986Z"
+  },
+  {
+    "id": "log-1768717763087",
+    "query": "如何配置MLAG？",
+    "responseTime": 64310,
+    "timestamp": "2026-01-18T06:29:23.087Z"
+  },
+  {
+    "id": "log-1768739868032",
+    "query": "如何配置MLAG？",
+    "responseTime": 112225,
+    "timestamp": "2026-01-18T12:37:48.032Z"
+  },
+  {
+    "id": "log-1768740052671",
+    "query": "如何配置MLAG？",
+    "responseTime": 27231,
+    "timestamp": "2026-01-18T12:40:52.671Z"
+  },
+  {
+    "id": "log-1768740247324",
+    "query": "如何配置MLAG？",
+    "responseTime": 42737,
+    "timestamp": "2026-01-18T12:44:07.324Z"
+  },
+  {
+    "id": "log-1768740638319",
+    "query": "如何配置MLAG？",
+    "responseTime": 20076,
+    "timestamp": "2026-01-18T12:50:38.319Z"
+  },
+  {
+    "id": "log-1768740756100",
+    "query": "如何配置MLAG？",
+    "responseTime": 19640,
+    "timestamp": "2026-01-18T12:52:36.100Z"
+  },
+  {
+    "id": "log-1768743679742",
+    "query": "如何配置MLAG？",
+    "responseTime": 13985,
+    "timestamp": "2026-01-18T13:41:19.742Z"
+  },
+  {
+    "id": "log-1768750572380",
+    "query": "如何配置MLAG？",
+    "responseTime": 55136,
+    "timestamp": "2026-01-18T15:36:12.380Z"
+  },
+  {
+    "id": "log-1768750869395",
+    "query": "如何配置MLAG？",
+    "responseTime": 33743,
+    "timestamp": "2026-01-18T15:41:09.395Z"
+  },
+  {
+    "id": "log-1768751508404",
+    "query": "如何配置MLAG？",
+    "responseTime": 40158,
+    "timestamp": "2026-01-18T15:51:48.404Z"
+  },
+  {
+    "id": "log-1768780702053",
+    "query": "如何配置MLAG？",
+    "responseTime": 37211,
+    "timestamp": "2026-01-18T23:58:22.053Z"
+  },
+  {
+    "id": "log-1768780867241",
+    "query": "如何使用nv set 配置mlag",
+    "responseTime": 51354,
+    "timestamp": "2026-01-19T00:01:07.241Z"
   }
 ]

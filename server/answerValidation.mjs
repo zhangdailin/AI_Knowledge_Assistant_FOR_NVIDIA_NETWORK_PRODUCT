@@ -171,23 +171,45 @@ const EXCLUDE_PATTERNS = [
   /^[-*]\s+/,       // 列表项标记
 ];
 
+function cleanCommand(line) {
+  let cleaned = line.trim();
+
+  // 移除常见的 shell 提示符
+  // e.g. "cumulus@leaf01$ nv set" -> "nv set"
+  // e.g. "root@server:~# apt update" -> "apt update"
+  // e.g. "$ sudo ls" -> "sudo ls"
+
+  // 匹配 user@host:path$ 或 user@host$ 形式
+  cleaned = cleaned.replace(/^[\w.-]+@[\w.-]+(?:[:~][\w/.~-]*)?[#$]\s+/, '');
+
+  // 匹配简单的 $ 或 # 提示符
+  cleaned = cleaned.replace(/^[#$]\s+/, '');
+
+  // 移除行尾的注释
+  // 注意：某些命令可能包含 # (如 CSS 颜色)，所以这里要谨慎
+  // 仅移除明确的注释格式
+  cleaned = cleaned.replace(/\s\s+#\s.*$/, '');
+
+  return cleaned.trim();
+}
+
 function isLikelyCommand(line) {
-  const trimmed = line.trim();
+  const cleaned = cleanCommand(line);
 
   // 基本过滤
-  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return false;
+  if (!cleaned || cleaned.startsWith('//')) return false;
 
   // 排除明显不是命令的内容
-  if (EXCLUDE_PATTERNS.some(pattern => pattern.test(trimmed))) return false;
+  if (EXCLUDE_PATTERNS.some(pattern => pattern.test(cleaned))) return false;
 
   // 排除只有一个单词且以冒号结尾的（标签）
-  if (/^[a-z]+:$/i.test(trimmed)) return false;
+  if (/^[a-z]+:$/i.test(cleaned)) return false;
 
   // 排除太短的内容（少于3个字符）
-  if (trimmed.length < 3) return false;
+  if (cleaned.length < 3) return false;
 
   // 匹配命令模式
-  return COMMAND_PATTERNS.some(pattern => pattern.test(trimmed));
+  return COMMAND_PATTERNS.some(pattern => pattern.test(cleaned));
 }
 
 function extractCommandLines(answer = '') {
@@ -198,7 +220,7 @@ function extractCommandLines(answer = '') {
   codeBlocks.forEach(block => {
     block.split('\n').forEach(line => {
       if (isLikelyCommand(line)) {
-        commands.add(line.trim());
+        commands.add(cleanCommand(line));
       }
     });
   });
@@ -207,9 +229,12 @@ function extractCommandLines(answer = '') {
   answer.split('\n').forEach(line => {
     const inlineMatches = line.match(/`([^`]+)`/g) || [];
     inlineMatches.forEach(item => {
-      const cmd = item.replace(/`/g, '').trim();
-      if (cmd && isLikelyCommand(cmd)) {
-        commands.add(cmd);
+      const original = item.replace(/`/g, '').trim();
+      if (original) {
+        // 先检查原始形式，如果不是命令，再尝试清洗
+        if (isLikelyCommand(original)) {
+          commands.add(cleanCommand(original));
+        }
       }
     });
   });

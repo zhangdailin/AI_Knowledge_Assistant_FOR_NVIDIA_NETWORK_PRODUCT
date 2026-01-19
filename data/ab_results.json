@@ -1,0 +1,103 @@
+{
+  "results": [
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-0",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 120,
+        "relevanceScore": 0.82,
+        "kgHitRate": 0.7
+      },
+      "timestamp": "2026-01-18T15:32:03.470Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-0",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 115,
+        "relevanceScore": 0.85,
+        "kgHitRate": 0.8
+      },
+      "timestamp": "2026-01-18T15:32:03.471Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-0",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 130,
+        "relevanceScore": 0.78,
+        "kgHitRate": 0.6
+      },
+      "timestamp": "2026-01-18T15:32:03.471Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-1",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 180,
+        "relevanceScore": 0.92,
+        "kgHitRate": 0.9
+      },
+      "timestamp": "2026-01-18T15:32:03.472Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-1",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 175,
+        "relevanceScore": 0.88,
+        "kgHitRate": 0.85
+      },
+      "timestamp": "2026-01-18T15:32:03.472Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-1",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 190,
+        "relevanceScore": 0.95,
+        "kgHitRate": 0.95
+      },
+      "timestamp": "2026-01-18T15:32:03.472Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-2",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 80,
+        "relevanceScore": 0.72,
+        "kgHitRate": 0
+      },
+      "timestamp": "2026-01-18T15:32:03.473Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-2",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 75,
+        "relevanceScore": 0.68,
+        "kgHitRate": 0
+      },
+      "timestamp": "2026-01-18T15:32:03.473Z"
+    },
+    {
+      "experimentId": "exp-1768750323463",
+      "variantId": "var-2",
+      "query": "测试查询",
+      "metrics": {
+        "responseTime": 85,
+        "relevanceScore": 0.75,
+        "kgHitRate": 0
+      },
+      "timestamp": "2026-01-18T15:32:03.473Z"
+    }
+  ]
+}

@@ -47,7 +47,15 @@
       "Bash(npm run test:coverage:*)",
       "Bash(npm run test:run:*)",
       "Bash(git checkout:*)",
-      "Bash(npm run dev)"
+      "Bash(npm run dev)",
+      "Bash(git config:*)",
+      "Bash(test:*)",
+      "Bash(ssh:*)",
+      "Bash(if [:*)",
+      "Bash(then echo \"SSH密钥存在:\")",
+      "Bash(elif [ -f ~/.ssh/id_ed25519.pub ])",
+      "Bash(else echo \"未找到SSH密钥\")",
+      "Bash(fi)"
     ]
   }
 }

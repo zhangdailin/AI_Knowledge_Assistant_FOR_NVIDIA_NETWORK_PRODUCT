@@ -332,7 +332,7 @@ const TERM_MAPPINGS = {
   // ... (keeping the existing mappings for reference or refactoring them)
 
   // --- Actions ---
-  '配置': ['config', 'configuration', 'settings', 'setup', 'provisioning', 'set'],
+  '配置': ['config', 'configuration', 'configure', 'settings', 'setup', 'provisioning', 'set'],
   'config': ['配置', '设置'],
   '显示': ['show', 'display', 'view', 'list', 'get', 'print'],
   '列出': ['list', 'show', 'ls', 'display', 'enumerate'],
@@ -537,17 +537,20 @@ function resolveDocumentCategoryId(doc, categoryIdSet, categoryNameToId) {
 export async function searchChunks(query, limit = 30, categoryIds = null) {
   await initStorage();
   const files = await fs.readdir(CHUNKS_DIR);
-  let queryLower = query.toLowerCase();
+  const originalQueryLower = query.toLowerCase();
+  let queryLower = originalQueryLower;
 
   // 查询重写：将口语化表达转换为技术术语
+  const normalizeQueryFragment = (value) =>
+    String(value || '').replace(/[?？。!！]+/g, '').trim();
   const queryRewritePatterns = [
     // 查看/检查 -> show
-    { pattern: /(怎么|如何)(看|查看|查询|检查)(.+)/, rewrite: (m, _, __, target) => `show ${target.trim()}` },
-    { pattern: /(查看|检查|看)(.+)(状态|信息|配置)/, rewrite: (m, _, target) => `show ${target.trim()}` },
+    { pattern: /(怎么|如何)(看|查看|查询|检查)(.+)/, rewrite: (m, _, __, target) => `show ${normalizeQueryFragment(target)}` },
+    { pattern: /(查看|检查|看)(.+)(状态|信息|配置)/, rewrite: (m, _, target) => `show ${normalizeQueryFragment(target)}` },
 
-    // 配置 -> config/set
-    { pattern: /(怎么|如何)(配置|设置)(.+)/, rewrite: (m, _, __, target) => `config ${target.trim()} set` },
-    { pattern: /(配置|设置)(.+)(方法|步骤|命令)/, rewrite: (m, _, target) => `config ${target.trim()}` },
+    // 配置 -> configure/ configuration
+    { pattern: /(怎么|如何)(配置|设置)(.+)/, rewrite: (m, _, __, target) => `configure ${normalizeQueryFragment(target)} configuration` },
+    { pattern: /(配置|设置)(.+)(方法|步骤|命令)/, rewrite: (m, _, target) => `configure ${normalizeQueryFragment(target)} steps` },
 
     // 概念查询
     { pattern: /(.+)(是什么|什么意思|含义)/, rewrite: (m, term) => `${term.trim()} 定义 概念` },
@@ -574,6 +577,13 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     }
   }
 
+  const combinedQueryLower = rewritten
+    ? `${originalQueryLower} ${queryLower}`.trim()
+    : queryLower;
+
+  const hasExplicitCommandCue = /(\bnv\s+(set|show|config|unset|list|apply)\b|\bcli\b|\bcommand\b|\bnetq\b|\bvtysh\b|命令行|命令)/i
+    .test(originalQueryLower);
+
   // 定义停用词列表（与前端保持一致）
   const stopWords = new Set([
     '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
@@ -581,7 +591,7 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     '自己', '这', '那', '能', '吗', '么', '为', '啊', '呢', '吧', '如何', '怎么', '什么'
   ]);
 
-  const rawQueryWords = (queryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
+  const rawQueryWords = (combinedQueryLower.match(/[a-zA-Z0-9]+|[\u4e00-\u9fa5]+/g) || [])
     .filter(w => {
       // 保留长度>=2的词，或单字中文但非停用词
       if (w.length >= 2) return !stopWords.has(w);
@@ -589,18 +599,27 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
     });
 
   const intent = { isCommand: false, isConcept: false, isTroubleshooting: false };
+  const intentQueryLower = originalQueryLower;
+  const isConfigQuery = /配置/.test(intentQueryLower) || /how to configure|configuration|configuring/i.test(intentQueryLower);
 
-  if (['config', 'configuration', '配置', 'show', 'list', '列出', '显示', 'set', 'add', 'del', 'delete'].some(k => queryLower.includes(k)) ||
-    /nv\s+(set|show|config|unset|action)/.test(queryLower) ||
-    queryLower.includes('nvue') || queryLower.includes('如何使用')) {
+  const commandSignals = [
+    /\b(nv|netq|vtysh)\s+(set|show|config|unset|list|apply)\b/i,
+    /\b(show|display|list|get)\b\s+\w+/i,
+    /命令行|命令|command|cli/i,
+    /配置命令|命令行配置/i,
+    /nvue/i
+  ];
+  if (commandSignals.some(pattern => pattern.test(intentQueryLower))) {
     intent.isCommand = true;
   }
 
-  if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理', '解释'].some(k => queryLower.includes(k))) {
+  if (['what is', 'explain', 'concept', 'definition', 'intro', '介绍', '什么是', '概念', '原理', '解释']
+    .some(k => intentQueryLower.includes(k))) {
     intent.isConcept = true;
   }
 
-  if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错', '怎么办', '起不来'].some(k => queryLower.includes(k))) {
+  if (['debug', 'fix', 'issue', 'problem', 'fail', 'error', '调试', '故障', '错误', '问题', '排错', '怎么办', '起不来']
+    .some(k => intentQueryLower.includes(k))) {
     intent.isTroubleshooting = true;
   }
 
@@ -617,7 +636,11 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
   }
 
   // 同义词扩展后，再次过滤停用词（确保扩展的词不包含停用词）
-  const expandedQueryWords = Array.from(queryWordsSet).filter(w => !stopWords.has(w));
+  let expandedQueryWords = Array.from(queryWordsSet).filter(w => !stopWords.has(w));
+  if (rewritten && !hasExplicitCommandCue) {
+    const genericCommandTerms = new Set(['config', 'configuration', 'set']);
+    expandedQueryWords = expandedQueryWords.filter(w => !genericCommandTerms.has(w));
+  }
   const technicalTerms = expandedQueryWords.filter(w => /^[a-z0-9]+$/.test(w));
   const technicalTermsSet = new Set(technicalTerms);
 
@@ -734,7 +757,9 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
       let score = 0;
       let matchedCount = 0;
-      const hasExactMatch = contentLower.includes(queryLower);
+      const normalizedOriginal = originalQueryLower.replace(/[^\w\u4e00-\u9fa5]+/g, ' ').trim();
+      const exactCandidates = new Set([queryLower, originalQueryLower, normalizedOriginal].filter(Boolean));
+      const hasExactMatch = Array.from(exactCandidates).some(value => value && contentLower.includes(value));
 
       if (hasExactMatch) score += 10;
 
@@ -774,10 +799,20 @@ export async function searchChunks(query, limit = 30, categoryIds = null) {
 
           if (hasCommandKeywords) {
             score += 10;
-            if ((queryLower.includes('show') || queryLower.includes('显示')) && contentLower.includes('show')) score += 5;
-            if ((queryLower.includes('config') || queryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
-            if (queryLower.includes('set') && contentLower.includes('nv set')) score += 8;
-            if ((queryLower.includes('mlag') || queryLower.includes('clag')) && (contentLower.includes('nv set') && (contentLower.includes('mlag') || contentLower.includes('bond')))) score += 15;
+            if ((intentQueryLower.includes('show') || intentQueryLower.includes('显示')) && contentLower.includes('show')) score += 5;
+            if ((intentQueryLower.includes('config') || intentQueryLower.includes('配置')) && (contentLower.includes('config') || contentLower.includes('nv set'))) score += 5;
+            if (intentQueryLower.includes('set') && contentLower.includes('nv set')) score += 8;
+          }
+        }
+
+        if (isConfigQuery) {
+          const stepListPattern = /(^|\n)\s*(?:step\s*)?\d+\s*[.)]/i;
+          if (contentLower.includes('basic configuration') ||
+              contentLower.includes('configuration example') ||
+              contentLower.includes('to configure') ||
+              contentLower.includes('follow these steps') ||
+              stepListPattern.test(content)) {
+            score += 6;
           }
         }
 
