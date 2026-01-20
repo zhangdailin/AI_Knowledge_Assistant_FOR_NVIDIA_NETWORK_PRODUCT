@@ -167,6 +167,11 @@ class UnifiedStorageManager {
   async getDocumentTasks(documentId: string): Promise<any[]> {
     return await serverStorageManager.getDocumentTasks(documentId);
   }
+
+  // 重新切片文档
+  async rechunkDocument(documentId: string): Promise<{ ok: boolean; message?: string; document?: Document }> {
+    return await serverStorageManager.rechunkDocument(documentId);
+  }
 }
 
 export const unifiedStorageManager = new UnifiedStorageManager();

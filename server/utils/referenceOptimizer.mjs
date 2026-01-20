@@ -82,6 +82,20 @@ export function optimizeReferences(results, options = {}) {
                     chunk._sources.forEach(s => currentMerged.sources.add(s));
                 }
                 currentMerged.mergedIds.push(chunk.id);
+                // 收集标题
+                if (chunk.metadata?.header) {
+                    currentMerged.mergedHeaders.add(chunk.metadata.header);
+                }
+
+                // 累计/保留 KG 增强信息 (取最大值)
+                currentMerged.kgBoost = Math.max(currentMerged.kgBoost || 0, chunk.kgBoost || 0);
+                currentMerged.multiHopBoost = Math.max(currentMerged.multiHopBoost || 0, chunk.multiHopBoost || 0);
+                currentMerged.kgChunkBoost = Math.max(currentMerged.kgChunkBoost || 0, chunk.kgChunkBoost || 0);
+                currentMerged.kgPostRerankBoost = Math.max(currentMerged.kgPostRerankBoost || 0, chunk.kgPostRerankBoost || 0);
+
+                currentMerged.kgMatches = Math.max(currentMerged.kgMatches || 0, chunk.kgMatches || 0);
+                currentMerged.multiHopMatches = Math.max(currentMerged.multiHopMatches || 0, chunk.multiHopMatches || 0);
+
             } else {
                 // 不相邻，保存当前合并块并开始新的
                 finalizeMergedRef(currentMerged);
@@ -105,7 +119,7 @@ export function optimizeReferences(results, options = {}) {
 }
 
 function createMergedRef(chunk, docTitle) {
-    return {
+    const ref = {
         id: chunk.id, // 使用第一个chunk的ID作为主ID
         mergedIds: [chunk.id], // 记录合并了哪些ID
         documentId: chunk.documentId,
@@ -119,14 +133,34 @@ function createMergedRef(chunk, docTitle) {
         lastIndex: chunk.chunkIndex,
         score: chunk.score || 0,
         sources: new Set(chunk._sources || []),
+        mergedHeaders: new Set(),
         // 标记为已优化引用
-        isOptimized: true
+        isOptimized: true,
+
+        // KG 增强元数据透传
+        kgBoost: chunk.kgBoost || 0,
+        kgChunkBoost: chunk.kgChunkBoost || 0,
+        multiHopBoost: chunk.multiHopBoost || 0,
+        kgPostRerankBoost: chunk.kgPostRerankBoost || 0,
+        kgMatches: chunk.kgMatches || 0,
+        multiHopMatches: chunk.multiHopMatches || 0,
+        kgChunkMatches: chunk.kgChunkMatches
     };
+
+    if (chunk.metadata?.header) {
+        ref.mergedHeaders.add(chunk.metadata.header);
+    }
+
+    return ref;
 }
 
 function finalizeMergedRef(ref) {
     // 转换 Set 为 Array
     ref._sources = Array.from(ref.sources);
     delete ref.sources;
+
+    // 转换 Headers (只保留前5个唯一的，避免太长)
+    ref.mergedHeaders = Array.from(ref.mergedHeaders).slice(0, 5);
+
     delete ref.lastIndex;
 }

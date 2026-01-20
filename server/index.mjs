@@ -460,16 +460,18 @@ async function processUploadedFile(documentId, file) {
     await storage.createChunks(chunksWithDocId);
     console.log(`[Async] chunks 已保存到存储`);
 
-    // 4. 生成 Embedding (复用 taskQueue)
-    // 注意：taskQueue.processEmbeddingTask 需要手动触发
-    // 或者我们直接创建任务并调用它
-    const task = taskQueue.createTask('generate_embeddings', documentId);
-    await taskQueue.processEmbeddingTask(task.id, documentId);
-
-    // 5. 更新状态
+    // 4. 更新状态为 ready（切片完成即可使用）
     const updatedDoc = await storage.updateDocument(documentId, { status: 'ready' });
     broadcastDocumentUpdate(updatedDoc);
-    console.log(`[Async] 文档处理完成: ${documentId}`);
+    console.log(`[Async] 文档切片完成，状态已更新为 ready: ${documentId}`);
+
+    // 5. 异步生成 Embedding（不阻塞文档就绪状态）
+    const task = taskQueue.createTask('generate_embeddings', documentId);
+    taskQueue.processEmbeddingTask(task.id, documentId).catch(err => {
+      console.error(`[Async] Embedding 生成失败: ${documentId}`, err);
+      // Embedding 失败不影响文档可用性，只记录错误
+    });
+    console.log(`[Async] Embedding 生成任务已启动（后台执行）: ${documentId}`);
 
   } catch (error) {
     console.error(`[Async] 处理文档失败: ${documentId}`);
@@ -493,6 +495,112 @@ async function processUploadedFile(documentId, file) {
     });
     const errorDoc = await storage.getDocument(documentId);
     broadcastDocumentUpdate(errorDoc);
+  }
+}
+
+// 重新切片文档
+async function rechunkDocument(documentId) {
+  try {
+    console.log(`[Rechunk] 开始重新切片文档: ${documentId}`);
+
+    // 1. 获取文档信息
+    const document = await storage.getDocument(documentId);
+    if (!document) {
+      throw new Error('文档不存在');
+    }
+
+    // 2. 获取现有的所有 chunks 来重建原始文本
+    const existingChunks = await storage.getChunks(documentId);
+    if (!existingChunks || existingChunks.length === 0) {
+      throw new Error('文档没有现有的切片，无法重新切片');
+    }
+
+    // 3. 重建原始文本（按 chunkIndex 排序并合并）
+    const sortedChunks = existingChunks
+      .filter(c => c.chunkType !== 'child') // 只使用父块或普通块
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+    const text = sortedChunks.map(c => c.content).join('\n\n');
+
+    if (!text || text.trim().length === 0) {
+      throw new Error('无法从现有切片重建文本内容');
+    }
+
+    const textSizeKB = Math.round(text.length / 1024);
+    console.log(`[Rechunk] 文本重建完成，长度: ${text.length} 字符 (${textSizeKB} KB)`);
+
+    // 4. 删除旧的 chunks
+    await storage.deleteChunksByDocument(documentId);
+    console.log(`[Rechunk] 已删除 ${existingChunks.length} 个旧切片`);
+
+    // 5. 重新分块（使用与上传相同的逻辑）
+    let maxChunkSize = LIMITS.MAX_CHUNK_SIZE;
+    if (text.length > 500 * 1024) {
+      maxChunkSize = 6000;
+      console.log(`[Rechunk] 大文件检测，使用优化参数: maxChunkSize=${maxChunkSize}`);
+    }
+
+    const chunkStartTime = Date.now();
+    const chunks = chunking.enhancedParentChildChunking(text, maxChunkSize, null, null, {
+      documentType: document?.category || document?.categoryId || 'general'
+    });
+    const chunkTime = Date.now() - chunkStartTime;
+
+    // 详细统计
+    const parentChunks = chunks.filter(c => c.chunkType === 'parent');
+    const childChunks = chunks.filter(c => c.chunkType === 'child');
+    const normalChunks = chunks.filter(c => c.chunkType !== 'parent' && c.chunkType !== 'child');
+
+    console.log(`[Rechunk] 分块完成，耗时: ${chunkTime}ms`);
+    console.log(`[Rechunk] 块数统计: 总计 ${chunks.length} 个`);
+    console.log(`[Rechunk]   - 父块: ${parentChunks.length} 个`);
+    console.log(`[Rechunk]   - 子块: ${childChunks.length} 个`);
+    console.log(`[Rechunk]   - 普通块: ${normalChunks.length} 个`);
+
+    if (chunks.length === 0) {
+      throw new Error('重新分块失败：未生成任何 chunks');
+    }
+
+    // 6. 保存新的 chunks
+    const chunksWithDocId = chunks.map(c => ({ ...c, documentId }));
+    await storage.createChunks(chunksWithDocId);
+    console.log(`[Rechunk] 新切片已保存到存储`);
+
+    // 7. 更新状态为 ready（切片完成即可使用）
+    const updatedDoc = await storage.updateDocument(documentId, { status: 'ready' });
+    broadcastDocumentUpdate(updatedDoc);
+    console.log(`[Rechunk] 文档重新切片完成，状态已更新为 ready: ${documentId}`);
+
+    // 8. 异步生成 Embedding（不阻塞文档就绪状态）
+    const task = taskQueue.createTask('generate_embeddings', documentId);
+    taskQueue.processEmbeddingTask(task.id, documentId).catch(err => {
+      console.error(`[Rechunk] Embedding 生成失败: ${documentId}`, err);
+      // Embedding 失败不影响文档可用性，只记录错误
+    });
+    console.log(`[Rechunk] Embedding 生成任务已启动（后台执行）: ${documentId}`);
+
+  } catch (error) {
+    console.error(`[Rechunk] 重新切片失败: ${documentId}`);
+    console.error(`[Rechunk] 错误类型: ${error.name}`);
+    console.error(`[Rechunk] 错误信息: ${error.message}`);
+    console.error(`[Rechunk] 错误堆栈:`, error.stack);
+
+    // 提供更友好的错误信息
+    let userFriendlyMessage = error.message;
+    if (error.message.includes('Embedding API')) {
+      userFriendlyMessage = 'Embedding API 调用失败，请检查 API 配置';
+    } else if (error.message.includes('无法从现有切片重建文本')) {
+      userFriendlyMessage = '文档切片数据损坏，无法重新切片';
+    }
+
+    await storage.updateDocument(documentId, {
+      status: 'error',
+      errorMessage: userFriendlyMessage
+    });
+    const errorDoc = await storage.getDocument(documentId);
+    broadcastDocumentUpdate(errorDoc);
+
+    throw error; // 重新抛出错误以便调用者处理
   }
 }
 
@@ -775,6 +883,44 @@ app.put('/api/chunks/:id/embedding', asyncHandler(async (req, res) => {
   }
   res.json({ ok: true });
 }, '更新 embedding'));
+
+// 重新切片单个文档
+app.post('/api/documents/:id/rechunk', asyncHandler(async (req, res) => {
+  const documentId = req.params.id;
+  console.log(`[API] 收到重新切片请求: ${documentId}`);
+
+  // 1. 获取文档信息
+  const document = await storage.getDocument(documentId);
+  if (!document) {
+    return res.status(404).json({ ok: false, error: '文档不存在' });
+  }
+
+  // 2. 检查文档是否正在处理中
+  if (document.status === 'processing') {
+    return res.status(400).json({ ok: false, error: '文档正在处理中，请稍后再试' });
+  }
+
+  // 3. 更新文档状态为处理中
+  await storage.updateDocument(documentId, { status: 'processing' });
+  const processingDoc = await storage.getDocument(documentId);
+  broadcastDocumentUpdate(processingDoc);
+
+  // 4. 立即响应前端
+  res.json({ ok: true, message: '重新切片任务已开始', document: processingDoc });
+
+  // 5. 异步处理重新切片
+  rechunkDocument(documentId).catch(err => {
+    console.error(`[Rechunk] 重新切片异常失败: ${documentId}`, err);
+    storage.updateDocument(documentId, {
+      status: 'error',
+      errorMessage: '重新切片失败: ' + (err.message || '未知错误')
+    }).then(errorDoc => {
+      broadcastDocumentUpdate(errorDoc);
+    }).catch(updateErr => {
+      console.error(`[Rechunk] 状态更新失败: ${documentId}`, updateErr);
+    });
+  });
+}, '重新切片文档'));
 
 // 搜索 chunks (混合检索：关键词 + 向量) - 使用 SearchPipeline
 app.get('/api/chunks/search', async (req, res) => {
@@ -2243,7 +2389,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // 默认使用 SiliconFlow
+    // 默认使用 SiliconFlow（带重试机制）
     const siliconflowConfig = await getProviderConfig('siliconflow');
     // 兼容旧的 API Key 存储方式
     const apiKey = siliconflowConfig.apiKey || await storage.getApiKey('siliconflow');
@@ -2251,33 +2397,72 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ ok: false, error: '未配置 SiliconFlow API Key' });
     }
 
-    const response = await fetch(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: model || await getLLMModel(),
-        messages,
-        max_tokens: max_tokens || 8192,
-        temperature: temperature || 0.7
-      })
-    });
+    // 重试逻辑：对于 503 错误自动重试
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2秒
+    let lastError = null;
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('[Chat] API error:', response.status, errorData);
-      return res.status(response.status).json({
-        ok: false,
-        error: errorData.error?.message || `API 请求失败: ${response.status}`
-      });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: model || await getLLMModel(),
+            messages,
+            max_tokens: max_tokens || 8192,
+            temperature: temperature || 0.7
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+
+          // 如果是 503 错误且还有重试次数，则等待后重试
+          if (response.status === 503 && attempt < maxRetries) {
+            console.warn(`[Chat] API 503 错误 (尝试 ${attempt}/${maxRetries})，${retryDelay}ms 后重试...`);
+            lastError = errorData;
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            continue; // 重试
+          }
+
+          // 其他错误或重试次数用尽，直接返回错误
+          console.error('[Chat] API error:', response.status, errorData);
+          return res.status(response.status).json({
+            ok: false,
+            error: errorData.error?.message || errorData.message || `API 请求失败: ${response.status}`
+          });
+        }
+
+        // 成功响应
+        const data = await response.json();
+        const answerText = data.choices?.[0]?.message?.content || '';
+        const validation = validateAnswerConsistency(answerText, references, latestUserMessage);
+
+        if (attempt > 1) {
+          console.log(`[Chat] 重试成功 (尝试 ${attempt}/${maxRetries})`);
+        }
+
+        return res.json({ ok: true, ...data, source: 'siliconflow', validation });
+      } catch (fetchError) {
+        lastError = fetchError;
+        if (attempt < maxRetries) {
+          console.warn(`[Chat] 请求失败 (尝试 ${attempt}/${maxRetries})，${retryDelay}ms 后重试...`, fetchError.message);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue;
+        }
+      }
     }
 
-    const data = await response.json();
-    const answerText = data.choices?.[0]?.message?.content || '';
-    const validation = validateAnswerConsistency(answerText, references, latestUserMessage);
-    res.json({ ok: true, ...data, source: 'siliconflow', validation });
+    // 所有重试都失败了
+    console.error('[Chat] 所有重试均失败:', lastError);
+    return res.status(503).json({
+      ok: false,
+      error: '服务暂时不可用，请稍后重试'
+    });
   } catch (error) {
     console.error('[Chat] Error:', error);
     res.status(500).json({ ok: false, error: error.message });
@@ -3476,6 +3661,17 @@ app.get('/api/knowledge-graph/stats', asyncHandler(async (req, res) => {
     res.json({ ok: true, ...stats });
   } catch (error) {
     console.error('获取知识图谱统计失败:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}));
+
+// 获取知识图谱质量报告
+app.get('/api/knowledge-graph/quality', asyncHandler(async (req, res) => {
+  try {
+    const report = await knowledgeGraph.getGraphQualityReport();
+    res.json({ ok: true, report });
+  } catch (error) {
+    console.error('获取知识图谱质量报告失败:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 }));

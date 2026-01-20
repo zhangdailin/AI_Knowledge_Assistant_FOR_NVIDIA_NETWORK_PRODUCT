@@ -253,6 +253,31 @@ async function acquireWriteLock(filePath) {
   };
 }
 
+export async function deleteChunksByDocument(documentId) {
+  await initStorage();
+  const filePath = path.join(CHUNKS_DIR, `${documentId}.json`);
+  const release = await acquireWriteLock(filePath);
+  try {
+    // 删除 chunks 文件
+    try {
+      await fs.unlink(filePath);
+      console.log(`[storage] 已删除文档 ${documentId} 的所有 chunks`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error(`[storage] 删除 chunks 文件失败: ${documentId}`, error);
+        throw error;
+      }
+      // 文件不存在，忽略错误
+    }
+
+    invalidateChunkCache(`${documentId}.json`);
+    if (searchCacheInvalidator) searchCacheInvalidator('deleteChunksByDocument');
+    return true;
+  } finally {
+    release();
+  }
+}
+
 export async function updateChunkEmbedding(chunkId, embedding) {
   await initStorage();
   // 遍历查找（性能较差，但为了兼容性）

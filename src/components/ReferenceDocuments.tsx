@@ -7,6 +7,9 @@ interface Reference {
   title: string;
   content: string;
   score: number;
+  mergedHeaders?: string[];
+  mergedIds?: string[];
+  isOptimized?: boolean;
 }
 
 interface ReferenceHighlight {
@@ -29,138 +32,96 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
     return null;
   }
 
-  // 只显示被引用的文档（在 highlights 中有记录的）
-  const referencedDocs = references.filter((ref, index) => {
-    // 检查多个可能的键形式
-    const possibleKeys = [
-      ref.id,
-      `idx-${index}`,
-      `ref-${index}`
-    ].filter(Boolean) as string[];
-
-    // 只要有任何一个键在 highlights 中有记录，就认为该文档被引用
-    const isReferenced = possibleKeys.some(key => {
-      const highlight = highlights?.[key];
-      return highlight && (
-        (highlight.commands && highlight.commands.length > 0) ||
-        (highlight.excerpts && highlight.excerpts.length > 0)
-      );
-    });
-
-    return isReferenced;
-  });
-
-  // 如果没有被引用的文档，不显示整个区域
-  if (referencedDocs.length === 0) {
-    return null;
-  }
+  // 只显示前4个，或者点击查看更多
+  const displayRefs = references;
 
   const toggleExpand = (index: number) => {
     setExpandedIndex(expandedIndex === index ? null : index);
   };
 
   return (
-    <div className="mt-3 pt-3 border-t border-gray-200">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="mt-6 pt-4 border-t border-gray-100">
+      <div className="flex items-center gap-2 mb-3">
         <FileText className="w-4 h-4 text-gray-500" />
-        <span className="text-xs font-medium text-gray-600">参考文档 ({referencedDocs.length})</span>
+        <span className="text-sm font-semibold text-gray-700">参考来源</span>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {referencedDocs.map((ref, index) => {
-          // 尝试所有可能的键形式来获取 highlight
-          const possibleKeys = [
-            ref.id,
-            `idx-${index}`,
-            `ref-${index}`
-          ].filter(Boolean) as string[];
 
-          // 找到第一个存在的 highlight
-          let highlight: ReferenceHighlight | undefined;
-          let refKey = '';
-          for (const key of possibleKeys) {
-            if (highlights?.[key]) {
-              highlight = highlights[key];
-              refKey = key;
-              break;
-            }
-          }
+      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        {displayRefs.map((ref, index) => {
+          const isExpanded = expandedIndex === index;
 
           return (
-            <div key={refKey || `ref-${index}`} className="relative group">
-            <button
-              onClick={() => toggleExpand(index)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs text-blue-700 transition-all"
+            <div
+              key={ref.id || index}
+              id={`ref-item-${index}`}
+              className={`
+                relative group flex flex-col bg-white border rounded-xl overflow-hidden transition-all duration-200
+                ${isExpanded
+                  ? 'border-blue-200 shadow-md ring-1 ring-blue-100 col-span-full sm:col-span-full lg:col-span-full z-10'
+                  : 'border-gray-200 hover:border-blue-200 hover:shadow-sm cursor-pointer h-24'
+                }
+              `}
+              onClick={() => !isExpanded && toggleExpand(index)}
             >
-              <FileText className="w-3.5 h-3.5" />
-              <span className="font-medium">{ref.title}</span>
-              <span className="text-blue-500 ml-1">
-                {(ref.score * 100).toFixed(0)}%
-              </span>
-              {highlight && highlight.commands.length > 0 && (
-                <span className="ml-1 text-[10px] text-emerald-600 font-semibold">
-                  {highlight.commands.length}条引用
-                </span>
-              )}
-              {expandedIndex === index ? (
-                <ChevronUp className="w-3.5 h-3.5" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5" />
-              )}
-            </button>
-
-            {/* 展开的内容面板 */}
-            {expandedIndex === index && (
-              <div className="absolute left-0 top-full mt-2 w-96 max-w-[90vw] bg-white border border-gray-200 rounded-lg shadow-xl z-50 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-blue-600" />
-                    <span className="text-sm font-semibold text-gray-900">{ref.title}</span>
-                  </div>
-                  <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                    相关度: {(ref.score * 100).toFixed(0)}%
-                  </span>
+              {/* 卡片头部 */}
+              <div className="flex items-start gap-3 p-3">
+                <div className="flex-shrink-0 w-6 h-6 rounded-md bg-gray-50 flex items-center justify-center border border-gray-100 text-xs font-mono font-medium text-gray-500">
+                  {index + 1}
                 </div>
-                <div className="max-h-64 overflow-y-auto">
-                  <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap bg-gray-50 p-3 rounded-lg border border-gray-200">
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-medium text-gray-900 leading-tight line-clamp-2 mb-1" title={ref.title}>
+                    {ref.title}
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">
+                      相关度 {(ref.score * 100).toFixed(0)}%
+                    </span>
+                    {ref.mergedIds && ref.mergedIds.length > 1 && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-full">
+                        {ref.mergedIds.length} 片段
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {isExpanded && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleExpand(index); }}
+                    className="text-gray-400 hover:text-gray-600 p-1"
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* 预览文字 (仅收起状态) */}
+              {!isExpanded && (
+                <div className="px-3 pb-3">
+                  <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">
+                    {ref.content.slice(0, 100).replace(/[\n\r]+/g, ' ')}...
+                  </p>
+                </div>
+              )}
+
+              {/* 展开内容 */}
+              {isExpanded && (
+                <div className="px-3 pb-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                  {/* 章节覆盖 Badge */}
+                  {ref.mergedHeaders && ref.mergedHeaders.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {ref.mergedHeaders.map((h, i) => (
+                        <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100">
+                          {h}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 完整内容 */}
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100 text-sm text-gray-700 leading-relaxed font-mono whitespace-pre-wrap max-h-[400px] overflow-y-auto">
                     {ref.content}
                   </div>
                 </div>
-                {highlight && (
-                  <div className="mt-3 space-y-2">
-                    {highlight.commands.length > 0 && (
-                      <div className="text-xs text-gray-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
-                        <p className="font-semibold text-indigo-700 mb-1">引用命令</p>
-                        <ul className="space-y-1">
-                          {highlight.commands.map((cmd, idx) => (
-                            <li key={idx}>
-                              <code className="font-mono">{cmd}</code>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {highlight.excerpts && highlight.excerpts.length > 0 && (
-                      <div className="text-xs text-gray-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                        <p className="font-semibold text-amber-700 mb-1">引用段落</p>
-                        <div className="space-y-1">
-                          {highlight.excerpts.map((excerpt, idx) => (
-                            <p key={idx} className="leading-relaxed whitespace-pre-wrap">
-                              {excerpt}
-                            </p>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <button
-                  onClick={() => setExpandedIndex(null)}
-                  className="mt-3 w-full text-xs text-gray-500 hover:text-gray-700 py-1"
-                >
-                  收起
-                </button>
-              </div>
-            )}
+              )}
             </div>
           );
         })}

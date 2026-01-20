@@ -17,7 +17,8 @@ import {
   Move,
   Share2,
   Activity,
-  AlertTriangle
+  AlertTriangle,
+  Scissors
 } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { unifiedStorageManager, Document } from '../lib/localStorage';
@@ -247,14 +248,19 @@ const KnowledgeBase: React.FC = () => {
   // WebSocket 实时更新
   const handleWebSocketMessage = useCallback((message: any) => {
     if (message.type === 'document_update' && message.document && typeof message.document === 'object' && message.document.id) {
+      console.log('[KnowledgeBase] 收到文档更新:', message.document.id, message.document.status);
       setDocuments(prev => {
         const index = prev.findIndex(d => d.id === message.document.id);
         if (index >= 0) {
           const newDocs = [...prev];
           newDocs[index] = message.document;
+          console.log('[KnowledgeBase] 已更新文档状态:', message.document.id, message.document.status);
           return newDocs;
+        } else {
+          // 如果文档不在当前列表中，可能是新上传的或在其他页面，添加到列表开头
+          console.log('[KnowledgeBase] 文档不在当前列表，添加到开头:', message.document.id);
+          return [message.document, ...prev];
         }
-        return prev;
       });
     }
   }, []);
@@ -497,6 +503,25 @@ const KnowledgeBase: React.FC = () => {
         next.delete(documentId);
         return next;
       });
+    }
+  };
+
+  const rechunkDocument = async (documentId: string) => {
+    if (!window.confirm('确定要重新切片这个文档吗？这将删除现有的切片并重新生成，可能需要一些时间。')) {
+      return;
+    }
+
+    try {
+      const result = await unifiedStorageManager.rechunkDocument(documentId);
+      if (result.ok) {
+        alert(result.message || '重新切片任务已开始，请稍后查看进度');
+        loadDocuments();
+      } else {
+        alert('重新切片失败');
+      }
+    } catch (error) {
+      console.error('重新切片失败:', error);
+      alert(`重新切片失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -825,6 +850,9 @@ const KnowledgeBase: React.FC = () => {
                               <button onClick={() => openChunkViewer(doc)} className="p-1.5 hover:bg-blue-50 rounded text-blue-500" title="查看切片">
                                 <Eye className="w-4 h-4" />
                               </button>
+                              <button onClick={() => rechunkDocument(doc.id)} className="p-1.5 hover:bg-orange-50 rounded text-orange-500" title="重新切片">
+                                <Scissors className="w-4 h-4" />
+                              </button>
                               <button onClick={() => { setMovingDoc(doc); setShowMoveDialog(true); }} className="p-1.5 hover:bg-purple-50 rounded text-purple-500" title="移动分类">
                                 <Move className="w-4 h-4" />
                               </button>
@@ -881,6 +909,10 @@ const KnowledgeBase: React.FC = () => {
 
                       <div className="mt-3 pt-3 border-t flex gap-2">
                         <button onClick={() => openChunkViewer(doc)} className="flex-1 text-xs py-1.5 bg-blue-50 text-blue-600 rounded hover:bg-blue-100">查看切片</button>
+                        <button onClick={() => rechunkDocument(doc.id)} className="flex-1 text-xs py-1.5 bg-orange-50 text-orange-600 rounded hover:bg-orange-100" title="重新切片">
+                          <Scissors className="w-3 h-3 inline mr-1" />
+                          重新切片
+                        </button>
                         <button onClick={async () => {
                           const chunks = await unifiedStorageManager.getChunks(doc.id);
                           downloadMarkdown(generateMarkdownFromDocument(doc, chunks), doc.filename);

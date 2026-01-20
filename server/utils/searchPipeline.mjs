@@ -216,6 +216,91 @@ export class SearchPipeline {
   }
 
   /**
+   * 重新应用知识图谱增强
+   * Reranker 返回的分数可能是 logits (e.g., -10 to 10) 或概率 (0 to 1)
+   * 我们需要根据分数范围自适应调整 boost
+   */
+  reapplyKnowledgeGraphBoost(results) {
+    if (!results || results.length === 0) return;
+
+    // 1. 分析分数分布
+    const scores = results.map(r => r.rerank_score !== undefined ? r.rerank_score : (r.score || 0));
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    const scoreRange = maxScore - minScore;
+
+    // 确定 Boost 缩放因子
+    let boostScale = 0;
+
+    if (scoreRange > 2) {
+      // Logits 模式：使用 range 的 5%~10% 作为 boost 基准
+      boostScale = scoreRange * 0.1;
+    } else if (maxScore > 0.8 && minScore < 0.2) {
+      // 概率模式 (Sigmoid)：Range ~ 1.0
+      boostScale = 0.1;
+    } else {
+      // 默认回退
+      boostScale = Math.max(0.1, Math.abs(maxScore) * 0.1);
+    }
+
+    // 确保最小 boost 可见且不过大
+    boostScale = Math.max(0.05, boostScale); // 最小 0.05
+    boostScale = Math.min(boostScale, 10.0); // 最大 10 (防止无限放大)
+
+    let boostedCount = 0;
+
+    for (const result of results) {
+      // 检查是否有 KG 匹配标记 (由 hybridRetrieval 设置)
+      const hasKgMatches = (result.kgMatches || 0) > 0;
+      const hasChunkMatches = (result.kgChunkMatches?.length || 0) > 0;
+      const hasMultiHopMatches = (result.multiHopMatches || 0) > 0;
+
+      if (!hasKgMatches && !hasChunkMatches && !hasMultiHopMatches) continue;
+
+      let totalBoost = 0;
+
+      // 1. 实体匹配增强
+      if (hasKgMatches) {
+        // 每个匹配实体增加 0.2 * scale
+        totalBoost += (result.kgMatches * 0.2 * boostScale);
+      }
+
+      // 2. Chunk 引用增强 (MENTIONS) - 权重更高
+      if (hasChunkMatches) {
+        totalBoost += (0.5 * boostScale); // 固定给予显著提升
+      }
+
+      // 3. 多跳实体增强 - 权重较低
+      if (hasMultiHopMatches) {
+        totalBoost += (result.multiHopMatches * 0.1 * boostScale);
+      }
+
+      // 应用增强
+      if (result.rerank_score !== undefined) {
+        result.rerank_score += totalBoost;
+        // 同步更新 score 以便后续排序正确
+        result.score = result.rerank_score;
+      } else {
+        result.score = (result.score || 0) + totalBoost;
+      }
+
+      // 更新元数据以便前端/调试可见
+      result.kgPostRerankBoost = totalBoost;
+      boostedCount++;
+    }
+
+    if (boostedCount > 0) {
+      // 重新排序
+      results.sort((a, b) => {
+        const scoreA = a.rerank_score !== undefined ? a.rerank_score : (a.score || 0);
+        const scoreB = b.rerank_score !== undefined ? b.rerank_score : (b.score || 0);
+        return scoreB - scoreA;
+      });
+      console.log(`[SearchPipeline] KG 增强已重新应用: ${boostedCount} 个结果获得提升 (Scale=${boostScale.toFixed(3)})`);
+    }
+  }
+
+  /**
    * 执行完整的搜索管道
    */
   async execute(query, options = {}) {
@@ -288,7 +373,13 @@ export class SearchPipeline {
     }
 
     // 7. Reranking
-    const rankedResults = await this.rerank(fusedResults, query, { rerankTopN });
+    let rankedResults = await this.rerank(fusedResults, query, { rerankTopN });
+
+    // 7.5. 重新应用知识图谱增强 (适应 Rerank 分数体系)
+    // Reranking 会重置分数，我们需要把 KG 的贡献加回去
+    if (enableKnowledgeGraph && rankedResults.length > 0) {
+      this.reapplyKnowledgeGraphBoost(rankedResults);
+    }
 
     // 8. 引用显示优化 (去重、合并相邻)
     const finalResults = this.optimizeReferences

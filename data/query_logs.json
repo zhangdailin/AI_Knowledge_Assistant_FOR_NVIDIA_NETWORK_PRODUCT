@@ -448,5 +448,113 @@
     "query": "如何使用nv set 配置mlag",
     "responseTime": 51354,
     "timestamp": "2026-01-19T00:01:07.241Z"
+  },
+  {
+    "id": "log-1768824933300",
+    "query": "如何配置MLAG？",
+    "responseTime": 30887,
+    "timestamp": "2026-01-19T12:15:33.300Z"
+  },
+  {
+    "id": "log-1768828172616",
+    "query": "如何配置MLAG？",
+    "responseTime": 35948,
+    "timestamp": "2026-01-19T13:09:32.616Z"
+  },
+  {
+    "id": "log-1768828293031",
+    "query": "cumulus 交换机 如何配置MLAG？",
+    "responseTime": 76876,
+    "timestamp": "2026-01-19T13:11:33.031Z"
+  },
+  {
+    "id": "log-1768829203350",
+    "query": "如何配置MLAG？",
+    "responseTime": 55039,
+    "timestamp": "2026-01-19T13:26:43.350Z"
+  },
+  {
+    "id": "log-1768829338408",
+    "query": "英伟达 cumulus 交换机 如何配置MLAG？",
+    "responseTime": 90538,
+    "timestamp": "2026-01-19T13:28:58.408Z"
+  },
+  {
+    "id": "log-1768830134586",
+    "query": "如何配置MLAG？",
+    "responseTime": 92398,
+    "timestamp": "2026-01-19T13:42:14.586Z"
+  },
+  {
+    "id": "log-1768830229818",
+    "query": "如何配置MLAG？",
+    "responseTime": 69113,
+    "timestamp": "2026-01-19T13:43:49.818Z"
+  },
+  {
+    "id": "log-1768830448134",
+    "query": "如何配置MLAG？",
+    "responseTime": 42163,
+    "timestamp": "2026-01-19T13:47:28.134Z"
+  },
+  {
+    "id": "log-1768830626705",
+    "query": "如何配置MLAG？",
+    "responseTime": 39335,
+    "timestamp": "2026-01-19T13:50:26.705Z"
+  },
+  {
+    "id": "log-1768830746117",
+    "query": "如何配置MLAG？",
+    "responseTime": 25757,
+    "timestamp": "2026-01-19T13:52:26.117Z"
+  },
+  {
+    "id": "log-1768830830235",
+    "query": "如何配置MLAG？",
+    "responseTime": 33959,
+    "timestamp": "2026-01-19T13:53:50.235Z"
+  },
+  {
+    "id": "log-1768831040112",
+    "query": "如何配置MLAG？",
+    "responseTime": 71486,
+    "timestamp": "2026-01-19T13:57:20.112Z"
+  },
+  {
+    "id": "log-1768831332365",
+    "query": "如何配置MLAG？",
+    "responseTime": 32170,
+    "timestamp": "2026-01-19T14:02:12.365Z"
+  },
+  {
+    "id": "log-1768831529896",
+    "query": "如何配置MLAG？",
+    "responseTime": 167680,
+    "timestamp": "2026-01-19T14:05:29.896Z"
+  },
+  {
+    "id": "log-1768835498143",
+    "query": "如何配置MLAG？",
+    "responseTime": 337715,
+    "timestamp": "2026-01-19T15:11:38.143Z"
+  },
+  {
+    "id": "log-1768836767587",
+    "query": "如何配置MLAG？",
+    "responseTime": 46897,
+    "timestamp": "2026-01-19T15:32:47.587Z"
+  },
+  {
+    "id": "log-1768837174700",
+    "query": "如何配置MLAG？",
+    "responseTime": 363323,
+    "timestamp": "2026-01-19T15:39:34.700Z"
+  },
+  {
+    "id": "log-1768837718323",
+    "query": "如何配置MLAG？",
+    "responseTime": 252226,
+    "timestamp": "2026-01-19T15:48:38.323Z"
   }
 ]

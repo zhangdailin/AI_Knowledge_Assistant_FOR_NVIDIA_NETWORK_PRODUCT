@@ -10,7 +10,8 @@
     "status": "ready",
     "id": "doc-1766503475664",
     "categoryId": "cat-1766845817168",
-    "chunkCount": 777
+    "chunkCount": 770,
+    "errorMessage": "重新切片失败: storage.deleteChunksByDocument is not a function"
   },
   {
     "userId": "public",
@@ -23,7 +24,7 @@
     "status": "ready",
     "id": "doc-1766537185525",
     "categoryId": "cat-1766845817168",
-    "chunkCount": 402
+    "chunkCount": 346
   },
   {
     "userId": "public",
@@ -36,6 +37,6 @@
     "status": "ready",
     "id": "doc-1766537309162",
     "categoryId": "cat-1766845817168",
-    "chunkCount": 650
+    "chunkCount": 611
   }
 ]

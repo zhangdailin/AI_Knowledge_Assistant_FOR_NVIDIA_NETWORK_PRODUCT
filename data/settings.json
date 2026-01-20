@@ -34,8 +34,8 @@
     "gemini": {
       "name": "Gemini",
       "enabled": true,
-      "apiKey": "sk-3f5e88f13063589b2ba15f9470be887930fec872d8c5b6d3209f9d367d8a3b6b",
-      "baseUrl": "https://www.chinablog.xyz/antigravity"
+      "apiKey": "sk-fae5062d8fcd1ea48bc46deb20f2854a69ca7f93f4021491d13629b359a750ea",
+      "baseUrl": "https://www.chinablog.xyz/"
     }
   },
   "neo4j": {

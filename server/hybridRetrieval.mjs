@@ -149,7 +149,9 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
     enableKnowledgeGraph = true,
     kgWeight = 0.25,
     maxKgResults = 5,
-    useDynamicWeight = true
+    useDynamicWeight = true,
+    enableMultiHop = true,
+    maxHops = 2
   } = options;
 
   if (!enableKnowledgeGraph) {
@@ -157,10 +159,23 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
   }
 
   try {
-    // 1. 从知识图谱中检索相关实体
+    // 1. 从知识图谱中检索相关实体（单跳）
     const kgResults = await knowledgeGraph.queryKnowledgeGraph(query, maxKgResults);
 
-    // 2. 获取基于实体的相关 chunks（使用 MENTIONS 关系）
+    // 2. 多跳图谱遍历（发现间接关系）
+    let multiHopResults = { entities: [], paths: [], context: '' };
+    if (enableMultiHop && knowledgeGraph.multiHopQuery) {
+      try {
+        multiHopResults = await knowledgeGraph.multiHopQuery(query, { maxHops, limit: 15 });
+        if (multiHopResults.entities.length > 0) {
+          console.log(`[HybridRetrieval] 多跳查询发现 ${multiHopResults.entities.length} 个相关实体`);
+        }
+      } catch (e) {
+        console.log('[HybridRetrieval] 多跳查询不可用:', e.message);
+      }
+    }
+
+    // 3. 获取基于实体的相关 chunks（使用 MENTIONS 关系）
     let kgChunks = [];
     try {
       kgChunks = await knowledgeGraph.getChunksFromQuery(query, 5);
@@ -169,12 +184,13 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
       console.log('[HybridRetrieval] getChunksFromQuery 不可用，跳过 chunk 交叉引用');
     }
 
-    if (kgResults.length === 0 && kgChunks.length === 0) {
+    const hasKgResults = kgResults.length > 0 || kgChunks.length > 0 || multiHopResults.entities.length > 0;
+    if (!hasKgResults) {
       console.log('[HybridRetrieval] 知识图谱未找到相关结果，使用纯向量检索');
       return vectorResults;
     }
 
-    // 3. 动态计算权重（如果启用）
+    // 4. 动态计算权重（如果启用）
     let effectiveWeight = kgWeight;
     let dynamicFactors = null;
 
@@ -183,25 +199,35 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
       effectiveWeight = dynamicResult.weight;
       dynamicFactors = dynamicResult.factors;
 
+      // 如果多跳查询有结果，额外提升权重
+      if (multiHopResults.entities.length > 0) {
+        const multiHopBoost = Math.min(multiHopResults.entities.length * 0.02, 0.1);
+        effectiveWeight = Math.min(effectiveWeight + multiHopBoost, 0.5);
+      }
+
       if (Math.abs(effectiveWeight - kgWeight) > 0.05) {
         console.log(`[HybridRetrieval] 动态权重调整: ${kgWeight.toFixed(2)} → ${effectiveWeight.toFixed(2)} ` +
           `(confidence=${dynamicFactors.kgConfidence.toFixed(2)}, variance=${dynamicFactors.scoreVariance.toFixed(2)}, density=${dynamicFactors.entityDensity.toFixed(2)})`);
       }
     }
 
-    // 4. 将知识图谱结果转换为上下文信息
-    const kgContext = formatKnowledgeGraphResults(kgResults);
+    // 5. 将知识图谱结果转换为上下文信息（包含多跳结果）
+    let kgContext = formatKnowledgeGraphResults(kgResults);
+    if (multiHopResults.context) {
+      kgContext += '\n\n相关实体（多跳发现）:\n' + multiHopResults.context;
+    }
 
-    // 5. 增强向量检索结果
+    // 6. 增强向量检索结果
     const enhancedResults = await enhanceWithKnowledgeGraph(
       vectorResults,
       kgResults,
       kgContext,
       effectiveWeight,
-      kgChunks
+      kgChunks,
+      multiHopResults.entities // 传递多跳实体用于额外评分
     );
 
-    console.log(`[HybridRetrieval] ✅ 混合检索完成: ${vectorResults.length} 向量结果 + ${kgResults.length} 实体结果 + ${kgChunks.length} chunk 交叉引用`);
+    console.log(`[HybridRetrieval] ✅ 混合检索完成: ${vectorResults.length} 向量结果 + ${kgResults.length} 实体结果 + ${kgChunks.length} chunk 交叉引用 + ${multiHopResults.entities.length} 多跳实体`);
 
     return enhancedResults;
   } catch (error) {
@@ -265,24 +291,77 @@ function formatKnowledgeGraphResults(kgResults) {
  * @param {string} kgContext - 格式化的知识图谱上下文
  * @param {number} kgWeight - 知识图谱权重
  * @param {Array} kgChunks - 知识图谱相关的 chunks（可选）
+ * @param {Array} multiHopEntities - 多跳查询发现的实体（可选）
  * @returns {Array} 增强后的结果
  */
-async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kgWeight, kgChunks = []) {
+async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kgWeight, kgChunks = [], multiHopEntities = []) {
   const enhancedResults = [...vectorResults];
 
-  // 1. 提取知识图谱中的关键实体
+  // 1. 提取知识图谱中的关键实体（包括所有相关实体）
   const kgEntities = new Set();
   for (const result of kgResults) {
+    // 主实体
     if (result.type === 'vendor' && result.vendor?.name) {
       kgEntities.add(result.vendor.name.toLowerCase());
+      // 相关功能
+      if (result.functions) {
+        result.functions.forEach(f => f?.name && kgEntities.add(f.name.toLowerCase()));
+      }
     } else if (result.type === 'function' && result.function?.name) {
       kgEntities.add(result.function.name.toLowerCase());
+      // 相关厂商和命令
+      if (result.vendors) {
+        result.vendors.forEach(v => v?.name && kgEntities.add(v.name.toLowerCase()));
+      }
+      if (result.commands) {
+        result.commands.forEach(c => c?.name && kgEntities.add(c.name.toLowerCase()));
+      }
     } else if (result.type === 'command' && result.command?.name) {
       kgEntities.add(result.command.name.toLowerCase());
+      // 相关参数
+      if (result.parameters) {
+        result.parameters.forEach(p => p?.name && kgEntities.add(p.name.toLowerCase()));
+      }
     } else if (result.type === 'parameter' && result.parameter?.name) {
       kgEntities.add(result.parameter.name.toLowerCase());
     }
   }
+
+  console.log(`[HybridRetrieval] KG 实体池: ${kgEntities.size} 个 (${Array.from(kgEntities).slice(0, 5).join(', ')}${kgEntities.size > 5 ? '...' : ''})`);
+
+  // 1.5. 准备多跳实体及其分数
+  const multiHopKeywords = [];
+  for (const entity of multiHopEntities) {
+    if (entity.name) {
+      multiHopKeywords.push({
+        name: entity.name.toLowerCase(),
+        score: entity.score || 1.0,
+        intentMatch: entity.intentMatch || false
+      });
+    }
+  }
+
+  // 1.8. 确定分数基准 - 用于自适应 Boost
+  // 如果分数是 logits (e.g. 70-100)，需要按比例放大 boost
+  // 如果分数是概率 (0-1) 或 RRF，保持原状
+  let maxScore = 0;
+  let avgScore = 0;
+  if (enhancedResults.length > 0) {
+    const scores = enhancedResults.map(r => r.score || 0);
+    maxScore = Math.max(...scores);
+    avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  }
+
+  // 计算缩放因子：假设标准 boost 是针对 0-1 范围设计的
+  // 如果 maxScore > 2，我们认为它不是 0-1 范围，需要缩放
+  // Logits 通常在 0-100 之间，或者负数。BGE Reranker v2 可能是 0-10 或更高
+  let scoreScale = 1;
+  if (maxScore > 2) {
+    // 使用平均分的 10% 作为基准 boost 单位，或者至少 1
+    scoreScale = Math.max(1, avgScore * 0.1);
+  }
+
+  console.log(`[HybridRetrieval] 分数自适应: Max=${maxScore.toFixed(2)}, Avg=${avgScore.toFixed(2)}, Scale=${scoreScale.toFixed(2)}`);
 
   // 2. 构建 KG chunk ID 到权重的映射
   const kgChunkMap = new Map();
@@ -313,7 +392,10 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
     if (resultChunkId && kgChunkMap.has(resultChunkId)) {
       const kgChunkInfo = kgChunkMap.get(resultChunkId);
       // 该 chunk 被知识图谱通过 MENTIONS 关系识别，给予额外提升
-      const chunkBoost = Math.min(kgChunkInfo.weight * kgWeight * 0.15, kgWeight * 0.5);
+      // 基准 boost * scale
+      const rawBoost = Math.min(kgChunkInfo.weight * kgWeight * 0.15, kgWeight * 0.5);
+      const chunkBoost = rawBoost * scoreScale * 5.0; // 放大系数，确保可见
+
       result.score = (result.score || 0) + chunkBoost;
       result.kgChunkBoost = chunkBoost;
       result.kgChunkMatches = kgChunkInfo.matchedEntities;
@@ -326,18 +408,46 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
     const textLower = textContent.toLowerCase();
     let entityMatchCount = 0;
 
-    for (const entity of kgEntities) {
-      if (textLower.includes(entity)) {
+    // 多跳实体使用累积分数而不是简单计数
+    let multiHopScoreSum = 0;
+
+    // 匹配直接实体
+    for (const entityName of kgEntities) {
+      if (textLower.includes(entityName)) {
         entityMatchCount++;
+      }
+    }
+
+    // 匹配多跳实体（排除已匹配的直接实体）
+    for (const item of multiHopKeywords) {
+      if (textLower.includes(item.name) && !kgEntities.has(item.name)) {
+        multiHopScoreSum += item.score;
       }
     }
 
     if (entityMatchCount > 0) {
       // 根据匹配的实体数量提升分数
-      const boost = Math.min(entityMatchCount * kgWeight * 0.1, kgWeight);
+      // 原公式: Math.min(entityMatchCount * kgWeight * 0.1, kgWeight);
+      const rawBoost = Math.min(entityMatchCount * kgWeight * 0.1, kgWeight);
+      const boost = rawBoost * scoreScale * 3.0; // 适当放大
+
       result.score = (result.score || 0) + boost;
       result.kgBoost = (result.kgBoost || 0) + boost;
       result.kgMatches = entityMatchCount;
+    }
+
+    // 多跳实体匹配给予较低提升，但包含语义权重
+    if (multiHopScoreSum > 0) {
+      // 基础系数 0.05，但 score 现在可能是 2.0 或 3.0，所以乘积更大
+      // 例如 Intent Match (score=3) -> 3 * 0.05 = 0.15 (比以前 1 * 0.05 = 0.05 高3倍)
+      // 设置上限为 kgWeight * 0.5
+      const rawBoost = Math.min(multiHopScoreSum * kgWeight * 0.05, kgWeight * 0.5);
+      const multiHopBoost = rawBoost * scoreScale * 3.0;
+
+      result.score = (result.score || 0) + multiHopBoost;
+      result.multiHopBoost = multiHopBoost;
+      // 这里的 multiHopMatches 现在存储分数和，以便 SearchPipeline 重新应用时使用
+      result.multiHopMatches = multiHopScoreSum;
     }
   }
 

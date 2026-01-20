@@ -424,6 +424,13 @@ const FUNCTION_DOMAIN_TERMS = new Map([
   ['port channel', 'Port Channel'],
   ['端口聚合', 'Port Channel'],
   ['bond', 'Bonding'],
+  ['mlag', 'MLAG'],
+  ['clag', 'MLAG'],
+  ['peerlink', 'MLAG'],
+  ['peer link', 'MLAG'],
+  ['多机箱', 'MLAG'],
+  ['跨机箱', 'MLAG'],
+  ['双机箱', 'MLAG'],
   ['高可用', 'High Availability'],
   ['ha', 'High Availability'],
   ['failover', 'Failover'],
@@ -498,6 +505,13 @@ const FUNCTION_TOKEN_STOPWORDS = new Set([
   'example', 'sample', 'section', 'chapter', 'table', 'figure',
   'the', 'and', 'or', 'for', 'with', 'from', 'this', 'that', 'these', 'those',
   'in', 'on', 'by', 'to', 'of', 'as', 'at', 'is', 'are', 'be', 'has', 'have'
+]);
+
+const LOWER_FUNCTION_ALLOWLIST = new Set([
+  'bgp', 'ospf', 'evpn', 'vxlan', 'mlag', 'clag', 'lacp', 'stp', 'vlan', 'vrf',
+  'acl', 'bfd', 'roce', 'rdma', 'pfc', 'ecn', 'ntp', 'snmp', 'dhcp', 'dns',
+  'arp', 'nd', 'igmp', 'pim', 'ptp', 'qos', 'dpu', 'nvue', 'netq', 'lldp',
+  'sr', 'srv6', 'mpls', 'vni', 'vtep', 'vrf', 'ztp'
 ]);
 
 const VENDOR_LABEL_TERMS = [
@@ -597,6 +611,14 @@ function indexOfKeyword(textLower, keywordLower) {
 
 function normalizeWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function toNumber(value, fallback = 0) {
+  if (value && typeof value.toNumber === 'function') {
+    return value.toNumber();
+  }
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? fallback : parsed;
 }
 
 function normalizeVendorName(value) {
@@ -801,7 +823,120 @@ function looksLikeAcronym(value) {
 function looksLikeLowerAcronym(value) {
   if (!/^[a-z]{2,6}$/.test(value)) return false;
   if (FUNCTION_TOKEN_STOPWORDS.has(value)) return false;
-  return true;
+  return LOWER_FUNCTION_ALLOWLIST.has(value);
+}
+
+const COMMAND_PROMPT_REGEX = /^[\w.-]+@[\w.-]+(?:[:~][\w/.~-]*)?[#$]\s+/;
+const INTERFACE_TOKEN_REGEX = /^(?:eth|swp|bond|vlan)\d+(?:\.\d+)?$/i;
+const INTERFACE_RANGE_REGEX = /^(?:eth|swp|bond)\d+(?:-\d+)$/i;
+const PEERLINK_TOKEN_REGEX = /^peerlink(?:\.\d+)?$/i;
+const IP_TOKEN_REGEX = /^\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?$/;
+const MAC_TOKEN_REGEX = /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
+const HEX_TOKEN_REGEX = /^0x[0-9a-f]+$/i;
+const NUMBER_TOKEN_REGEX = /^\d+$/;
+const COMMAND_CONFIG_VERBS = new Set([
+  'configure', 'show', 'set', 'get', 'enable', 'disable', 'add', 'delete', 'remove'
+]);
+const COMMAND_CONFIG_OBJECTS = new Set([
+  'interface', 'vlan', 'bridge', 'bond', 'router', 'bgp', 'ospf', 'mlag', 'clag',
+  'vrf', 'evpn', 'vxlan', 'lacp', 'stp', 'pfc', 'roce', 'qos', 'acl', 'bfd'
+]);
+const COMMAND_ARTICLES = new Set(['a', 'an', 'the', 'this', 'that', 'these', 'those']);
+const COMMAND_STOPWORDS = new Set(['address', 'addresses', 'packet', 'packets']);
+
+function cleanCommandLine(line) {
+  let cleaned = String(line || '').trim();
+  if (!cleaned) return '';
+  cleaned = cleaned.replace(COMMAND_PROMPT_REGEX, '');
+  cleaned = cleaned.replace(/^[#$]\s+/, '');
+  cleaned = cleaned.replace(/\s+#\s.*$/, '');
+  return cleaned.trim();
+}
+
+function normalizeCommandName(value) {
+  const cleaned = normalizeWhitespace(String(value || '').replace(/[;]+$/g, ''));
+  if (!cleaned) return '';
+  const tokens = cleaned.split(' ').map((token) => token.replace(/[;,]+$/g, '')).filter(Boolean);
+  const normalizedTokens = tokens.map((token) => {
+    const lowered = token.toLowerCase();
+    if (IP_TOKEN_REGEX.test(lowered)) return '<ip>';
+    if (MAC_TOKEN_REGEX.test(lowered)) return '<mac>';
+    if (HEX_TOKEN_REGEX.test(lowered)) return '<hex>';
+    if (NUMBER_TOKEN_REGEX.test(lowered)) return '<num>';
+    if (PEERLINK_TOKEN_REGEX.test(lowered)) return token;
+    if (INTERFACE_RANGE_REGEX.test(lowered)) return '<iface-range>';
+    if (INTERFACE_TOKEN_REGEX.test(lowered)) return '<iface>';
+    return token;
+  });
+  return normalizedTokens.join(' ').trim();
+}
+
+function isCommandNoise(command, category) {
+  const tokens = String(command || '').trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return true;
+
+  const first = tokens[0].toLowerCase();
+  const second = tokens[1]?.toLowerCase();
+
+  if (category === 'nvue' && tokens.length < 3) return true;
+  if (category === 'config' && COMMAND_CONFIG_VERBS.has(first)) {
+    if (!second || COMMAND_ARTICLES.has(second) || COMMAND_STOPWORDS.has(second)) return true;
+    if (NUMBER_TOKEN_REGEX.test(second)) return true;
+    if (!COMMAND_CONFIG_OBJECTS.has(second)) return true;
+  }
+
+  if (category === 'linux' && first === 'ip') {
+    const ipSubcommands = new Set(['addr', 'link', 'route', 'neigh', 'rule', 'maddr']);
+    if (!second || !ipSubcommands.has(second)) return true;
+  }
+
+  return false;
+}
+
+function extractCommandCandidates(text) {
+  if (!text || typeof text !== 'string') return [];
+  const candidates = new Set();
+  const codeBlocks = [];
+  const codeBlockRegex = /```[\s\S]*?```/g;
+  let match;
+
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const content = match[0]
+      .replace(/```[\s\S]*?\n?/, '')
+      .replace(/```$/, '');
+    if (content.trim()) {
+      codeBlocks.push(content);
+    }
+  }
+
+  const addLine = (line) => {
+    const cleaned = cleanCommandLine(line);
+    if (cleaned) {
+      candidates.add(cleaned);
+    }
+  };
+
+  if (codeBlocks.length > 0) {
+    codeBlocks.forEach(block => {
+      block.split('\n').forEach(addLine);
+    });
+  }
+
+  const inlineMatches = text.match(/`([^`]+)`/g) || [];
+  inlineMatches.forEach(item => {
+    const value = item.replace(/`/g, '').trim();
+    if (value) {
+      candidates.add(value);
+    }
+  });
+
+  text.split('\n').forEach(line => {
+    if (COMMAND_PROMPT_REGEX.test(line) || /^\s*[#$]\s+/.test(line) || /^\s*nv\s+/i.test(line)) {
+      addLine(line);
+    }
+  });
+
+  return Array.from(candidates);
 }
 
 function extractVendorCandidates(text, options = {}) {
@@ -926,9 +1061,20 @@ function extractFunctionCandidates(text, options = {}) {
     const token = match[0];
     const lowerToken = token.toLowerCase();
     if (FUNCTION_TOKEN_STOPWORDS.has(lowerToken)) continue;
-    if (!looksLikeAcronym(token) && !looksLikeLowerAcronym(lowerToken)) continue;
+    const isLowerAcronym = looksLikeLowerAcronym(lowerToken);
+    const isUpperAcronym = looksLikeAcronym(token);
+    if (!isLowerAcronym && !isUpperAcronym) continue;
     const normalized = token.toUpperCase();
     if (FUNCTION_ACRONYM_STOPWORDS.has(normalized)) continue;
+
+    if (!isLowerAcronym && !LOWER_FUNCTION_ALLOWLIST.has(lowerToken)) {
+      if (typeof match.index !== 'number') continue;
+      const windowStart = Math.max(0, match.index - 30);
+      const windowEnd = Math.min(textLower.length, match.index + token.length + 30);
+      const windowText = textLower.slice(windowStart, windowEnd);
+      if (!FUNCTION_CONTEXT_REGEX.test(windowText)) continue;
+    }
+
     addCandidate(normalized);
   }
 
@@ -987,11 +1133,14 @@ export function extractEntities(text, metadata = {}) {
 
   const addCommand = (name, category) => {
     const cleanName = typeof name === 'string' ? name.trim() : '';
-    if (!cleanName || cleanName.length <= 3) return;
-    const key = cleanName.toLowerCase();
+    const normalizedName = normalizeCommandName(cleanName);
+    if (!normalizedName || normalizedName.length <= 3) return null;
+    if (isCommandNoise(normalizedName, category)) return null;
+    const key = normalizedName.toLowerCase();
     if (!commandMap.has(key)) {
-      commandMap.set(key, { name: cleanName, category, source });
+      commandMap.set(key, { name: normalizedName, category, source });
     }
+    return normalizedName;
   };
 
   const addParameter = (name, type) => {
@@ -1014,26 +1163,46 @@ export function extractEntities(text, metadata = {}) {
     addVendor(vendorName);
   }
 
-  // 2. 提取命令实体 - 放宽匹配模式
-  const commandPatterns = [
-    // Cumulus/NVUE 命令
+  // 2. 提取命令实体 - 优先从命令行上下文提取，避免正文噪音
+  const fullTextCommandPatterns = [
     { regex: /\bnv\s+(?:set|show|config|unset|apply|list)(?:\s+[\w\-\.\/]+)*/gi, category: 'nvue' },
-    // Linux 网络命令
-    { regex: /\b(?:ip|ifconfig|route|netstat|ping|traceroute|tcpdump|ethtool|brctl)\s+[\w\-]+/gi, category: 'linux' },
-    // 配置命令 - 包含更多常见命令
-    { regex: /\b(?:configure|show|set|get|enable|disable|add|delete|remove)\s+[\w\-]+/gi, category: 'config' },
-    // 网络特定命令
-    { regex: /\b(?:vlan|interface|router|bgp|ospf|mlag)\s+(?:add|delete|show|config|set)\s*[\w\-]*/gi, category: 'network' }
+    { regex: /\bnetq\s+(?:show|check|trace)\b[^\n]*/gi, category: 'netq' }
+  ];
+
+  const lineCommandPatterns = [
+    { regex: /^nv\s+(?:set|show|config|unset|apply|list)(?:\s+[\w\-\.\/]+)*/i, category: 'nvue' },
+    { regex: /^netq\s+(?:show|check|trace)\b(?:\s+[\w\-\.\/]+)*/i, category: 'netq' },
+    { regex: /^(?:sudo\s+)?(?:ifreload|ifup|ifdown)\b(?:\s+[\w\-\.\/]+)*/i, category: 'linux' },
+    { regex: /^(?:ip|ifconfig|route|netstat|ping|traceroute|tcpdump|ethtool|brctl)\b(?:\s+[\w\-\.\/]+)*/i, category: 'linux' },
+    { regex: /^(?:configure|show|set|get|enable|disable|add|delete|remove)\b(?:\s+[\w\-\.\/]+)*/i, category: 'config' },
+    { regex: /^(?:vlan|interface|router|bgp|ospf|mlag)\b(?:\s+(?:add|delete|show|config|set))?\s*[\w\-\.\/]*/i, category: 'network' }
   ];
 
   const commandMatches = [];
-  for (const pattern of commandPatterns) {
+  for (const pattern of fullTextCommandPatterns) {
     for (const match of text.matchAll(pattern.regex)) {
       const commandText = match[0]?.trim();
       if (!commandText) continue;
-      addCommand(commandText, pattern.category);
-      if (typeof match.index === 'number') {
-        commandMatches.push({ name: commandText, index: match.index });
+      const normalized = addCommand(commandText, pattern.category);
+      if (normalized && typeof match.index === 'number') {
+        commandMatches.push({ name: normalized, index: match.index });
+      }
+    }
+  }
+
+  const commandCandidates = extractCommandCandidates(text);
+  for (const candidate of commandCandidates) {
+    for (const pattern of lineCommandPatterns) {
+      const match = candidate.match(pattern.regex);
+      if (!match) continue;
+      const commandText = match[0]?.trim();
+      if (!commandText) continue;
+      const normalized = addCommand(commandText, pattern.category);
+      if (normalized) {
+        const matchIndex = textLower.indexOf(commandText.toLowerCase());
+        if (matchIndex !== -1) {
+          commandMatches.push({ name: normalized, index: matchIndex });
+        }
       }
     }
   }
@@ -1042,12 +1211,15 @@ export function extractEntities(text, metadata = {}) {
   const parameterPatterns = [
     // 网络参数
     { regex: /\b(vlan|vrf|bgp|ospf|mlag|lacp|bond)\s*[=:]?\s*(\w+)/gi, type: 'network_param' },
+    // MLAG/CLAG 相关参数
+    { regex: /\bclag(?:d|ed)?(?:[.\-][\w-]+)+\b/gi, type: 'mlag_param' },
     // IP 地址
     { regex: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:\/\d{1,2})?\b/g, type: 'ip_address' },
     // 端口号
     { regex: /\bport\s*[=:]?\s*(\d+)/gi, type: 'port' },
     // 接口名称
-    { regex: /\b(eth|swp|bond|vlan)\d+/gi, type: 'interface' }
+    { regex: /\b(eth|swp|bond|vlan)\d+/gi, type: 'interface' },
+    { regex: /\bpeerlink(?:\.\d+)?\b/gi, type: 'interface' }
   ];
 
   for (const pattern of parameterPatterns) {
@@ -1167,7 +1339,7 @@ export function extractEntities(text, metadata = {}) {
     for (const param of entities.parameters) {
       const commandIndex = text.indexOf(command.name);
       const paramIndex = text.indexOf(param.name);
-      if (commandIndex !== -1 && paramIndex !== -1 && Math.abs(commandIndex - paramIndex) < 100) {
+      if (commandIndex !== -1 && paramIndex !== -1 && Math.abs(commandIndex - paramIndex) < 150) {
         entities.relationships.push({
           from: command.name,
           to: param.name,
@@ -1626,6 +1798,205 @@ export async function queryKnowledgeGraph(query, limit = 10) {
 }
 
 /**
+ * 多跳图谱遍历 - 发现实体之间的间接关系
+ * @param {string} query - 用户查询
+ * @param {Object} options - 选项
+ * @param {number} options.maxHops - 最大跳数 (默认 2)
+ * @param {number} options.limit - 返回路径数量限制 (默认 20)
+ * @returns {Object} { entities: [], paths: [], context: string }
+ */
+export async function multiHopQuery(query, options = {}) {
+  const { maxHops = 2, limit = 20 } = options;
+
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  if (!isConnected) {
+    console.log('[KnowledgeGraph] Neo4j 未连接，跳过多跳查询');
+    return { entities: [], paths: [], context: '' };
+  }
+
+  const session = driver.session();
+  try {
+    const vendorNames = await getVendorNames();
+
+    // 1. 从查询中提取实体
+    const queryEntities = extractEntities(query, {
+      vendorNames,
+      source: 'query',
+      allowDefaultFunction: false
+    });
+
+    const entityNames = [
+      ...queryEntities.vendors.map(v => v.name),
+      ...queryEntities.functions.map(f => f.name),
+      ...queryEntities.commands.map(c => c.name)
+    ].slice(0, 5); // 最多取5个实体
+
+    if (entityNames.length === 0) {
+      console.log('[KnowledgeGraph] 查询中未提取到实体，跳过多跳查询');
+      return { entities: [], paths: [], context: '' };
+    }
+
+    console.log(`[KnowledgeGraph] 多跳查询实体: ${entityNames.join(', ')} (maxHops=${maxHops})`);
+
+    const allPaths = [];
+    const relatedEntities = new Map();
+
+    // 2. 对每个实体执行 N 跳遍历
+    // 2. 对每个实体执行多跳查询
+    for (const entityName of entityNames) {
+      if (!entityName) continue;
+
+      // 2.1 意图检测
+      const queryLower = query.toLowerCase();
+      let preferredRels = [];
+      let intent = 'general';
+
+      if (queryLower.match(/需要|依赖|前置|条件|require|depend|prereq/)) {
+        intent = 'prerequisite';
+        preferredRels = ['REQUIRES', 'DEPENDS_ON', 'HAS_PREREQUISITE'];
+      } else if (queryLower.match(/冲突|问题|兼容|conflict|issue|compatib/)) {
+        intent = 'conflict';
+        preferredRels = ['CONFLICTS_WITH', 'INCOMPATIBLE_WITH'];
+      } else if (queryLower.match(/替代|旧版|升级|replace|upgrade|deprecat/)) {
+        intent = 'replacement';
+        preferredRels = ['REPLACES', 'SUPERSEDES', 'DEPRECATED_BY'];
+      } else if (queryLower.match(/区别|不同|diff|compare|vs/)) {
+        intent = 'comparison';
+        // 比较通常涉及 sibling 关系或相同的 parent
+        preferredRels = ['SIMILAR_TO', 'RELATED_TO'];
+      }
+
+      console.log(`[KnowledgeGraph] 实体 "${entityName}" 意图识别: ${intent} (Preferred: ${preferredRels.join(',')})`);
+
+      // 2.2 Cypher 查询
+      const result = await session.run(`
+        MATCH (start)
+        WHERE (start:Vendor OR start:Function OR start:Command OR start:Parameter)
+          AND start.name =~ $pattern
+        WITH start
+        LIMIT 3
+        
+        CALL {
+          WITH start
+          MATCH path = (start)-[rels*1..${maxHops}]-(related)
+          WHERE related <> start
+          AND NOT related:Chunk 
+          RETURN path, related, length(path) as hops
+          ORDER BY hops ASC
+          LIMIT $limit
+        }
+        RETURN start, path, related, hops
+      `, {
+        pattern: `(?i).*${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&')}.*`,
+        limit: neo4j.int(limit * 2)
+      });
+
+      for (const record of result.records) {
+        const startNode = record.get('start').properties;
+        const relatedNode = record.get('related').properties;
+        const hopsValue = record.get('hops');
+        const hops = typeof hopsValue?.toNumber === 'function' ? hopsValue.toNumber() : Number(hopsValue);
+        const pathData = record.get('path');
+
+        // 分析路径中的关系类型
+        let pathScore = 1.0;
+        const relTypes = [];
+        if (pathData?.segments) {
+          pathData.segments.forEach(seg => {
+            const rType = seg.relationship.type;
+            relTypes.push(rType);
+            // 命中意图关系给予高分
+            if (preferredRels.includes(rType)) {
+              pathScore += 2.0;
+            }
+            // 语义强的关系给予基础分
+            if (['REQUIRES', 'CONFLICTS_WITH', 'REPLACES'].includes(rType)) {
+              pathScore += 0.5;
+            }
+          });
+        }
+
+        // 收集相关实体
+        const relatedKey = relatedNode.name?.toLowerCase();
+        if (relatedKey) {
+          const existing = relatedEntities.get(relatedKey);
+          // 如果新路径得分更高，更新实体元数据
+          if (!existing || pathScore > (existing.score || 0)) {
+            relatedEntities.set(relatedKey, {
+              name: relatedNode.name,
+              type: record.get('related').labels?.[0] || 'Unknown',
+              hops,
+              connectedTo: entityName,
+              score: pathScore,   // 记录分数
+              intentMatch: preferredRels.some(r => relTypes.includes(r))
+            });
+          }
+        }
+
+        // 构建路径描述
+        if (pathData?.segments) {
+          const pathDesc = pathData.segments.map(seg => {
+            const relType = seg.relationship.type;
+            const endName = seg.end.properties?.name || '?';
+            return `--[${relType}]-->${endName}`;
+          }).join(' ');
+
+          allPaths.push({
+            from: startNode.name,
+            path: `${startNode.name} ${pathDesc}`,
+            hops,
+            to: relatedNode.name,
+            score: pathScore,
+            intentMatch: preferredRels.some(r => relTypes.includes(r))
+          });
+        }
+      }
+    }
+
+    // 3. 去重并排序
+    const uniquePaths = [];
+    const pathSet = new Set();
+    for (const p of allPaths) {
+      if (!pathSet.has(p.path)) {
+        pathSet.add(p.path);
+        uniquePaths.push(p);
+      }
+    }
+    uniquePaths.sort((a, b) => a.hops - b.hops);
+
+    // 4. 生成上下文摘要
+    const entities = Array.from(relatedEntities.values()).slice(0, 15);
+    let context = '';
+    if (entities.length > 0) {
+      const grouped = {};
+      for (const e of entities) {
+        if (!grouped[e.type]) grouped[e.type] = [];
+        grouped[e.type].push(e.name);
+      }
+      context = Object.entries(grouped)
+        .map(([type, names]) => `${type}: ${names.join(', ')}`)
+        .join('\n');
+    }
+
+    console.log(`[KnowledgeGraph] 多跳查询完成: ${entities.length} 相关实体, ${uniquePaths.length} 路径`);
+
+    return {
+      entities,
+      paths: uniquePaths.slice(0, limit),
+      context
+    };
+  } catch (error) {
+    console.error('[KnowledgeGraph] 多跳查询失败:', error.message);
+    return { entities: [], paths: [], context: '' };
+  } finally {
+    await session.close();
+  }
+}
+
+/**
  * 批量处理文档，提取并存储实体
  * @param {string} documentId - 文档 ID
  */
@@ -1713,7 +2084,7 @@ export async function processDocument(documentId) {
     const uniqueRelationships = [];
     const relSet = new Set();
     for (const rel of allEntities.relationships) {
-      const key = `${rel.fromType}:${rel.from}|${rel.type}|${rel.toType}:${rel.to}`;
+      const key = `${rel.fromType}: ${rel.from} | ${rel.type} | ${rel.toType}: ${rel.to}`;
       if (!relSet.has(key)) {
         relSet.add(key);
         uniqueRelationships.push(rel);
@@ -1748,10 +2119,10 @@ export async function processDocument(documentId) {
       parameters: uniqueEntities.parameters.length
     };
 
-    console.log(`[KnowledgeGraph] ✅ 文档 ${documentId} 处理完成:`, totalEntities);
+    console.log(`[KnowledgeGraph] ✅ 文档 ${documentId} 处理完成: `, totalEntities);
     return totalEntities;
   } catch (error) {
-    console.error(`[KnowledgeGraph] 处理文档 ${documentId} 失败:`, error.message);
+    console.error(`[KnowledgeGraph] 处理文档 ${documentId} 失败: `, error.message);
     throw error;
   }
 }
@@ -1767,28 +2138,28 @@ export async function getGraphStats() {
   const session = driver.session();
   try {
     const result = await session.run(`
-      MATCH (v:Vendor)
+      MATCH(v: Vendor)
       WITH count(v) as vendorCount,
-           sum(size(coalesce(v.sources, []))) as vendorTotal
-      MATCH (f:Function)
+        sum(size(coalesce(v.sources, []))) as vendorTotal
+      MATCH(f: Function)
       WITH vendorCount, vendorTotal,
-           count(f) as functionCount,
-           sum(size(coalesce(f.sources, []))) as functionTotal
-      MATCH (c:Command)
+        count(f) as functionCount,
+        sum(size(coalesce(f.sources, []))) as functionTotal
+      MATCH(c: Command)
       WITH vendorCount, vendorTotal, functionCount, functionTotal,
-           count(c) as commandCount,
-           sum(size(coalesce(c.sources, []))) as commandTotal
-      MATCH (p:Parameter)
+        count(c) as commandCount,
+        sum(size(coalesce(c.sources, []))) as commandTotal
+      MATCH(p: Parameter)
       WITH vendorCount, vendorTotal, functionCount, functionTotal,
-           commandCount, commandTotal,
-           count(p) as paramCount,
-           sum(size(coalesce(p.sources, []))) as paramTotal
-      MATCH ()-[r]->()
+        commandCount, commandTotal,
+        count(p) as paramCount,
+        sum(size(coalesce(p.sources, []))) as paramTotal
+      MATCH() - [r] -> ()
       RETURN vendorCount, vendorTotal,
-             functionCount, functionTotal,
-             commandCount, commandTotal,
-             paramCount, paramTotal,
-             count(r) as relationshipCount
+        functionCount, functionTotal,
+        commandCount, commandTotal,
+        paramCount, paramTotal,
+        count(r) as relationshipCount
     `);
 
     if (result.records.length > 0) {
@@ -1836,6 +2207,179 @@ export async function getGraphStats() {
 }
 
 /**
+ * 获取知识图谱质量报告
+ */
+export async function getGraphQualityReport() {
+  const stats = await getGraphStats();
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    const domainNodesResult = await session.run(`
+      MATCH (n)
+      WHERE n:Vendor OR n:Function OR n:Command OR n:Parameter
+      RETURN count(n) as count
+    `);
+
+    const semanticRelResult = await session.run(`
+      MATCH (a)-[r]->(b)
+      WHERE NOT r:MENTIONS AND NOT (a:Chunk OR b:Chunk)
+      RETURN count(r) as count
+    `);
+
+    const degreeResult = await session.run(`
+      MATCH (n)
+      WHERE n:Vendor OR n:Function OR n:Command OR n:Parameter
+      OPTIONAL MATCH (n)--(m)
+      WHERE NOT m:Chunk
+      WITH n, count(m) as degree
+      RETURN avg(degree) as avgDegree, max(degree) as maxDegree, min(degree) as minDegree
+    `);
+
+    const isolatedResult = await session.run(`
+      MATCH (n)
+      WHERE n:Vendor OR n:Function OR n:Command OR n:Parameter
+      OPTIONAL MATCH (n)--(m)
+      WHERE NOT m:Chunk
+      WITH n, count(m) as degree
+      WHERE degree = 0
+      RETURN labels(n)[0] as label, count(n) as count
+    `);
+
+    const coverageResult = await session.run(`
+      MATCH (c:Command)
+      WITH count(c) as totalCommands
+      OPTIONAL MATCH (c2:Command)
+      WHERE NOT (:Function)-[:HAS_COMMAND]->(c2)
+      WITH totalCommands, count(c2) as commandsWithoutFunction
+      OPTIONAL MATCH (f:Function)
+      WHERE NOT (:Vendor)-[:HAS_FUNCTION]->(f)
+      WITH totalCommands, commandsWithoutFunction, count(f) as functionsWithoutVendor
+      RETURN totalCommands, commandsWithoutFunction, functionsWithoutVendor
+    `);
+
+    const defaultFunctionResult = await session.run(`
+      MATCH (f:Function {name: $default})-[:HAS_COMMAND]->(c:Command)
+      RETURN count(c) as count
+    `, { default: DEFAULT_FUNCTION_NAME });
+
+    const evidenceResult = await session.run(`
+      MATCH (v:Vendor)
+      WITH avg(size(coalesce(v.sources, []))) as vendorAvg
+      MATCH (f:Function)
+      WITH vendorAvg, avg(size(coalesce(f.sources, []))) as functionAvg
+      MATCH (c:Command)
+      WITH vendorAvg, functionAvg, avg(size(coalesce(c.sources, []))) as commandAvg
+      MATCH (p:Parameter)
+      RETURN vendorAvg, functionAvg, commandAvg, avg(size(coalesce(p.sources, []))) as parameterAvg
+    `);
+
+    const lowEvidenceResult = await session.run(`
+      MATCH (v:Vendor)
+      WHERE size(coalesce(v.sources, [])) <= 1
+      WITH count(v) as vendorLow
+      MATCH (f:Function)
+      WHERE size(coalesce(f.sources, [])) <= 1
+      WITH vendorLow, count(f) as functionLow
+      MATCH (c:Command)
+      WHERE size(coalesce(c.sources, [])) <= 1
+      WITH vendorLow, functionLow, count(c) as commandLow
+      MATCH (p:Parameter)
+      WHERE size(coalesce(p.sources, [])) <= 1
+      RETURN vendorLow, functionLow, commandLow, count(p) as parameterLow
+    `);
+
+    const topCommandsResult = await session.run(`
+      MATCH (c:Command)
+      RETURN c.name as name, size(coalesce(c.sources, [])) as sources
+      ORDER BY sources DESC, name ASC
+      LIMIT 10
+    `);
+
+    const topParametersResult = await session.run(`
+      MATCH (p:Parameter)
+      RETURN p.name as name, size(coalesce(p.sources, [])) as sources
+      ORDER BY sources DESC, name ASC
+      LIMIT 10
+    `);
+
+    const domainNodes = toNumber(domainNodesResult.records[0]?.get('count'));
+    const semanticRelationships = toNumber(semanticRelResult.records[0]?.get('count'));
+    const degreeRecord = degreeResult.records[0];
+    const isolatedByLabel = {};
+    isolatedResult.records.forEach(record => {
+      isolatedByLabel[record.get('label')] = toNumber(record.get('count'));
+    });
+
+    const coverageRecord = coverageResult.records[0];
+    const defaultCommandCount = toNumber(defaultFunctionResult.records[0]?.get('count'));
+    const totalCommands = toNumber(coverageRecord?.get('totalCommands'));
+    const commandsWithoutFunction = toNumber(coverageRecord?.get('commandsWithoutFunction'));
+    const functionsWithoutVendor = toNumber(coverageRecord?.get('functionsWithoutVendor'));
+
+    const evidenceRecord = evidenceResult.records[0] || {};
+    const lowEvidenceRecord = lowEvidenceResult.records[0] || {};
+
+    return {
+      stats,
+      domainNodes,
+      semanticRelationships,
+      degree: {
+        avg: toNumber(degreeRecord?.get('avgDegree')),
+        max: toNumber(degreeRecord?.get('maxDegree')),
+        min: toNumber(degreeRecord?.get('minDegree'))
+      },
+      isolated: {
+        vendors: isolatedByLabel.Vendor || 0,
+        functions: isolatedByLabel.Function || 0,
+        commands: isolatedByLabel.Command || 0,
+        parameters: isolatedByLabel.Parameter || 0
+      },
+      coverage: {
+        totalCommands,
+        commandsWithoutFunction,
+        functionsWithoutVendor,
+        defaultFunctionCommands: defaultCommandCount,
+        defaultFunctionRatio: totalCommands > 0 ? defaultCommandCount / totalCommands : 0
+      },
+      evidence: {
+        avgSources: {
+          vendors: toNumber(evidenceRecord.get?.('vendorAvg')),
+          functions: toNumber(evidenceRecord.get?.('functionAvg')),
+          commands: toNumber(evidenceRecord.get?.('commandAvg')),
+          parameters: toNumber(evidenceRecord.get?.('parameterAvg'))
+        },
+        lowEvidence: {
+          vendors: toNumber(lowEvidenceRecord.get?.('vendorLow')),
+          functions: toNumber(lowEvidenceRecord.get?.('functionLow')),
+          commands: toNumber(lowEvidenceRecord.get?.('commandLow')),
+          parameters: toNumber(lowEvidenceRecord.get?.('parameterLow'))
+        }
+      },
+      topCommands: topCommandsResult.records.map(record => ({
+        name: record.get('name'),
+        sources: toNumber(record.get('sources'))
+      })),
+      topParameters: topParametersResult.records.map(record => ({
+        name: record.get('name'),
+        sources: toNumber(record.get('sources'))
+      }))
+    };
+  } catch (error) {
+    console.error('[KnowledgeGraph] 获取质量报告失败:', error.message);
+    return {
+      stats,
+      status: 'error',
+      error: error.message
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+/**
  * 清空知识图谱
  */
 export async function clearGraph() {
@@ -1868,7 +2412,7 @@ export async function exportGraphData() {
   try {
     // 获取所有节点
     const nodesResult = await session.run(`
-      MATCH (n)
+      MATCH(n)
       RETURN labels(n) as labels, properties(n) as props, id(n) as id
     `);
 
@@ -1880,7 +2424,7 @@ export async function exportGraphData() {
 
     // 获取所有关系
     const relsResult = await session.run(`
-      MATCH (a)-[r]->(b)
+      MATCH(a) - [r] -> (b)
       RETURN id(a) as fromId, id(b) as toId, type(r) as type, properties(r) as props
     `);
 
@@ -1929,11 +2473,11 @@ export async function getChunksByEntity(entityName, entityType = 'Function', lim
   const session = driver.session();
   try {
     const result = await session.run(`
-      MATCH (ch:Chunk)-[r:MENTIONS]->(e:${entityType} {name: $entityName})
+      MATCH(ch: Chunk) - [r: MENTIONS] -> (e: ${entityType} { name: $entityName })
       RETURN ch.id as chunkId, ch.documentId as documentId, r.weight as weight
       ORDER BY r.weight DESC
       LIMIT $limit
-    `, {
+        `, {
       entityName,
       limit: neo4j.int(limit)
     });
@@ -2066,10 +2610,10 @@ export async function detectCommunities(options = {}) {
       try {
         await session.run(`
           CALL gds.graph.project(
-            $graphName,
-            ['Vendor', 'Function', 'Command', 'Chunk'],
-            $relationshipTypes
-          )
+          $graphName,
+          ['Vendor', 'Function', 'Command', 'Chunk'],
+          $relationshipTypes
+        )
         `, { graphName, relationshipTypes });
 
         // 运行 Louvain 社区检测
@@ -2092,15 +2636,15 @@ export async function detectCommunities(options = {}) {
     // 简化版社区检测: 基于共享实体的连通分量
     if (!useGDS) {
       result = await session.run(`
-        MATCH (v:Vendor)-[:HAS_FUNCTION]->(f:Function)
-        OPTIONAL MATCH (f)-[:HAS_COMMAND]->(c:Command)
+      MATCH(v: Vendor) - [: HAS_FUNCTION] -> (f:Function)
+        OPTIONAL MATCH(f) - [: HAS_COMMAND] -> (c:Command)
         WITH v, collect(DISTINCT f) as functions, collect(DISTINCT c) as commands
-        RETURN v.name as vendorName, 
-               [f in functions | f.name] as functionNames,
-               [c in commands | c.name] as commandNames,
-               id(v) as communityId
+        RETURN v.name as vendorName,
+        [f in functions | f.name] as functionNames,
+        [c in commands | c.name] as commandNames,
+        id(v) as communityId
         ORDER BY size(functions) DESC
-      `);
+        `);
     }
 
     // 解析结果
@@ -2160,9 +2704,9 @@ export async function detectCommunities(options = {}) {
     for (const community of filteredCommunities) {
       const memberNames = community.members.map(m => m.name);
       await session.run(`
-        MATCH (n) WHERE n.name IN $memberNames
+      MATCH(n) WHERE n.name IN $memberNames
         SET n.${writeProperty} = $communityId
-      `, {
+        `, {
         memberNames,
         communityId: community.id
       });
@@ -2202,10 +2746,10 @@ export async function getCommunityMembers(communityId) {
   const session = driver.session();
   try {
     const result = await session.run(`
-      MATCH (n) WHERE n.communityId = $communityId
+      MATCH(n) WHERE n.communityId = $communityId
       RETURN labels(n) as labels, n.name as name, n.communityId as communityId
       ORDER BY labels(n)[0], n.name
-    `, { communityId });
+        `, { communityId });
 
     return result.records.map(r => ({
       name: r.get('name'),
@@ -2241,7 +2785,7 @@ export async function generateCommunitySummary(communityId, options = {}) {
   }
 
   const memberDescription = Object.entries(byType)
-    .map(([type, names]) => `${type}: ${names.join(', ')}`)
+    .map(([type, names]) => `${type}: ${names.join(', ')} `)
     .join('\n');
 
   try {
@@ -2257,7 +2801,7 @@ export async function generateCommunitySummary(communityId, options = {}) {
     const response = await fetch(SILICONFLOW_CHAT_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${apiKey} `,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -2267,7 +2811,7 @@ export async function generateCommunitySummary(communityId, options = {}) {
           content: '你是一个网络技术专家。请用 1-2 句话简洁地描述以下知识图谱社区的主题和用途。'
         }, {
           role: 'user',
-          content: `社区成员:\n${memberDescription}`
+          content: `社区成员: \n${memberDescription} `
         }],
         temperature: 0.3,
         max_tokens: 200
@@ -2298,10 +2842,10 @@ export async function getAllCommunitiesWithSummaries() {
   try {
     // 获取所有社区 ID
     const result = await session.run(`
-      MATCH (n) WHERE n.communityId IS NOT NULL
+      MATCH(n) WHERE n.communityId IS NOT NULL
       RETURN DISTINCT n.communityId as communityId, count(n) as size
       ORDER BY size DESC
-    `);
+        `);
 
     const communities = [];
     for (const record of result.records) {

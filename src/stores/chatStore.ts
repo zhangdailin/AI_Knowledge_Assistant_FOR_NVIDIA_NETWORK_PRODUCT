@@ -52,11 +52,24 @@ async function searchKnowledgeBase(
     if (!res.ok) return [];
     const data = await res.json();
 
+    // 调试：检查第一个chunk的结构
+    if (data.chunks && data.chunks.length > 0) {
+      console.log('[Search] 第一个chunk的原始数据:', {
+        _score: data.chunks[0]._score,
+        rerank_score: data.chunks[0].rerank_score,
+        score: data.chunks[0].score,
+        allKeys: Object.keys(data.chunks[0])
+      });
+    }
+
     const results = (data.chunks || []).map((chunk: any) => {
+      // 后端返回的分数字段是 score（已经是混合分数或rerank分数）
+      const finalScore = typeof chunk.score === 'number' ? chunk.score : 0;
+
+      // 保留原始分数用于调试
       const rrfScore = typeof chunk._score === 'number' ? chunk._score : 0;
       const rerankScore = typeof chunk.rerank_score === 'number' ? chunk.rerank_score : 0;
-      // 优先使用 rerank 分数，因为它通常更准确
-      const finalScore = rerankScore > 0 ? rerankScore : rrfScore;
+
       const chunkTitle =
         chunk?.metadata?.header ||
         chunk?.metadata?.title ||
@@ -288,7 +301,16 @@ function selectReferencesForQuery(
         categoryGain += weight * novelty;
       }
 
-      const baseScore = typeof entry.result.score === 'number' ? Math.log1p(entry.result.score) : 0;
+      // 对于配置类查询，提高原始分数的权重，确保高分文档优先
+      let baseScore = typeof entry.result.score === 'number' ? entry.result.score : 0;
+      if (intent.isConfig) {
+        // 配置查询：直接使用原始分数并放大权重（不压缩）
+        baseScore = baseScore * 2.5;
+      } else {
+        // 非配置查询：使用对数压缩，平衡多样性
+        baseScore = Math.log1p(baseScore);
+      }
+
       const docAffinity = primaryDocId && entry.result.documentId === primaryDocId ? 1.2 : 0;
       let adjacencyBonus = 0;
       if (entry.result.documentId && typeof entry.result.chunkIndex === 'number') {
@@ -301,7 +323,10 @@ function selectReferencesForQuery(
         }
       }
       if (intent.isConfig) adjacencyBonus *= 1.2;
-      const score = baseScore + tokenGain * 1.3 + categoryGain + docAffinity + adjacencyBonus;
+
+      // 对于配置查询，降低多样性因子的权重，让相关性主导
+      const diversityWeight = intent.isConfig ? 0.8 : 1.3;
+      const score = baseScore + tokenGain * diversityWeight + categoryGain + docAffinity + adjacencyBonus;
 
       if (score > bestScore) {
         bestScore = score;
@@ -540,7 +565,13 @@ async function multiLevelSearch(query: string): Promise<{
     }
   }
 
-  console.log('[Search] 所有检索级别均未找到相关内容，使用 Gemini');
+  // 第四级：即使分数很低，只要有结果就返回，让LLM自己判断是否相关
+  if (results.length > 0) {
+    console.log('[Search] 分数较低但仍有检索结果，返回给LLM判断，结果数:', results.length);
+    return { results, searchLevel: 4, hasRelevantKnowledge: true };
+  }
+
+  console.log('[Search] 真的没有任何检索结果，使用 Gemini');
   return { results: [], searchLevel: 4, hasRelevantKnowledge: false };
 }
 
@@ -676,10 +707,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 使用多级检索策略搜索知识库
       const searchResult = await multiLevelSearch(content);
       const knowledgeResults = searchResult.results;
-      const hasRelevantKnowledge = searchResult.hasRelevantKnowledge;
       const searchLevel = searchResult.searchLevel;
 
       console.log('[Chat] 检索级别:', searchLevel, '结果数量:', knowledgeResults.length);
+      if (knowledgeResults.length > 0) {
+        console.log('[Chat] 原始检索Top5:', knowledgeResults.slice(0, 5).map((r, i) =>
+          `[${i + 1}] ${r.title} (score: ${r.score.toFixed(4)})`
+        ).join(', '));
+      }
 
       // Build context from knowledge base
       let knowledgeContext = '';
@@ -691,20 +726,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? selectReferencesForQuery(knowledgeResults, content, maxReferences)
         : knowledgeResults.slice(0, maxReferences);
 
-      if (hasRelevantKnowledge) {
-        // 取前8条最相关的内容，提供更丰富的上下文
+      // 关键修复：只要有检索结果，就提供给LLM，让LLM自己判断是否相关
+      // 不再依赖阈值来决定是否使用知识库内容
+      if (knowledgeResults.length > 0 && topReferences.length > 0) {
+        // 取前8-14条最相关的内容，提供更丰富的上下文
         const contextPrefix = searchLevel === 1
           ? '相关知识库内容：'
           : searchLevel === 2
             ? '相关知识库内容（扩展搜索）：'
-            : '相关知识库内容（关键词匹配）：';
+            : searchLevel === 3
+              ? '相关知识库内容（关键词匹配）：'
+              : '知识库检索结果：';
 
         knowledgeContext = '\n\n' + contextPrefix + '\n' +
           topReferences.map((r, i) => `[参考${i + 1}] 标题：${r.title || '无标题'}\n内容：${r.content}`).join('\n\n---\n\n');
+
+        console.log(`[Chat] 已为LLM提供 ${topReferences.length} 条参考文档 (检索级别: ${searchLevel})`);
+        console.log('[Chat] 参考文档标题:', topReferences.map((r, i) => `[${i + 1}] ${r.title}`).join(', '));
+        console.log('[Chat] 参考文档分数:', topReferences.map((r, i) => `[${i + 1}] ${r.score.toFixed(4)}`).join(', '));
+        console.log('[Chat] 知识库上下文长度:', knowledgeContext.length, '字符');
       } else {
-        // 知识库没有相关内容，使用 Gemini
+        // 真的没有任何检索结果，使用 Gemini
         useGemini = true;
-        console.log('[Chat] 知识库无相关内容，使用 Gemini');
+        console.log('[Chat] 知识库无检索结果，使用 Gemini');
       }
 
       // Build conversation history
@@ -718,15 +762,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const now = new Date();
       const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
 
+      const CONFIG_TEMPLATE = `
+对于配置类问题，请严格遵守以下输出格式：
+1. **场景说明**：简要描述配置场景和目标。
+2. **[设备名称]**：
+   - NVUE CLI Commands:
+   \`\`\`bash
+   # <功能描述>
+   nv set ...
+   \`\`\`
+   *(如果有多个设备，请重复此结构)*
+3. **验证步骤**：
+   - 列出 nv show 或 linux 命令
+4. **实施注意事项** (Important Implementation Notes)：
+   - 列出关键点、MAC地址要求、VLAN注意事项等
+`;
+
       const systemPrompt = useGemini
         ? `你是AI助手"小张" (${dateStr})。请用中文专业、准确地回答问题。`
         : `你是AI知识助手"小张"。
 任务：基于参考文档回答用户问题。
 规则：
 1. **严格基于参考文档**，禁止编造命令或配置。
-2. 若文档无相关信息，请明确告知。
-3. 保持专业、条理清晰，使用中文。
-${isConfigQuery ? '4. 配置问题请提供完整步骤。' : ''}
+2. 在回答中引用信息时，**必须在句末使用 [1]、[2] 等格式标注来源**，与参考文档序号对应。
+3. 若文档无相关信息，请明确告知。
+4. 保持专业、条理清晰，使用中文。
+${isConfigQuery ? `5. 配置问题请严格使用以下模板：\n${CONFIG_TEMPLATE}` : ''}
 
 参考文档：
 ${knowledgeContext}`;
@@ -748,8 +809,8 @@ ${knowledgeContext}`;
           temperature: deepThinking ? AI_MODEL_CONFIG.DEEP_THINKING_TEMPERATURE : AI_MODEL_CONFIG.DEFAULT_TEMPERATURE,
           useGemini,
           question: content,
-          // 传递前8条参考文档用于验证，与上下文保持一致
-          references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
+          // 传递前8-14条参考文档用于验证，与上下文保持一致
+          references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
             id: r.id ?? `ref-${idx}`,
             title: r.title ?? `参考文档 #${idx + 1}`,
             content: r.content,
@@ -776,13 +837,17 @@ ${knowledgeContext}`;
         metadata: {
           model: modelUsed,
           deepThinking,
-          // 保存前8条参考文档，提供更完整的来源信息
-          references: hasRelevantKnowledge ? topReferences.map((r, idx) => ({
+          // 保存前8-14条参考文档，提供更完整的来源信息
+          references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
             id: r.id ?? `ref-${idx}`,
             documentId: r.documentId ?? undefined,
             title: r.title ?? `参考文档 #${idx + 1}`,
             content: r.content,
-            score: r.score
+            score: r.score,
+            // 传递合并元数据
+            mergedHeaders: (r as any).mergedHeaders,
+            mergedIds: (r as any).mergedIds,
+            isOptimized: (r as any).isOptimized
           })) : [],
           validation,
           relatedMessageId: userMessage.id,

@@ -1,0 +1,161 @@
+{
+  "timestamp": "2026-01-19T13:12:48.927Z",
+  "summary": {
+    "avgRecall": 0.9642857142857143,
+    "avgLatency": 4874.714285714285,
+    "kgEnhancedCases": 7,
+    "multiHopCases": 3,
+    "totalCases": 7
+  },
+  "results": [
+    {
+      "id": "mlag-config",
+      "query": "如何配置 MLAG?",
+      "category": "single-hop",
+      "latency": 11812,
+      "resultCount": 13,
+      "recall": 1,
+      "matchedTopics": [
+        "mlag",
+        "clagd",
+        "peerlink",
+        "peer-ip"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 13,
+      "multiHopBoostedCount": 6,
+      "topResult": {
+        "score": 9.836617567539216,
+        "kgBoost": 3.369225436835343
+      }
+    },
+    {
+      "id": "evpn-vxlan",
+      "query": "如何配置 EVPN-VXLAN?",
+      "category": "single-hop",
+      "latency": 3191,
+      "resultCount": 13,
+      "recall": 1,
+      "matchedTopics": [
+        "evpn",
+        "vxlan",
+        "bgp",
+        "vni"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 13,
+      "multiHopBoostedCount": 0,
+      "topResult": {
+        "score": 9.764075572490693,
+        "kgBoost": 2.320557816865551
+      }
+    },
+    {
+      "id": "evpn-bgp-relation",
+      "query": "EVPN 和 BGP 有什么关系?",
+      "category": "multi-hop",
+      "latency": 3920,
+      "resultCount": 13,
+      "recall": 1,
+      "matchedTopics": [
+        "evpn",
+        "bgp",
+        "l2vpn",
+        "address-family"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 13,
+      "multiHopBoostedCount": 0,
+      "topResult": {
+        "score": 8.98389737725258,
+        "kgBoost": 3.123859678726584
+      }
+    },
+    {
+      "id": "mlag-dependencies",
+      "query": "配置 MLAG 需要哪些前置条件?",
+      "category": "multi-hop",
+      "latency": 3646,
+      "resultCount": 15,
+      "recall": 1,
+      "matchedTopics": [
+        "mlag",
+        "bond",
+        "bridge",
+        "peerlink"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 15,
+      "multiHopBoostedCount": 6,
+      "topResult": {
+        "score": 9.34594239011407,
+        "kgBoost": 5.029836336120386
+      }
+    },
+    {
+      "id": "roce-prereq",
+      "query": "配置 RoCE 需要哪些前置条件?",
+      "category": "multi-hop",
+      "latency": 3626,
+      "resultCount": 13,
+      "recall": 0.75,
+      "matchedTopics": [
+        "roce",
+        "pfc",
+        "lossless"
+      ],
+      "missedTopics": [
+        "dcqcn"
+      ],
+      "kgBoostedCount": 13,
+      "multiHopBoostedCount": 0,
+      "topResult": {
+        "score": 10.681074883039111,
+        "kgBoost": 4.7877508455961015
+      }
+    },
+    {
+      "id": "nvue-frr",
+      "query": "NVUE 和 vtysh 有什么区别?",
+      "category": "comparison",
+      "latency": 4396,
+      "resultCount": 12,
+      "recall": 1,
+      "matchedTopics": [
+        "nvue",
+        "vtysh",
+        "frr",
+        "cli"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 12,
+      "multiHopBoostedCount": 0,
+      "topResult": {
+        "score": 10.2350795096159,
+        "kgBoost": 2.8772824118700653
+      }
+    },
+    {
+      "id": "cumulus-features",
+      "query": "Cumulus Linux 支持哪些网络特性?",
+      "category": "vendor",
+      "latency": 3532,
+      "resultCount": 12,
+      "recall": 1,
+      "matchedTopics": [
+        "cumulus",
+        "bgp",
+        "evpn",
+        "vxlan",
+        "ospf"
+      ],
+      "missedTopics": [],
+      "kgBoostedCount": 12,
+      "multiHopBoostedCount": 12,
+      "topResult": {
+        "score": 0.9722683310508728,
+        "kgBoost": 0
+      }
+    }
+  ]
+}

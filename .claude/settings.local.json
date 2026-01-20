@@ -55,7 +55,8 @@
       "Bash(then echo \"SSH密钥存在:\")",
       "Bash(elif [ -f ~/.ssh/id_ed25519.pub ])",
       "Bash(else echo \"未找到SSH密钥\")",
-      "Bash(fi)"
+      "Bash(fi)",
+      "Bash(tail:*)"
     ]
   }
 }

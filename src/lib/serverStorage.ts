@@ -510,6 +510,23 @@ class ServerStorageManager {
       return false;
     }
   }
+
+  // 重新切片文档
+  async rechunkDocument(documentId: string): Promise<{ ok: boolean; message?: string; document?: Document }> {
+    try {
+      const res = await fetch(`${this.apiUrl}/api/documents/${documentId}/rechunk`, {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `重新切片失败: ${res.statusText}`);
+      }
+      return await res.json();
+    } catch (error) {
+      console.error('重新切片文档失败:', error);
+      throw error;
+    }
+  }
 }
 
 export const serverStorageManager = new ServerStorageManager();
