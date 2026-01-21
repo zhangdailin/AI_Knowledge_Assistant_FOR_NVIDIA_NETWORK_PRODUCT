@@ -4,7 +4,7 @@
  */
 
 import neo4j from 'neo4j-driver';
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 
 // Neo4j 连接配置
 let driver = null;
@@ -841,6 +841,49 @@ const COMMAND_CONFIG_OBJECTS = new Set([
   'interface', 'vlan', 'bridge', 'bond', 'router', 'bgp', 'ospf', 'mlag', 'clag',
   'vrf', 'evpn', 'vxlan', 'lacp', 'stp', 'pfc', 'roce', 'qos', 'acl', 'bfd'
 ]);
+const COMMAND_BGP_KEYWORDS = new Set([
+  'router-id', 'neighbor', 'address-family', 'bestpath', 'timers', 'network',
+  'redistribute', 'graceful-restart', 'aggregate-address', 'vrf'
+]);
+const COMMAND_OSPF_KEYWORDS = new Set([
+  'router-id', 'area', 'network', 'neighbor', 'interface', 'timers', 'passive-interface'
+]);
+const PARAM_IP_CONTEXT_KEYWORDS = [
+  'peerlink', 'mlag', 'clag', 'clagd', 'bgp', 'ospf', 'route', 'router', 'address',
+  'gateway', 'neighbor', 'netmask', 'ip', 'vrf', 'vlan', 'backup', 'loopback', 'mgmt'
+];
+const PARAM_INTERFACE_CONTEXT_KEYWORDS = [
+  'interface', 'iface', 'bond', 'bridge', 'peerlink', 'bond-slaves', 'bridge-ports',
+  'swp', 'eth', 'vlan', 'lo', 'mgmt'
+];
+const MLAG_COMMAND_HINTS = [
+  'mlag', 'clag', 'clagd', 'peerlink', 'clag-id', 'clagd-args', 'bond-slaves', 'bridge-ports'
+];
+const COMMAND_LINE_FILTERS = [
+  /^\s*(?:nv|netq)\s+/i,
+  /^\s*(?:sudo\s+)?(?:ifreload|ifup|ifdown)\b/i,
+  /^\s*(?:ip|ifconfig|route|netstat|ping|traceroute|tcpdump|ethtool|brctl)\b/i,
+  /^\s*iface\s+/i,
+  /^\s*clag(?:d|ed)?[.\-][\w\-]+/i,
+  /^\s*(?:bond-slaves|bridge-ports)\b/i,
+  /^\s*(?:configure|show|set|get|enable|disable|add|delete|remove)\b/i,
+  /^\s*(?:vlan|interface|router|bgp|ospf|mlag)\b/i
+];
+const PARAM_VALUE_STOPWORDS = new Set([
+  'address', 'bypass', 'bond', 'bonding', 'bonded', 'parameters', 'parameter',
+  'detects', 'synchronize', 'synchronizes', 'inconsistencies', 'switches',
+  'pair', 'pairs', 'interface', 'interfaces', 'management', 'routing',
+  'configuration', 'config'
+]);
+const COMMAND_INTERFACE_FILLER_WORDS = new Set([
+  'uplink', 'downlink', 'peer', 'member', 'members', 'port', 'ports'
+]);
+const MLAG_SUBCOMMAND_KEYWORDS = new Set([
+  'peer', 'peerlink', 'backup', 'peer-ip', 'backup-ip', 'mac-address', 'priority',
+  'reload-delay', 'initdelay', 'peer-timeout', 'system-mac'
+]);
+const VLAN_SUBCOMMAND_KEYWORDS = new Set(['add', 'delete', 'show', 'config', 'set']);
+const ROUTE_SUBCOMMAND_KEYWORDS = new Set(['add', 'del', '-n', '-a', '-f', '-c', '-v', '-h', '-version', '-net', '-host']);
 const COMMAND_ARTICLES = new Set(['a', 'an', 'the', 'this', 'that', 'these', 'those']);
 const COMMAND_STOPWORDS = new Set(['address', 'addresses', 'packet', 'packets']);
 
@@ -857,8 +900,10 @@ function normalizeCommandName(value) {
   const cleaned = normalizeWhitespace(String(value || '').replace(/[;]+$/g, ''));
   if (!cleaned) return '';
   const tokens = cleaned.split(' ').map((token) => token.replace(/[;,]+$/g, '')).filter(Boolean);
+  const clagSysMacRegex = /^clag(?:d|ed)?[.-]sys-mac$/i;
   const normalizedTokens = tokens.map((token) => {
     const lowered = token.toLowerCase();
+    if (clagSysMacRegex.test(lowered)) return 'clagd-sys-mac';
     if (IP_TOKEN_REGEX.test(lowered)) return '<ip>';
     if (MAC_TOKEN_REGEX.test(lowered)) return '<mac>';
     if (HEX_TOKEN_REGEX.test(lowered)) return '<hex>';
@@ -868,7 +913,40 @@ function normalizeCommandName(value) {
     if (INTERFACE_TOKEN_REGEX.test(lowered)) return '<iface>';
     return token;
   });
+  const firstToken = normalizedTokens[0]?.toLowerCase();
+  if (firstToken === 'bridge-ports' || firstToken === 'bond-slaves') {
+    const filtered = [normalizedTokens[0]];
+    for (const token of normalizedTokens.slice(1)) {
+      const lowered = token.toLowerCase();
+      if (COMMAND_INTERFACE_FILLER_WORDS.has(lowered)) continue;
+      if (token === '<iface>' || token === '<iface-range>') {
+        filtered.push(token);
+        continue;
+      }
+      if (PEERLINK_TOKEN_REGEX.test(lowered) ||
+          INTERFACE_TOKEN_REGEX.test(lowered) ||
+          INTERFACE_RANGE_REGEX.test(lowered)) {
+        filtered.push(token);
+      }
+    }
+    return filtered.join(' ').trim();
+  }
   return normalizedTokens.join(' ').trim();
+}
+
+function normalizeParameterValue(value) {
+  const cleaned = String(value || '').trim();
+  if (!cleaned) return '';
+  const lowered = cleaned.toLowerCase();
+  if (/^clag(?:d|ed)?[.-]sys-mac$/i.test(lowered)) return 'clagd-sys-mac';
+  if (IP_TOKEN_REGEX.test(lowered)) return '<ip>';
+  if (MAC_TOKEN_REGEX.test(lowered)) return '<mac>';
+  if (HEX_TOKEN_REGEX.test(lowered)) return '<hex>';
+  if (NUMBER_TOKEN_REGEX.test(lowered)) return '<num>';
+  if (INTERFACE_TOKEN_REGEX.test(lowered) || INTERFACE_RANGE_REGEX.test(lowered)) return '<iface>';
+  if (PEERLINK_TOKEN_REGEX.test(lowered)) return 'peerlink';
+  if (PARAM_VALUE_STOPWORDS.has(lowered)) return '';
+  return cleaned;
 }
 
 function isCommandNoise(command, category) {
@@ -878,6 +956,12 @@ function isCommandNoise(command, category) {
   const first = tokens[0].toLowerCase();
   const second = tokens[1]?.toLowerCase();
 
+  if ((category === 'config' || category === 'network') && /[A-Z]/.test(command)) return true;
+  if (category === 'linux' && /^[A-Z]/.test(command)) return true;
+
+  if (category === 'config' && /^[A-Z]/.test(tokens[0])) return true;
+  if (category === 'network' && /^[A-Z][a-z]/.test(tokens[0])) return true;
+
   if (category === 'nvue' && tokens.length < 3) return true;
   if (category === 'config' && COMMAND_CONFIG_VERBS.has(first)) {
     if (!second || COMMAND_ARTICLES.has(second) || COMMAND_STOPWORDS.has(second)) return true;
@@ -885,9 +969,20 @@ function isCommandNoise(command, category) {
     if (!COMMAND_CONFIG_OBJECTS.has(second)) return true;
   }
 
+  if (category === 'network') {
+    if (first === 'mlag' && second && !MLAG_SUBCOMMAND_KEYWORDS.has(second)) return true;
+    if (first === 'vlan' && second && !VLAN_SUBCOMMAND_KEYWORDS.has(second) && !NUMBER_TOKEN_REGEX.test(second)) return true;
+    if (first === 'bgp' && second && !COMMAND_BGP_KEYWORDS.has(second)) return true;
+    if (first === 'ospf' && second && !COMMAND_OSPF_KEYWORDS.has(second)) return true;
+  }
+
   if (category === 'linux' && first === 'ip') {
     const ipSubcommands = new Set(['addr', 'link', 'route', 'neigh', 'rule', 'maddr']);
     if (!second || !ipSubcommands.has(second)) return true;
+  }
+
+  if (category === 'linux' && first === 'route') {
+    if (!second || (!ROUTE_SUBCOMMAND_KEYWORDS.has(second) && !NUMBER_TOKEN_REGEX.test(second))) return true;
   }
 
   return false;
@@ -897,6 +992,7 @@ function extractCommandCandidates(text) {
   if (!text || typeof text !== 'string') return [];
   const candidates = new Set();
   const codeBlocks = [];
+  const markdownHeadingRegex = /^\s*#{1,6}\s+\S/;
   const codeBlockRegex = /```[\s\S]*?```/g;
   let match;
 
@@ -916,27 +1012,72 @@ function extractCommandCandidates(text) {
     }
   };
 
-  if (codeBlocks.length > 0) {
+  const matchesCommandFilter = (line) => COMMAND_LINE_FILTERS.some(regex => regex.test(line));
+
+  const hasCodeBlocks = codeBlocks.length > 0;
+
+  if (hasCodeBlocks) {
     codeBlocks.forEach(block => {
-      block.split('\n').forEach(addLine);
+      block.split('\n').forEach(line => {
+        const cleaned = cleanCommandLine(line);
+        if (!cleaned) return;
+        if (!matchesCommandFilter(cleaned)) return;
+        candidates.add(cleaned);
+      });
     });
   }
 
   const inlineMatches = text.match(/`([^`]+)`/g) || [];
   inlineMatches.forEach(item => {
     const value = item.replace(/`/g, '').trim();
-    if (value) {
-      candidates.add(value);
-    }
+    if (!value) return;
+    if (!matchesCommandFilter(value)) return;
+    candidates.add(value);
   });
 
-  text.split('\n').forEach(line => {
-    if (COMMAND_PROMPT_REGEX.test(line) || /^\s*[#$]\s+/.test(line) || /^\s*nv\s+/i.test(line)) {
-      addLine(line);
-    }
-  });
+  if (!hasCodeBlocks) {
+    text.split('\n').forEach(line => {
+      if (markdownHeadingRegex.test(line)) return;
+      const cleaned = cleanCommandLine(line);
+      if (!cleaned) return;
+      if (cleaned !== cleaned.toLowerCase()) return;
+      if (!matchesCommandFilter(cleaned)) return;
+      if (COMMAND_PROMPT_REGEX.test(line) || matchesCommandFilter(cleaned)) {
+        addLine(line);
+      }
+    });
+  }
 
   return Array.from(candidates);
+}
+
+function extractParameterSourceText(text) {
+  if (!text || typeof text !== 'string') return '';
+  const codeBlocks = [];
+  const inlineBlocks = [];
+  const codeBlockRegex = /```[\s\S]*?```/g;
+  let match;
+
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const content = match[0]
+      .replace(/```[\s\S]*?\n?/, '')
+      .replace(/```$/, '');
+    if (content.trim()) {
+      codeBlocks.push(content.trim());
+    }
+  }
+
+  const inlineMatches = text.match(/`([^`]+)`/g) || [];
+  inlineMatches.forEach(item => {
+    const value = item.replace(/`/g, '').trim();
+    if (value) inlineBlocks.push(value);
+  });
+
+  if (codeBlocks.length === 0 && inlineBlocks.length === 0) {
+    return text;
+  }
+
+  return [...codeBlocks, ...inlineBlocks].join('\n');
 }
 
 function extractVendorCandidates(text, options = {}) {
@@ -1144,12 +1285,17 @@ export function extractEntities(text, metadata = {}) {
   };
 
   const addParameter = (name, type) => {
-    const cleanName = typeof name === 'string' ? name.trim() : '';
-    if (!cleanName || cleanName.length <= 1) return;
+    let cleanName = typeof name === 'string' ? name.trim() : '';
+    if (!cleanName || cleanName.length <= 1) return null;
+    if (type === 'ip_address') {
+      cleanName = '<ip>';
+    }
+    if (PARAM_VALUE_STOPWORDS.has(cleanName.toLowerCase())) return null;
     const key = cleanName.toLowerCase();
     if (!parameterMap.has(key)) {
       parameterMap.set(key, { name: cleanName, type, source });
     }
+    return cleanName;
   };
 
   // 1. 提取厂商实体（文档元数据 + 文本模式）
@@ -1174,6 +1320,9 @@ export function extractEntities(text, metadata = {}) {
     { regex: /^netq\s+(?:show|check|trace)\b(?:\s+[\w\-\.\/]+)*/i, category: 'netq' },
     { regex: /^(?:sudo\s+)?(?:ifreload|ifup|ifdown)\b(?:\s+[\w\-\.\/]+)*/i, category: 'linux' },
     { regex: /^(?:ip|ifconfig|route|netstat|ping|traceroute|tcpdump|ethtool|brctl)\b(?:\s+[\w\-\.\/]+)*/i, category: 'linux' },
+    { regex: /^iface\s+[\w.\-]+(?:\s+[\w\-\.\/]+)*/i, category: 'config' },
+    { regex: /^clag(?:d|ed)?[.\-][\w\-]+(?:\s+[\w\-\.\/]+)*/i, category: 'config' },
+    { regex: /^(?:bond-slaves|bridge-ports)\b(?:\s+[\w\-\.\/]+)*/i, category: 'config' },
     { regex: /^(?:configure|show|set|get|enable|disable|add|delete|remove)\b(?:\s+[\w\-\.\/]+)*/i, category: 'config' },
     { regex: /^(?:vlan|interface|router|bgp|ospf|mlag)\b(?:\s+(?:add|delete|show|config|set))?\s*[\w\-\.\/]*/i, category: 'network' }
   ];
@@ -1208,6 +1357,7 @@ export function extractEntities(text, metadata = {}) {
   }
 
   // 3. 提取参数实体
+  const parameterSourceText = extractParameterSourceText(text);
   const parameterPatterns = [
     // 网络参数
     { regex: /\b(vlan|vrf|bgp|ospf|mlag|lacp|bond)\s*[=:]?\s*(\w+)/gi, type: 'network_param' },
@@ -1219,14 +1369,115 @@ export function extractEntities(text, metadata = {}) {
     { regex: /\bport\s*[=:]?\s*(\d+)/gi, type: 'port' },
     // 接口名称
     { regex: /\b(eth|swp|bond|vlan)\d+/gi, type: 'interface' },
+    { regex: /\b(?:eth|swp|bond)\d+-\d+\b/gi, type: 'interface' },
     { regex: /\bpeerlink(?:\.\d+)?\b/gi, type: 'interface' }
   ];
 
-  for (const pattern of parameterPatterns) {
-    for (const match of text.matchAll(pattern.regex)) {
-      const paramName = match[0]?.trim();
-      if (!paramName) continue;
-      addParameter(paramName, pattern.type);
+  const commandLineSet = new Set(
+    extractCommandCandidates(parameterSourceText)
+      .map(line => cleanCommandLine(line))
+      .filter(Boolean)
+  );
+  const paramBindings = new Map();
+
+  const addParamBinding = (commandName, paramName) => {
+    if (!commandName || !paramName) return;
+    const key = commandName.toLowerCase();
+    if (!paramBindings.has(key)) {
+      paramBindings.set(key, new Set());
+    }
+    paramBindings.get(key).add(paramName);
+  };
+
+  const shouldIncludeParameter = (type, line, isCommandLine, match) => {
+    if (!line) return false;
+    const lineLower = line.toLowerCase();
+    const lineHasDelimiter = line.includes(':') || line.includes('=');
+
+    if (type === 'mlag_param') return true;
+    if (type === 'network_param') {
+      const valueToken = match && match[2] ? String(match[2]) : '';
+      const keyToken = match && match[1] ? String(match[1]).toLowerCase() : '';
+      if (!valueToken) return false;
+      if (PARAM_VALUE_STOPWORDS.has(valueToken.toLowerCase())) return false;
+      if (keyToken === 'vrf') {
+        const vrfValue = normalizeParameterValue(valueToken);
+        if (!vrfValue) return false;
+        if (!/^[a-z0-9][a-z0-9\-_]{0,15}$/i.test(vrfValue)) return false;
+        return isCommandLine || lineHasDelimiter;
+      }
+      if (['vlan', 'bgp', 'ospf', 'mlag', 'lacp', 'bond'].includes(keyToken)) {
+        if (!NUMBER_TOKEN_REGEX.test(valueToken)) return false;
+      }
+      if (!isCommandLine && !lineHasDelimiter) return false;
+      if (!isCommandLine && /^[A-Z]/.test(valueToken)) return false;
+      return true;
+    }
+
+    if (type === 'ip_address') {
+      if (isCommandLine) return true;
+      return PARAM_IP_CONTEXT_KEYWORDS.some(keyword => lineLower.includes(keyword));
+    }
+
+    if (type === 'port') {
+      return isCommandLine || lineLower.includes('port') || lineLower.includes('clagd');
+    }
+
+    if (type === 'interface') {
+      if (isCommandLine) return true;
+      return PARAM_INTERFACE_CONTEXT_KEYWORDS.some(keyword => lineLower.includes(keyword));
+    }
+
+    return isCommandLine;
+  };
+
+  let currentCommandName = null;
+  for (const rawLine of parameterSourceText.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) {
+      currentCommandName = null;
+      continue;
+    }
+    const cleanedLine = cleanCommandLine(line);
+    if (!cleanedLine) {
+      currentCommandName = null;
+      continue;
+    }
+    if (/^auto\s+/i.test(cleanedLine)) {
+      currentCommandName = null;
+      continue;
+    }
+    const isCommandLine = commandLineSet.has(cleanedLine);
+    let lineCommandName = null;
+    if (isCommandLine) {
+      const normalizedLine = normalizeCommandName(cleanedLine);
+      if (commandMap.has(normalizedLine.toLowerCase())) {
+        lineCommandName = normalizedLine;
+        currentCommandName = normalizedLine;
+      }
+    }
+
+    for (const pattern of parameterPatterns) {
+      for (const match of line.matchAll(pattern.regex)) {
+        let paramName = match[0]?.trim();
+        if (!paramName) continue;
+        if (pattern.type === 'network_param') {
+          const key = match[1] ? String(match[1]).toLowerCase() : '';
+          const value = match[2] ? normalizeParameterValue(match[2]) : '';
+          if (!key || !value) continue;
+          paramName = `${key}=${value}`;
+        } else {
+          paramName = normalizeParameterValue(paramName);
+        }
+        if (!shouldIncludeParameter(pattern.type, line, isCommandLine, match)) continue;
+        const storedName = addParameter(paramName, pattern.type);
+        if (!storedName) continue;
+        if (lineCommandName) {
+          addParamBinding(lineCommandName, storedName);
+        } else if (currentCommandName) {
+          addParamBinding(currentCommandName, storedName);
+        }
+      }
     }
   }
 
@@ -1250,6 +1501,16 @@ export function extractEntities(text, metadata = {}) {
     const inferred = inferFunctionsFromText(command.name, {
       vendorNames: vendorCandidates
     });
+    const commandLower = command.name.toLowerCase();
+    if (MLAG_COMMAND_HINTS.some(keyword => commandLower.includes(keyword))) {
+      inferred.add('MLAG');
+    }
+    if (/\bbgp\b/.test(commandLower)) {
+      inferred.add('BGP');
+    }
+    if (/\bospf\b/.test(commandLower)) {
+      inferred.add('OSPF');
+    }
     if (inferred.size === 0 && functionMatches.length > 0) {
       const commandIndex = commandMatches.find(m => m.name === command.name)?.index;
       if (typeof commandIndex === 'number') {
@@ -1335,19 +1596,19 @@ export function extractEntities(text, metadata = {}) {
   }
 
   // 命令-参数关系
-  for (const command of entities.commands) {
-    for (const param of entities.parameters) {
-      const commandIndex = text.indexOf(command.name);
-      const paramIndex = text.indexOf(param.name);
-      if (commandIndex !== -1 && paramIndex !== -1 && Math.abs(commandIndex - paramIndex) < 150) {
-        entities.relationships.push({
-          from: command.name,
-          to: param.name,
-          type: 'HAS_PARAMETER',
-          fromType: 'Command',
-          toType: 'Parameter'
-        });
-      }
+  for (const [commandKey, params] of paramBindings.entries()) {
+    const commandEntry = commandMap.get(commandKey);
+    if (!commandEntry) continue;
+    for (const paramName of params) {
+      const paramEntry = parameterMap.get(paramName.toLowerCase());
+      if (!paramEntry) continue;
+      entities.relationships.push({
+        from: commandEntry.name,
+        to: paramEntry.name,
+        type: 'HAS_PARAMETER',
+        fromType: 'Command',
+        toType: 'Parameter'
+      });
     }
   }
 

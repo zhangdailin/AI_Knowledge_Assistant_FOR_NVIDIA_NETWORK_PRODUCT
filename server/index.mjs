@@ -3,7 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import { createRequire } from 'node:module';
 import { WebSocketServer } from 'ws';
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText, rerankDocuments } from './embedding.mjs';
 import { validateFileType, getFileCategory } from './fileValidation.mjs';
@@ -11,7 +11,7 @@ import { asyncHandler, SimpleLRUCache } from './utils.mjs';
 import XLSX from 'xlsx';
 
 // 新增工具类导入
-import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COMMAND_PATTERNS } from './constants.mjs';
+import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COMMAND_PATTERNS, COMMAND_CONTENT_PATTERNS, COMMAND_BOOST } from './constants.mjs';
 import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, ValidationError } from './utils/apiResponse.mjs';
 import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
 import { findById, findByName } from './utils/treeUtils.mjs';
@@ -41,7 +41,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
-import { addFeedbackEntry, getFeedbackMetrics } from './storage.mjs';
+import { addFeedbackEntry, getFeedbackMetrics } from './storage-adapter.mjs';
 import { assignVariant } from './abTesting.mjs';
 import { smartQueryRewrite } from './queryExpansion.mjs';
 import { calculateDocumentQuality, batchEvaluateDocuments, generateQualityReport } from './documentQuality.mjs';
@@ -196,16 +196,75 @@ async function fuseResults(keywordResults, vectorResults, query, maxResults, con
     ? baseVectorWeight * RRF_WEIGHTS.COMMAND_QUERY_VECTOR_MULTIPLIER
     : baseVectorWeight;
 
+  /**
+   * 检测内容中是否包含命令语法
+   * @param {string} content - 文档内容
+   * @returns {Object} { hasCodeBlock, hasCommandSyntax, commandMatches }
+   */
+  function detectCommandContent(content) {
+    if (!content) return { hasCodeBlock: false, hasCommandSyntax: false, commandMatches: 0 };
+
+    const hasCodeBlock = /```[\s\S]*?```/.test(content);
+    let commandMatches = 0;
+
+    // 检测各种命令模式
+    for (const pattern of COMMAND_CONTENT_PATTERNS) {
+      const matches = content.match(pattern);
+      if (matches) {
+        commandMatches += matches.length;
+      }
+    }
+
+    const hasCommandSyntax = commandMatches > 0;
+
+    return { hasCodeBlock, hasCommandSyntax, commandMatches };
+  }
+
   keywordResults.forEach((chunk, index) => {
     const id = chunk.id;
     if (!combinedResults.has(id)) combinedResults.set(id, { chunk, score: 0, sources: [] });
     const item = combinedResults.get(id);
     item.score += (1 / (k + index + 1)) * keywordWeight;
     if (chunk.score > 10) item.score += SCORING.HIGH_SCORE_BONUS;
+
+    // 增强命令内容检测
     if (isCommandQuery && chunk.content) {
       const contentLower = chunk.content.toLowerCase();
-      if (contentLower.includes('nv set') || contentLower.includes('nv show') || contentLower.includes('```')) item.score += 0.08;
-      if (queryLower.includes('mlag') && (contentLower.includes('mlag') || contentLower.includes('bond mlag'))) item.score += 0.1;
+      const cmdDetect = detectCommandContent(chunk.content);
+
+      // 代码块加分
+      if (cmdDetect.hasCodeBlock) {
+        item.score += COMMAND_BOOST.CODE_BLOCK_BOOST;
+        item.hasCodeBlock = true;
+      }
+
+      // 命令语法加分（根据匹配数量递增）
+      if (cmdDetect.hasCommandSyntax) {
+        const syntaxBoost = Math.min(
+          cmdDetect.commandMatches * 0.03,
+          COMMAND_BOOST.COMMAND_SYNTAX_BOOST
+        );
+        item.score += syntaxBoost;
+        item.commandMatches = cmdDetect.commandMatches;
+      }
+
+      // 精确命令匹配
+      if (contentLower.includes('nv set') || contentLower.includes('nv show') ||
+          contentLower.includes('nv action') || contentLower.includes('nv config')) {
+        item.score += COMMAND_BOOST.EXACT_COMMAND_BOOST;
+        item.hasExactCommand = true;
+      }
+
+      // 技术关键词精确匹配加分
+      if (queryLower.includes('mlag') && (contentLower.includes('mlag') || contentLower.includes('bond mlag'))) {
+        item.score += 0.1;
+      }
+      if (queryLower.includes('bgp') && contentLower.includes('bgp')) {
+        item.score += 0.1;
+      }
+      if (queryLower.includes('evpn') && contentLower.includes('evpn')) {
+        item.score += 0.1;
+      }
     }
     item.sources.push('keyword');
     item.keywordScore = chunk.score;
@@ -218,6 +277,28 @@ async function fuseResults(keywordResults, vectorResults, query, maxResults, con
     const entry = combinedResults.get(id);
     entry.score += (1 / (k + index + 1)) * vectorWeight;
     if (item.score > 0.85) entry.score += SCORING.HIGH_SCORE_BONUS;
+
+    // 对向量检索的结果也进行命令内容检测
+    if (isCommandQuery && chunk.content) {
+      const cmdDetect = detectCommandContent(chunk.content);
+
+      // 如果向量结果包含代码块，额外加分（比关键词结果稍低）
+      if (cmdDetect.hasCodeBlock && !entry.hasCodeBlock) {
+        entry.score += COMMAND_BOOST.CODE_BLOCK_BOOST * 0.7;
+        entry.hasCodeBlock = true;
+      }
+
+      // 命令语法加分
+      if (cmdDetect.hasCommandSyntax && !entry.commandMatches) {
+        const syntaxBoost = Math.min(
+          cmdDetect.commandMatches * 0.02,
+          COMMAND_BOOST.COMMAND_SYNTAX_BOOST * 0.7
+        );
+        entry.score += syntaxBoost;
+        entry.commandMatches = cmdDetect.commandMatches;
+      }
+    }
+
     entry.sources.push('vector');
     entry.vectorScore = item.score;
   });
@@ -498,6 +579,37 @@ async function processUploadedFile(documentId, file) {
   }
 }
 
+// 批量并行处理多个文档上传
+// 使用 Promise.all() 实现真正的并行处理，大幅提升上传速度
+async function processMultipleDocuments(documents, files) {
+  console.log(`[BatchUpload] 开始批量处理 ${documents.length} 个文档`);
+  const startTime = Date.now();
+
+  // 使用 Promise.all 并行处理所有文档
+  const results = await Promise.allSettled(
+    documents.map((doc, index) =>
+      processUploadedFile(doc.id, files[index])
+        .then(() => ({ success: true, documentId: doc.id, filename: doc.filename }))
+        .catch(err => ({
+          success: false,
+          documentId: doc.id,
+          filename: doc.filename,
+          error: err.message
+        }))
+    )
+  );
+
+  const elapsed = Date.now() - startTime;
+  const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+  const failed = results.length - successful;
+
+  console.log(`[BatchUpload] 批量处理完成，耗时: ${elapsed}ms`);
+  console.log(`[BatchUpload] 成功: ${successful}, 失败: ${failed}`);
+  console.log(`[BatchUpload] 平均每个文档: ${Math.round(elapsed / documents.length)}ms`);
+
+  return results.map(r => r.status === 'fulfilled' ? r.value : r.reason);
+}
+
 // 重新切片文档
 async function rechunkDocument(documentId) {
   try {
@@ -660,6 +772,77 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('上传处理失败:', error);
     res.status(500).json({ ok: false, error: '上传失败' });
+  }
+});
+
+// 批量上传文档接口 - 支持并行处理多个文件
+app.post('/api/documents/upload/batch', upload.array('files', 20), async (req, res) => {
+  try {
+    const files = req.files;
+    if (!files || files.length === 0) {
+      return res.status(400).json({ ok: false, error: 'no_files' });
+    }
+
+    const { userId, category } = req.body;
+    console.log(`[BatchUpload] 收到 ${files.length} 个文件的批量上传请求`);
+
+    // 1. 验证所有文件类型
+    const categoriesData = await storage.getCategories();
+    const resolvedCategory = resolveCategoryInfo(category, categoriesData.tree || []);
+
+    const documents = [];
+    const validFiles = [];
+
+    for (const file of files) {
+      const fixedFilename = fixFilename(file.originalname);
+      const mime = file.mimetype || '';
+
+      const validation = validateFileType(fixedFilename, mime);
+      if (!validation.valid) {
+        console.warn(`[BatchUpload] 跳过无效文件: ${fixedFilename}, 原因: ${validation.error}`);
+        continue;
+      }
+
+      // 创建文档记录
+      const docData = {
+        userId,
+        filename: fixedFilename,
+        fileType: file.mimetype,
+        fileSize: file.size,
+        categoryId: resolvedCategory.id,
+        category: resolvedCategory.name,
+        contentPreview: '处理中...',
+        uploadedAt: new Date().toISOString(),
+        status: 'processing'
+      };
+
+      const document = await storage.createDocument(docData);
+      documents.push(document);
+      validFiles.push(file);
+      console.log(`[BatchUpload] 文档创建: ${document.id}, 文件: ${fixedFilename}`);
+    }
+
+    if (documents.length === 0) {
+      return res.status(400).json({ ok: false, error: '没有有效的文件' });
+    }
+
+    // 2. 立即响应前端
+    res.json({
+      ok: true,
+      documents,
+      total: files.length,
+      valid: documents.length,
+      invalid: files.length - documents.length
+    });
+
+    // 3. 并行处理所有文档（后台执行）
+    processMultipleDocuments(documents, validFiles).catch(err => {
+      console.error(`[BatchUpload] 批量处理异常:`, err);
+    });
+
+  } catch (error) {
+    console.error('[BatchUpload] 批量上传失败:', error);
+    res.status(500).json({ ok: false, error: '批量上传失败' });
   }
 });
 
@@ -3758,6 +3941,18 @@ wss.on('connection', (ws) => {
 
   ws.on('pong', () => {
     ws.isAlive = true;
+  });
+
+  // 处理客户端心跳消息
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data);
+      if (message.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
+      }
+    } catch (e) {
+      // 忽略非 JSON 消息或解析错误
+    }
   });
 
   ws.on('close', () => {

@@ -209,7 +209,7 @@ const Dashboard: React.FC = () => {
             <span className="text-sm text-gray-500">最近7天</span>
           </div>
           <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={stats.recentQueries}>
+            <LineChart data={stats.recentQueries || []}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" stroke="#9ca3af" fontSize={12} />
               <YAxis stroke="#9ca3af" fontSize={12} />
@@ -240,7 +240,7 @@ const Dashboard: React.FC = () => {
             <span className="text-sm text-gray-500">Top 5</span>
           </div>
           <div className="space-y-4">
-            {stats.topQuestions.map((item, index) => (
+            {(stats.topQuestions || []).map((item, index) => (
               <div key={index} className="flex items-center gap-4">
                 <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
                   index === 0 ? 'bg-amber-100 text-amber-600' :
@@ -255,7 +255,7 @@ const Dashboard: React.FC = () => {
                   <div className="mt-1 h-2 bg-gray-100 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-indigo-500 rounded-full transition-all"
-                      style={{ width: `${(item.count / stats.topQuestions[0].count) * 100}%` }}
+                      style={{ width: `${(item.count / (stats.topQuestions?.[0]?.count || 1)) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -272,7 +272,7 @@ const Dashboard: React.FC = () => {
           <h3 className="text-lg font-semibold text-gray-900">文档分类</h3>
         </div>
         <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={stats.documentsByCategory} layout="vertical">
+          <BarChart data={stats.documentsByCategory || []} layout="vertical">
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis type="number" stroke="#9ca3af" fontSize={12} />
             <YAxis dataKey="category" type="category" stroke="#9ca3af" fontSize={12} width={80} />

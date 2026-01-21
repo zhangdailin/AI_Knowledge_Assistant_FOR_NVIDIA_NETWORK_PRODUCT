@@ -77,6 +77,13 @@ export function optimizeReferences(results, options = {}) {
                 currentMerged.lastIndex = chunk.chunkIndex;
                 // 更新分数：取最大值
                 currentMerged.score = Math.max(currentMerged.score, chunk.score || 0);
+                // 更新调试分数：取最大值（如果存在）
+                if (chunk._score !== undefined) {
+                    currentMerged._score = Math.max(currentMerged._score || 0, chunk._score);
+                }
+                if (chunk.rerank_score !== undefined) {
+                    currentMerged.rerank_score = Math.max(currentMerged.rerank_score || 0, chunk.rerank_score);
+                }
                 // 累积来源信息
                 if (chunk._sources) {
                     chunk._sources.forEach(s => currentMerged.sources.add(s));
@@ -144,7 +151,11 @@ function createMergedRef(chunk, docTitle) {
         kgPostRerankBoost: chunk.kgPostRerankBoost || 0,
         kgMatches: chunk.kgMatches || 0,
         multiHopMatches: chunk.multiHopMatches || 0,
-        kgChunkMatches: chunk.kgChunkMatches
+        kgChunkMatches: chunk.kgChunkMatches,
+
+        // 调试字段透传
+        _score: chunk._score,
+        rerank_score: chunk.rerank_score
     };
 
     if (chunk.metadata?.header) {

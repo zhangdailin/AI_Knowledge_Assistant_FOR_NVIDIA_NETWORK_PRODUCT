@@ -3,7 +3,7 @@
  * 支持批量文档处理、批量检索等操作
  */
 
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 import { embedTexts } from './embedding.mjs';
 import { enhancedParentChildChunking } from './chunking.mjs';
 import fs from 'fs/promises';

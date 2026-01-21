@@ -8,7 +8,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as knowledgeGraph from './knowledgeGraph.mjs';
 import { embedText } from './embedding.mjs';
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
+import { COMMAND_CONTENT_PATTERNS, COMMAND_BOOST } from './constants.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -449,6 +450,46 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
       // 这里的 multiHopMatches 现在存储分数和，以便 SearchPipeline 重新应用时使用
       result.multiHopMatches = multiHopScoreSum;
     }
+
+    // 4. 命令内容加分（使用 COMMAND_CONTENT_PATTERNS）
+    // 检测并提升包含实际命令语法的结果
+    let commandContentBoost = 0;
+    let commandMatchCount = 0;
+
+    // 检测代码块
+    if (/```[\s\S]*?```/.test(textContent)) {
+      commandContentBoost += COMMAND_BOOST.CODE_BLOCK_BOOST * scoreScale;
+      result.hasCodeBlock = true;
+    }
+
+    // 检测命令语法模式
+    for (const pattern of COMMAND_CONTENT_PATTERNS) {
+      const matches = textContent.match(pattern);
+      if (matches) {
+        commandMatchCount += matches.length;
+      }
+    }
+
+    if (commandMatchCount > 0) {
+      // 根据命令匹配数量增加分数，设置上限
+      const syntaxBoost = Math.min(
+        commandMatchCount * 0.03 * scoreScale,
+        COMMAND_BOOST.COMMAND_SYNTAX_BOOST * scoreScale
+      );
+      commandContentBoost += syntaxBoost;
+      result.commandMatchCount = commandMatchCount;
+    }
+
+    // 检测 nv 命令（高优先级）
+    if (/nv\s+(set|show|config|unset|action)\s+\S+/i.test(textContent)) {
+      commandContentBoost += COMMAND_BOOST.KG_COMMAND_BOOST * scoreScale;
+      result.hasNvCommand = true;
+    }
+
+    if (commandContentBoost > 0) {
+      result.score = (result.score || 0) + commandContentBoost;
+      result.commandContentBoost = commandContentBoost;
+    }
   }
 
   // 4. 重新排序结果
@@ -529,13 +570,26 @@ export function determineRetrievalStrategy(query) {
       maxKgResults: 8
     });
   }
-  // 2. 命令相关查询
+  // 2. 命令相关查询 - 增强命令检测和权重
   else if (hasCommandSignal) {
+    // 判断是否是强命令查询（包含具体命令语法）
+    const strongCommandPatterns = [
+      /\bnv\s+(set|show|config|unset|action)\b/i,
+      /\b(configure|no\s+\w+)\b/i,
+      /```[\s\S]*?```/,                    // 包含代码块
+      /如何.*(配置|设置|启用|禁用|查看)/i,
+      /怎么.*(配置|设置|启用|禁用|查看)/i,
+      /(show|display)\s+(interface|route|bgp|evpn|mlag)/i
+    ];
+    const isStrongCommandQuery = strongCommandPatterns.some(p => p.test(query));
+
     Object.assign(finalStrategy, {
       strategy: 'command-focused',
       enableKnowledgeGraph: true,
-      kgWeight: usesDefaultVendor ? 0.25 : 0.35,
-      maxKgResults: 6
+      kgWeight: isStrongCommandQuery ? 0.4 : (usesDefaultVendor ? 0.3 : 0.35),
+      maxKgResults: isStrongCommandQuery ? 8 : 6,
+      prioritizeCommands: true,              // 新增：优先命令结果
+      commandBoostMultiplier: isStrongCommandQuery ? 1.5 : 1.2  // 新增：命令加分倍数
     });
   }
   // 3. 功能相关查询

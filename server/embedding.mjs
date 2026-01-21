@@ -3,7 +3,7 @@
  * 服务器端调用 SiliconFlow API 生成 embeddings
  */
 
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 
 const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
 const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';

@@ -4,7 +4,7 @@
  */
 
 import crypto from 'crypto';
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 
 // Webhook 事件类型定义
 export const WebhookEvents = {

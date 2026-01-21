@@ -42,5 +42,9 @@
     "uri": "neo4j+s://937ddfa0.databases.neo4j.io",
     "username": "neo4j",
     "password": "hD4xgP6awOKpiCWC15Vf4tB1fktHv4W63VoCoY1Qp0A"
+  },
+  "storage": {
+    "backend": "sqlite",
+    "comment": "已移除 JSON 存储支持，仅使用 SQLite"
   }
 }

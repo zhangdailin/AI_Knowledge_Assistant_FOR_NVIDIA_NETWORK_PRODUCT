@@ -36,8 +36,8 @@ export const SCORING = {
 export const RRF_WEIGHTS = {
   DEFAULT_KEYWORD_WEIGHT: 1.0,
   DEFAULT_VECTOR_WEIGHT: 1.0,
-  COMMAND_QUERY_KEYWORD_MULTIPLIER: 1.5,
-  COMMAND_QUERY_VECTOR_MULTIPLIER: 0.8,
+  COMMAND_QUERY_KEYWORD_MULTIPLIER: 1.8,    // 提高命令查询关键词权重
+  COMMAND_QUERY_VECTOR_MULTIPLIER: 0.6,     // 降低命令查询向量权重（命令更依赖精确匹配）
   TECH_QUERY_KEYWORD_MULTIPLIER: 1.5,
   TECH_QUERY_VECTOR_MULTIPLIER: 0.8
 };
@@ -73,9 +73,35 @@ export const TECHNICAL_KEYWORDS = [
 ];
 
 export const COMMAND_PATTERNS = [
-  /nv\s+(set|show|config|unset)/,
-  '配置', '命令', 'config', 'show', 'how to', '如何'
+  /nv\s+(set|show|config|unset)/i,
+  /\b(show|display|list|get)\s+\w+/i,
+  /\b(ip|ifconfig|netstat|route|arp)\s+\w+/i,
+  /\b(configure|enable|disable|no)\s+\w+/i,
+  /```[\s\S]*?(nv|show|config|set|ip)/i,  // 代码块中包含命令
+  /^\s*(nv|net|sudo|#|\$)/m,               // 命令行开头特征
+  '配置', '命令', 'config', 'show', 'how to', '如何',
+  '怎么配置', '怎么设置', '如何启用', '如何禁用'
 ];
+
+// 命令内容识别 - 用于在文档内容中检测命令
+export const COMMAND_CONTENT_PATTERNS = [
+  /```[\s\S]*?```/,                          // 代码块
+  /nv\s+(set|show|config|unset|action)\s+\S+/gi,
+  /\b(show|display)\s+(interface|route|bgp|evpn|mlag|vlan|vxlan|ip)/gi,
+  /\bip\s+(route|address|link|neighbor)/gi,
+  /\b(configure|no\s+\w+|exit|end)\b/gi,
+  /^\s*cumulus@\S+:/m,                       // Cumulus 命令提示符
+  /^\s*\$\s+\w+/m,                           // Shell 命令
+  /^\s*#\s+\w+/m                             // Root 命令
+];
+
+// 命令查询增强权重
+export const COMMAND_BOOST = {
+  CODE_BLOCK_BOOST: 0.15,           // 包含代码块的结果额外加分
+  COMMAND_SYNTAX_BOOST: 0.12,       // 包含命令语法的结果额外加分
+  EXACT_COMMAND_BOOST: 0.2,         // 精确匹配命令的结果额外加分
+  KG_COMMAND_BOOST: 0.25            // 知识图谱命令匹配额外加分
+};
 
 // 默认查询配置
 export const DEFAULT_RETRIEVAL_CONFIG = {

@@ -1,7 +1,7 @@
 /**
  * 搜索管道 - 将搜索流程分解为清晰的步骤
  */
-import { LIMITS, CACHE, SCORING } from '../constants.mjs';
+import { LIMITS, CACHE, SCORING, COMMAND_CONTENT_PATTERNS, COMMAND_BOOST } from '../constants.mjs';
 import { hybridRetrieval, determineRetrievalStrategyWithAB } from '../hybridRetrieval.mjs';
 import { optimizeReferences } from './referenceOptimizer.mjs';
 
@@ -254,8 +254,9 @@ export class SearchPipeline {
       const hasKgMatches = (result.kgMatches || 0) > 0;
       const hasChunkMatches = (result.kgChunkMatches?.length || 0) > 0;
       const hasMultiHopMatches = (result.multiHopMatches || 0) > 0;
+      const hasCommandBoost = (result.commandContentBoost || 0) > 0 || result.hasCodeBlock || result.hasNvCommand;
 
-      if (!hasKgMatches && !hasChunkMatches && !hasMultiHopMatches) continue;
+      if (!hasKgMatches && !hasChunkMatches && !hasMultiHopMatches && !hasCommandBoost) continue;
 
       let totalBoost = 0;
 
@@ -273,6 +274,26 @@ export class SearchPipeline {
       // 3. 多跳实体增强 - 权重较低
       if (hasMultiHopMatches) {
         totalBoost += (result.multiHopMatches * 0.1 * boostScale);
+      }
+
+      // 4. 命令内容增强 - 新增
+      if (hasCommandBoost) {
+        // 代码块加分
+        if (result.hasCodeBlock) {
+          totalBoost += (COMMAND_BOOST.CODE_BLOCK_BOOST * boostScale);
+        }
+        // nv 命令加分
+        if (result.hasNvCommand) {
+          totalBoost += (COMMAND_BOOST.KG_COMMAND_BOOST * boostScale);
+        }
+        // 命令匹配数量加分
+        if (result.commandMatchCount > 0) {
+          const cmdBoost = Math.min(
+            result.commandMatchCount * 0.05 * boostScale,
+            COMMAND_BOOST.COMMAND_SYNTAX_BOOST * boostScale
+          );
+          totalBoost += cmdBoost;
+        }
       }
 
       // 应用增强
@@ -296,7 +317,7 @@ export class SearchPipeline {
         const scoreB = b.rerank_score !== undefined ? b.rerank_score : (b.score || 0);
         return scoreB - scoreA;
       });
-      console.log(`[SearchPipeline] KG 增强已重新应用: ${boostedCount} 个结果获得提升 (Scale=${boostScale.toFixed(3)})`);
+      console.log(`[SearchPipeline] KG + 命令增强已重新应用: ${boostedCount} 个结果获得提升 (Scale=${boostScale.toFixed(3)})`);
     }
   }
 

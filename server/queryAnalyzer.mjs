@@ -3,42 +3,42 @@
  * 提供数据驱动的优化建议
  */
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const QUERY_LOGS_FILE = path.join(__dirname, '../data/query_logs.json');
-const NEGATIVE_SAMPLES_FILE = path.join(__dirname, '../data/negative_samples.json');
+import * as storage from './storage-adapter.mjs';
 
 /**
- * 加载查询日志
+ * 加载查询日志（从 SQLite）
  */
 async function loadQueryLogs() {
   try {
-    const content = await fs.readFile(QUERY_LOGS_FILE, 'utf-8');
-    return JSON.parse(content);
+    const stats = await storage.getQueryStats();
+    return stats.recentQueries || [];
   } catch (e) {
     return [];
   }
 }
 
 /**
- * 加载负样本数据（支持新版本数据结构）
+ * 加载负样本数据（从 SQLite）
  */
 async function loadNegativeSamples() {
   try {
-    const content = await fs.readFile(NEGATIVE_SAMPLES_FILE, 'utf-8');
-    const data = JSON.parse(content);
-    // 支持新版本结构（包含 samples 数组）和旧版本结构（直接是对象）
-    if (data.samples && Array.isArray(data.samples)) {
-      return data;
-    }
-    // 旧版本格式兼容
-    return { samples: [], stats: {}, version: '1.0.0' };
+    // 从反馈表获取负样本数据
+    const feedback = await storage.getAllFeedback();
+    const negativeFeedback = feedback.filter(f => f.verdict === 'not_helpful' || f.verdict === 'wrong');
+    return {
+      samples: negativeFeedback,
+      stats: {
+        totalSamples: negativeFeedback.length,
+        byFeedbackType: negativeFeedback.reduce((acc, f) => {
+          const type = f.verdict || 'unknown';
+          acc[type] = (acc[type] || 0) + 1;
+          return acc;
+        }, {})
+      },
+      version: '2.0.0'
+    };
   } catch (e) {
-    return { samples: [], stats: {}, version: '1.0.0' };
+    return { samples: [], stats: {}, version: '2.0.0' };
   }
 }
 

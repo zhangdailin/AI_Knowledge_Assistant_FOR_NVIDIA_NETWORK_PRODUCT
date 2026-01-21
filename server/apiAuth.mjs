@@ -4,7 +4,7 @@
  */
 
 import crypto from 'crypto';
-import * as storage from './storage.mjs';
+import * as storage from './storage-adapter.mjs';
 
 // API Key 存储文件
 const API_KEYS_FILE = 'data/api_keys.json';

@@ -3,8 +3,8 @@
  * 处理文档的 embedding 生成等耗时任务
  */
 
-import * as storage from './storage.mjs';
-import { embedText } from './embedding.mjs';
+import * as storage from './storage-adapter.mjs';
+import { embedTexts } from './embedding.mjs';
 
 // 任务状态
 const TASK_STATUS = {
@@ -116,14 +116,23 @@ export async function processEmbeddingTask(taskId, documentId) {
     task.current = 0;
     task.progress = 0;
 
-    const batchSize = 20; // 增加批次大小，SiliconFlow 支持较大批次
+    // 优化批处理参数：
+    // - 增加批次大小到 100（SiliconFlow 支持大批次请求）
+    // - 增加并发度到 5（在 API 限速允许范围内最大化并行）
+    const batchSize = 100; // 批次大小：每次 API 调用处理的文本数量
+    const concurrency = 5; // 并发批次数：同时进行的 API 调用数量
     let successCount = 0;
     let failCount = 0;
 
+    // 创建批次数组
+    const batches = [];
     for (let i = 0; i < chunksWithoutEmbedding.length; i += batchSize) {
-      const batch = chunksWithoutEmbedding.slice(i, i + batchSize);
-      const texts = batch.map(c => c.content || "");
+      batches.push(chunksWithoutEmbedding.slice(i, i + batchSize));
+    }
 
+    // 处理单个批次的函数
+    const processBatch = async (batch, batchIndex) => {
+      const texts = batch.map(c => c.content || "");
       let embeddings = null;
       let retryCount = 0;
       const MAX_RETRIES = 3;
@@ -133,37 +142,54 @@ export async function processEmbeddingTask(taskId, documentId) {
           if (retryCount > 0) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount - 1)));
           embeddings = await embedTexts(texts);
         } catch (err) {
-          console.warn(`[任务 ${taskId}] Batch embedding failed (Attempt ${retryCount + 1}):`, err.message);
+          console.warn(`[任务 ${taskId}] 批次 ${batchIndex + 1} 失败 (尝试 ${retryCount + 1}):`, err.message);
           retryCount++;
         }
       }
 
+      const result = { success: 0, failed: 0, updates: [] };
+
       if (embeddings) {
-        const updates = [];
         batch.forEach((chunk, idx) => {
           if (embeddings[idx]) {
-            updates.push({ chunkId: chunk.id, embedding: embeddings[idx] });
-            successCount++;
+            result.updates.push({ chunkId: chunk.id, embedding: embeddings[idx] });
+            result.success++;
           } else {
-            failCount++;
+            result.failed++;
           }
         });
-
-        if (updates.length > 0) {
-          await storage.updateChunkEmbeddings(updates, documentId);
-        }
       } else {
-        failCount += batch.length;
-        console.error(`[任务 ${taskId}] 批次生成失败，跳过 ${batch.length} 个 chunks`);
+        result.failed = batch.length;
+        console.error(`[任务 ${taskId}] 批次 ${batchIndex + 1} 生成失败，跳过 ${batch.length} 个 chunks`);
+      }
+
+      return result;
+    };
+
+    // 并行处理批次（受控并发）
+    for (let i = 0; i < batches.length; i += concurrency) {
+      const batchGroup = batches.slice(i, i + concurrency);
+      const results = await Promise.all(
+        batchGroup.map((batch, idx) => processBatch(batch, i + idx))
+      );
+
+      // 收集结果并更新存储
+      const allUpdates = [];
+      for (const result of results) {
+        successCount += result.success;
+        failCount += result.failed;
+        allUpdates.push(...result.updates);
+      }
+
+      if (allUpdates.length > 0) {
+        await storage.updateChunkEmbeddings(allUpdates, documentId);
       }
 
       task.current = successCount + failCount;
       task.progress = Math.round((task.current / chunksWithoutEmbedding.length) * 100);
       task.updatedAt = new Date().toISOString();
-      
-      if (i % 40 === 0) {
-        console.log(`[任务 ${taskId}] 进度: ${task.current}/${task.total} (${task.progress}%)`);
-      }
+
+      console.log(`[任务 ${taskId}] 进度: ${task.current}/${task.total} (${task.progress}%)`);
     }
 
     completeTask(taskId, { successCount, failCount });
@@ -174,8 +200,6 @@ export async function processEmbeddingTask(taskId, documentId) {
   }
 }
 
-// 导入 embedTexts
-import { embedTexts } from './embedding.mjs';
 
 // 获取所有任务（用于查询）
 export function getAllTasks() {
@@ -191,7 +215,7 @@ export function getDocumentTasks(documentId) {
 export function cleanupOldTasks() {
   const taskArray = Array.from(tasks.values());
   taskArray.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  
+
   if (taskArray.length > 100) {
     const toDelete = taskArray.slice(100);
     toDelete.forEach(task => tasks.delete(task.id));
@@ -208,7 +232,7 @@ export async function restoreInterruptedTasks() {
     for (const doc of documents) {
       // 检查该文档是否已有正在运行的任务（防止重复）
       const existingTasks = getDocumentTasks(doc.id);
-      const hasRunningTask = existingTasks.some(t => 
+      const hasRunningTask = existingTasks.some(t =>
         t.status === TASK_STATUS.PENDING || t.status === TASK_STATUS.PROCESSING
       );
 
@@ -225,21 +249,21 @@ export async function restoreInterruptedTasks() {
 
       if (chunksWithoutEmbedding.length > 0) {
         console.log(`[任务队列] 发现文档 ${doc.id} 有 ${chunksWithoutEmbedding.length} 个 chunks 缺失 embedding，自动创建恢复任务`);
-        
-        const task = createTask('generate_embeddings', doc.id, { 
+
+        const task = createTask('generate_embeddings', doc.id, {
           reason: 'auto_restore',
           restoredAt: new Date().toISOString()
         });
-        
+
         // 异步执行，不阻塞启动流程
         processEmbeddingTask(task.id, doc.id).catch(err => {
           console.error(`[任务队列] 恢复任务 ${task.id} 执行失败:`, err);
         });
-        
+
         restoredCount++;
       }
     }
-    
+
     console.log(`[任务队列] 检查完成，共恢复 ${restoredCount} 个任务`);
   } catch (error) {
     console.error('[任务队列] 恢复任务失败:', error);
