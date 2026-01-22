@@ -123,18 +123,18 @@ export const mockFetch = () => {
  * Mock WebSocket
  */
 export const mockWebSocket = () => {
-  const listeners = new Map<string, Function[]>();
+  const listeners = new Map<string, ((...args: any[]) => void)[]>();
 
   const ws = {
     send: vi.fn(),
     close: vi.fn(),
-    addEventListener: vi.fn((event: string, handler: Function) => {
+    addEventListener: vi.fn((event: string, handler: (...args: any[]) => void) => {
       if (!listeners.has(event)) {
         listeners.set(event, []);
       }
       listeners.get(event)!.push(handler);
     }),
-    removeEventListener: vi.fn((event: string, handler: Function) => {
+    removeEventListener: vi.fn((event: string, handler: (...args: any[]) => void) => {
       const handlers = listeners.get(event);
       if (handlers) {
         const index = handlers.indexOf(handler);
@@ -154,7 +154,7 @@ export const mockWebSocket = () => {
   const trigger = (event: string, data?: any) => {
     const handlers = listeners.get(event);
     if (handlers) {
-      handlers.forEach(handler => handler(data));
+      handlers.forEach((handler: (...args: any[]) => void) => handler(data));
     }
   };
 
@@ -207,13 +207,13 @@ export const mockConsole = () => {
  */
 export const mockTimer = () => {
   return {
-    setTimeout: vi.fn((callback: Function, delay: number) => {
+    setTimeout: vi.fn((callback: () => void, delay: number) => {
       return setTimeout(callback, delay);
     }),
     clearTimeout: vi.fn((id: any) => {
       clearTimeout(id);
     }),
-    setInterval: vi.fn((callback: Function, delay: number) => {
+    setInterval: vi.fn((callback: () => void, delay: number) => {
       return setInterval(callback, delay);
     }),
     clearInterval: vi.fn((id: any) => {

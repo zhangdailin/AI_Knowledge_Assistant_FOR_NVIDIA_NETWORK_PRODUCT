@@ -1502,4 +1502,5 @@ function extractRails(nodes: any[]): string[] {
 }
 
 export default TopologyRestoreTool;
+// eslint-disable-next-line react-refresh/only-export-components
 export { pluginMeta } from './plugin-meta';

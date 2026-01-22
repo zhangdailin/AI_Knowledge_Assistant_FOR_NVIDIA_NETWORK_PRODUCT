@@ -1,9 +1,17 @@
 import { create } from 'zustand';
 import { localStorageManager, Conversation, Message } from '../lib/localStorage';
-import { AI_MODEL_CONFIG, CONVERSATION_CONFIG } from '../lib/constants';
+import { AI_MODEL_CONFIG, CONVERSATION_CONFIG, MMR_CONFIG, COMPLEXITY_CONFIG, TOKEN_BUDGET_CONFIG } from '../lib/constants';
 import { enhancedNetworkKeywordExtractor } from '../lib/enhancedNetworkKeywordExtractor';
 import { extractSNs } from './toolStore';
 import { getApiServerUrl } from '../utils/apiUtils';
+import {
+  IntentClassifier,
+  IntentResult,
+  QueryIntent,
+  classifyQueryIntent,
+  inferQueryIntent as classifyIntent
+} from '../lib/intentClassifier';
+import { TokenBudgetManager, tokenBudgetManager } from '../lib/tokenBudgetManager';
 
 interface ChatState {
   conversations: Conversation[];
@@ -97,21 +105,32 @@ async function searchKnowledgeBase(
   }
 }
 
-type QueryIntent = {
+// 使用导入的 IntentClassifier，保留兼容接口
+type LocalQueryIntent = {
   isConfig: boolean;
   isTroubleshoot: boolean;
   isShow: boolean;
   isConcept: boolean;
+  isComparison?: boolean;
+  isListRequest?: boolean;
 };
 
-function inferQueryIntent(query: string): QueryIntent {
-  const lower = query.toLowerCase();
+// 使用增强型意图分类器
+const intentClassifier = new IntentClassifier();
+
+function inferQueryIntent(query: string): LocalQueryIntent {
+  // 使用新的分类器，返回兼容格式
+  const result = classifyQueryIntent(query);
   return {
-    isConfig: /配置|设置|安装|部署|步骤|how to|configure|configuration|setup/i.test(query),
-    isTroubleshoot: /故障|异常|错误|问题|排错|debug|troubleshoot|error|fail|issue/i.test(lower),
-    isShow: /查看|查询|显示|状态|show|display|list|get|status|state/i.test(lower),
-    isConcept: /什么是|含义|定义|原理|概念|overview|introduction|what is|definition/i.test(lower)
+    ...result.primary,
+    isComparison: result.primary.isComparison,
+    isListRequest: result.primary.isListRequest
   };
+}
+
+// 获取完整的意图分析结果
+function getFullIntentResult(query: string): IntentResult {
+  return classifyQueryIntent(query);
 }
 
 function isConfigHeavyQuery(query: string): boolean {
@@ -249,6 +268,124 @@ function getCategoryWeights(intent: QueryIntent): Record<string, number> {
   };
 }
 
+// ========== MMR (Maximal Marginal Relevance) 算法 ==========
+
+/**
+ * 计算两个文档之间的相似度（Jaccard）
+ */
+function computeDocumentSimilarity(doc1: string, doc2: string): number {
+  const words1 = new Set((doc1.match(/[\u4e00-\u9fa5a-zA-Z0-9]+/g) || []).map(w => w.toLowerCase()));
+  const words2 = new Set((doc2.match(/[\u4e00-\u9fa5a-zA-Z0-9]+/g) || []).map(w => w.toLowerCase()));
+
+  if (words1.size === 0 || words2.size === 0) return 0;
+
+  let intersection = 0;
+  for (const word of words1) {
+    if (words2.has(word)) intersection++;
+  }
+
+  const union = words1.size + words2.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * 获取 MMR 的 lambda 参数
+ * 根据查询意图动态调整相关性与多样性的平衡
+ */
+function getMMRLambda(intent: LocalQueryIntent): number {
+  if (intent.isConfig) {
+    return MMR_CONFIG?.CONFIG_LAMBDA || 0.7; // 配置类更重相关性
+  }
+  if (intent.isConcept) {
+    return MMR_CONFIG?.CONCEPT_LAMBDA || 0.4; // 概念类更重多样性
+  }
+  if (intent.isTroubleshoot) {
+    return MMR_CONFIG?.TROUBLESHOOT_LAMBDA || 0.6;
+  }
+  return MMR_CONFIG?.DEFAULT_LAMBDA || 0.5;
+}
+
+/**
+ * 使用 MMR 算法选择参考文档
+ * 平衡相关性和多样性
+ */
+function selectReferencesWithMMR(
+  results: KnowledgeSearchResult[],
+  query: string,
+  maxRefs: number,
+  intent: LocalQueryIntent
+): KnowledgeSearchResult[] {
+  if (results.length <= maxRefs) return results;
+
+  const lambda = getMMRLambda(intent);
+  const selected: KnowledgeSearchResult[] = [];
+  const remaining = [...results];
+  const selectedContents: string[] = [];
+
+  // 选择第一个（最高分）
+  if (remaining.length > 0) {
+    const first = remaining.shift()!;
+    selected.push(first);
+    selectedContents.push(first.content || '');
+  }
+
+  // 迭代选择剩余文档
+  while (selected.length < maxRefs && remaining.length > 0) {
+    let bestIndex = -1;
+    let bestMMRScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i];
+      const relevance = candidate.score || 0;
+
+      // 计算与已选文档的最大相似度
+      let maxSimilarity = 0;
+      for (const selectedContent of selectedContents) {
+        const similarity = computeDocumentSimilarity(candidate.content || '', selectedContent);
+        maxSimilarity = Math.max(maxSimilarity, similarity);
+      }
+
+      // MMR 分数 = λ * 相关性 - (1-λ) * 最大相似度
+      const mmrScore = lambda * relevance - (1 - lambda) * maxSimilarity;
+
+      if (mmrScore > bestMMRScore) {
+        bestMMRScore = mmrScore;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex === -1) break;
+
+    const chosen = remaining.splice(bestIndex, 1)[0];
+    selected.push(chosen);
+    selectedContents.push(chosen.content || '');
+  }
+
+  return selected;
+}
+
+/**
+ * 使用 Token 预算选择参考文档
+ */
+function selectReferencesWithBudget(
+  results: KnowledgeSearchResult[],
+  query: string,
+  intent: LocalQueryIntent,
+  tokenBudget: number
+): KnowledgeSearchResult[] {
+  // 首先用 MMR 算法选择候选
+  const maxCandidates = Math.min(
+    TOKEN_BUDGET_CONFIG?.MAX_REFERENCES || 20,
+    results.length
+  );
+
+  const mmrSelected = selectReferencesWithMMR(results, query, maxCandidates, intent);
+
+  // 然后用 token 预算进行最终筛选
+  const minRefs = TOKEN_BUDGET_CONFIG?.MIN_REFERENCES || 3;
+  return tokenBudgetManager.selectReferencesWithinBudget(mmrSelected, tokenBudget, minRefs);
+}
+
 function selectReferencesForQuery(
   results: KnowledgeSearchResult[],
   query: string,
@@ -347,41 +484,78 @@ function selectReferencesForQuery(
   return selected;
 }
 
-// 智能拆解复杂查询为多个子查询
+// 复杂查询拆解类型
+type DecomposeType = 'multi-entity' | 'multi-intent' | 'compound' | 'simple';
+
+interface DecomposeResult {
+  type: DecomposeType;
+  queries: string[];
+  entities: string[];
+  intents: string[];
+}
+
+// 智能拆解复杂查询为多个子查询（优化版 - 减少子查询以提速）
 function decomposeComplexQuery(query: string): string[] {
-  const subQueries: string[] = [];
+  // 短查询不拆解
+  if (query.length < 30) {
+    return [query];
+  }
+  const result = analyzeAndDecomposeQuery(query);
+  // 限制最多返回2个查询（原始+1个子查询）以提速
+  return result.queries.slice(0, 2);
+}
+
+// 完整的查询拆解分析（简化版）
+function analyzeAndDecomposeQuery(query: string): DecomposeResult {
   const queryLower = query.toLowerCase();
 
-  // 检测网络配置相关的技术术语
-  const techPatterns = [
-    { keywords: ['mlag', 'multi-chassis', '多机箱'], subQuery: 'MLAG配置' },
-    { keywords: ['vrrp', 'vrr', 'virtual router', '虚拟路由', '虚拟网关'], subQuery: 'VRRP虚拟网关配置' },
-    { keywords: ['vlan', '虚拟局域网'], subQuery: 'VLAN配置' },
-    { keywords: ['route', 'routing', '路由', '默认路由', 'default route'], subQuery: '路由配置' },
-    { keywords: ['gateway', '网关'], subQuery: '网关配置' },
-    { keywords: ['bgp', 'border gateway'], subQuery: 'BGP配置' },
-    { keywords: ['ospf', 'open shortest'], subQuery: 'OSPF配置' },
-    { keywords: ['evpn', 'ethernet vpn'], subQuery: 'EVPN配置' },
-    { keywords: ['vxlan', 'virtual extensible'], subQuery: 'VXLAN配置' },
-    { keywords: ['bond', 'lacp', 'link aggregation', '链路聚合'], subQuery: 'Bond链路聚合配置' },
+  // 检测技术实体（简化列表，只保留主要协议）
+  const techPatterns: Array<{ keywords: string[]; entity: string; subQuery: string }> = [
+    { keywords: ['mlag', 'multi-chassis'], entity: 'mlag', subQuery: 'MLAG配置' },
+    { keywords: ['vrrp', 'vrr'], entity: 'vrrp', subQuery: 'VRRP配置' },
+    { keywords: ['bgp'], entity: 'bgp', subQuery: 'BGP配置' },
+    { keywords: ['ospf'], entity: 'ospf', subQuery: 'OSPF配置' },
+    { keywords: ['evpn'], entity: 'evpn', subQuery: 'EVPN配置' },
+    { keywords: ['vxlan'], entity: 'vxlan', subQuery: 'VXLAN配置' },
+    { keywords: ['bond', 'lacp'], entity: 'bond', subQuery: 'Bond配置' },
   ];
 
-  // 检测匹配的技术领域
+  // 检测匹配的技术实体
+  const matchedEntities: string[] = [];
+  const subQueries: string[] = [];
+
   for (const pattern of techPatterns) {
     if (pattern.keywords.some(kw => queryLower.includes(kw))) {
+      matchedEntities.push(pattern.entity);
       subQueries.push(pattern.subQuery);
     }
   }
 
-  // 如果检测到多个技术领域，说明是复杂查询
-  if (subQueries.length >= 2) {
-    const uniqueQueries = Array.from(new Set([query, ...subQueries]));
-    console.log('[QueryDecompose] 检测到复杂查询，拆解为:', uniqueQueries);
-    return uniqueQueries;
+  // 只有3个以上实体才拆解（提高阈值减少拆解）
+  if (matchedEntities.length >= 3) {
+    // 只取前2个子查询
+    const uniqueQueries = [query, subQueries[0]];
+    console.log('[QueryDecompose] multi-entity: 拆解为:', uniqueQueries);
+    return {
+      type: 'multi-entity',
+      queries: uniqueQueries,
+      entities: matchedEntities.slice(0, 2),
+      intents: ['default']
+    };
   }
 
-  // 单一技术领域或无法识别，返回原查询
-  return [query];
+  // 简单查询，不拆解
+  return {
+    type: 'simple',
+    queries: [query],
+    entities: matchedEntities,
+    intents: ['default']
+  };
+}
+
+// 获取查询复杂度分数
+function getQueryComplexity(query: string): number {
+  return intentClassifier.getQueryComplexity(query);
 }
 
 // 自动检测查询应该搜索的分类
@@ -508,7 +682,7 @@ async function multiLevelSearch(query: string): Promise<{
   }
 
   // 第一级：标准检索
-  let results = allResults;
+  const results = allResults;
   const maxScore = results.reduce((max, r) => Math.max(max, r.score), 0);
   const avgScore = results.length > 0
     ? results.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, results.length)
@@ -720,11 +894,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let knowledgeContext = '';
       let useGemini = false;
 
-      const isConfigQuery = isConfigHeavyQuery(content);
-      const maxReferences = isConfigQuery ? 14 : 8;
-      const topReferences = isConfigQuery
-        ? selectReferencesForQuery(knowledgeResults, content, maxReferences)
-        : knowledgeResults.slice(0, maxReferences);
+      // 使用增强型意图分类
+      const intent = inferQueryIntent(content);
+      const fullIntentResult = getFullIntentResult(content);
+      const isConfigQuery = intent.isConfig;
+
+      // 使用 Token 预算管理器动态分配预算
+      const budgetAllocation = tokenBudgetManager.adjustBudgetByIntent(intent);
+      const referenceTokenBudget = budgetAllocation.references;
+      const historyTokenBudget = budgetAllocation.history;
+
+      console.log(`[TokenBudget] 预算分配: history=${historyTokenBudget}, references=${referenceTokenBudget}`);
+      console.log(`[IntentClassifier] primary=${fullIntentResult.dominantType} (confidence=${fullIntentResult.confidence.toFixed(2)})`);
+
+      // 使用 MMR 算法 + Token 预算选择参考文档
+      const topReferences = knowledgeResults.length > 0
+        ? selectReferencesWithBudget(knowledgeResults, content, intent, referenceTokenBudget)
+        : [];
 
       // 关键修复：只要有检索结果，就提供给LLM，让LLM自己判断是否相关
       // 不再依赖阈值来决定是否使用知识库内容
@@ -745,18 +931,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.log('[Chat] 参考文档标题:', topReferences.map((r, i) => `[${i + 1}] ${r.title}`).join(', '));
         console.log('[Chat] 参考文档分数:', topReferences.map((r, i) => `[${i + 1}] ${r.score.toFixed(4)}`).join(', '));
         console.log('[Chat] 知识库上下文长度:', knowledgeContext.length, '字符');
+
+        // 计算 token 使用情况
+        const refTokensUsed = tokenBudgetManager.estimateTokens(knowledgeContext);
+        console.log(`[TokenBudget] 参考文档使用: ${refTokensUsed} tokens (预算: ${referenceTokenBudget})`);
       } else {
         // 真的没有任何检索结果，使用 Gemini
         useGemini = true;
         console.log('[Chat] 知识库无检索结果，使用 Gemini');
       }
 
-      // Build conversation history
+      // Build conversation history - 使用 Token 预算管理
       const recentMessages = messages.slice(-CONVERSATION_CONFIG.MAX_HISTORY_MESSAGES);
-      const historyMessages = recentMessages.map(m => ({
+      const historyForBudget = recentMessages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content
+      }));
+      const selectedHistory = tokenBudgetManager.selectMessagesWithinBudget(historyForBudget, historyTokenBudget);
+      const historyMessages = selectedHistory.map(m => ({
         role: m.role as 'user' | 'assistant',
         content: m.content
       }));
+
+      console.log(`[TokenBudget] 历史消息: 选择 ${selectedHistory.length}/${recentMessages.length} 条`);
 
       // 获取当前日期
       const now = new Date();
@@ -779,15 +977,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 `;
 
       const systemPrompt = useGemini
-        ? `你是AI助手"小张" (${dateStr})。请用中文专业、准确地回答问题。`
+        ? `你是AI助手"小张" (${dateStr})。请用中文专业、准确、完整地回答问题。回答要详尽，不要省略重要信息。`
         : `你是AI知识助手"小张"。
-任务：基于参考文档回答用户问题。
-规则：
-1. **严格基于参考文档**，禁止编造命令或配置。
-2. 在回答中引用信息时，**必须在句末使用 [1]、[2] 等格式标注来源**，与参考文档序号对应。
-3. 若文档无相关信息，请明确告知。
-4. 保持专业、条理清晰，使用中文。
-${isConfigQuery ? `5. 配置问题请严格使用以下模板：\n${CONFIG_TEMPLATE}` : ''}
+任务：基于参考文档**完整、详尽**地回答用户问题。
+
+**核心要求**：
+1. **完整回答**：提供全面、详细的回答，涵盖问题的所有方面，不要省略重要信息。
+2. **严格基于参考文档**：禁止编造命令或配置，所有信息必须来自参考文档。
+3. **标注来源**：引用信息时**必须在句末使用 [1]、[2] 等格式标注来源**。
+4. **结构清晰**：使用标题、列表、代码块等格式组织回答。
+5. 若文档无相关信息，请明确告知并说明可能的查找方向。
+${isConfigQuery ? `\n**配置问题格式要求**：\n${CONFIG_TEMPLATE}` : ''}
 
 参考文档：
 ${knowledgeContext}`;

@@ -312,7 +312,7 @@ describe('Embedding Module', () => {
       });
 
       // 模拟重试逻辑
-      const retry = async (fn: Function, maxAttempts: number) => {
+      const retry = async (fn: () => Promise<any>, maxAttempts: number) => {
         for (let i = 0; i < maxAttempts; i++) {
           try {
             return await fn();

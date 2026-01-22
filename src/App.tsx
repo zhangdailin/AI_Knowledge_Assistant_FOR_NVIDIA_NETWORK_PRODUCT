@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/authStore';
 import { useChatStore } from './stores/chatStore';
 import ChatInterface from './components/ChatInterface';
 import KnowledgeBase from './components/KnowledgeBase';
+import KnowledgeGraph from './components/KnowledgeGraph';
 import ConversationHistory from './components/ConversationHistory';
 import UserSettings from './components/UserSettings';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -121,6 +122,14 @@ function App() {
               element={
                 <div className="h-full overflow-auto">
                   <FeedbackAnalytics />
+                </div>
+              }
+            />
+            <Route
+              path="knowledge-graph"
+              element={
+                <div className="h-full overflow-hidden">
+                  <KnowledgeGraph />
                 </div>
               }
             />

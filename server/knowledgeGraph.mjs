@@ -2062,12 +2062,25 @@ export async function queryKnowledgeGraph(query, limit = 10) {
  * 多跳图谱遍历 - 发现实体之间的间接关系
  * @param {string} query - 用户查询
  * @param {Object} options - 选项
- * @param {number} options.maxHops - 最大跳数 (默认 2)
- * @param {number} options.limit - 返回路径数量限制 (默认 20)
+ * @param {number} options.maxHops - 最大跳数 (默认 2，硬性上限 3)
+ * @param {number} options.limit - 返回路径数量限制 (默认 15)
+ * @param {number} options.timeout - 超时时间毫秒 (默认 10000)
  * @returns {Object} { entities: [], paths: [], context: string }
  */
 export async function multiHopQuery(query, options = {}) {
-  const { maxHops = 2, limit = 20 } = options;
+  const MAX_HOPS_LIMIT = 3;  // 硬性上限，防止查询爆炸
+  const MAX_PATHS_LIMIT = 50; // 路径数量硬性上限
+  const MAX_ENTITIES_LIMIT = 20; // 实体数量硬性上限
+
+  const {
+    maxHops = 2,
+    limit = 15,
+    timeout = 10000  // 默认10秒超时
+  } = options;
+
+  // 强制限制maxHops
+  const effectiveMaxHops = Math.min(maxHops, MAX_HOPS_LIMIT);
+  const effectiveLimit = Math.min(limit, MAX_PATHS_LIMIT);
 
   if (!isConnected) {
     await initNeo4j();
@@ -2079,6 +2092,8 @@ export async function multiHopQuery(query, options = {}) {
   }
 
   const session = driver.session();
+  const startTime = Date.now();
+
   try {
     const vendorNames = await getVendorNames();
 
@@ -2093,21 +2108,32 @@ export async function multiHopQuery(query, options = {}) {
       ...queryEntities.vendors.map(v => v.name),
       ...queryEntities.functions.map(f => f.name),
       ...queryEntities.commands.map(c => c.name)
-    ].slice(0, 5); // 最多取5个实体
+    ].slice(0, 3); // 减少到最多3个实体，加快查询
 
     if (entityNames.length === 0) {
       console.log('[KnowledgeGraph] 查询中未提取到实体，跳过多跳查询');
       return { entities: [], paths: [], context: '' };
     }
 
-    console.log(`[KnowledgeGraph] 多跳查询实体: ${entityNames.join(', ')} (maxHops=${maxHops})`);
+    console.log(`[KnowledgeGraph] 多跳查询实体: ${entityNames.join(', ')} (maxHops=${effectiveMaxHops}, timeout=${timeout}ms)`);
 
     const allPaths = [];
     const relatedEntities = new Map();
 
-    // 2. 对每个实体执行 N 跳遍历
-    // 2. 对每个实体执行多跳查询
+    // 2. 对每个实体执行多跳查询（带超时检查）
     for (const entityName of entityNames) {
+      // 检查是否超时
+      if (Date.now() - startTime > timeout) {
+        console.warn(`[KnowledgeGraph] 多跳查询超时，已处理 ${allPaths.length} 条路径`);
+        break;
+      }
+
+      // 检查是否已达到路径限制
+      if (allPaths.length >= MAX_PATHS_LIMIT) {
+        console.log(`[KnowledgeGraph] 已达到路径数量限制 (${MAX_PATHS_LIMIT})，提前退出`);
+        break;
+      }
+
       if (!entityName) continue;
 
       // 2.1 意图检测
@@ -2139,12 +2165,12 @@ export async function multiHopQuery(query, options = {}) {
           AND start.name =~ $pattern
         WITH start
         LIMIT 3
-        
+
         CALL {
           WITH start
-          MATCH path = (start)-[rels*1..${maxHops}]-(related)
+          MATCH path = (start)-[rels*1..${effectiveMaxHops}]-(related)
           WHERE related <> start
-          AND NOT related:Chunk 
+          AND NOT related:Chunk
           RETURN path, related, length(path) as hops
           ORDER BY hops ASC
           LIMIT $limit
@@ -2152,7 +2178,7 @@ export async function multiHopQuery(query, options = {}) {
         RETURN start, path, related, hops
       `, {
         pattern: `(?i).*${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&')}.*`,
-        limit: neo4j.int(limit * 2)
+        limit: neo4j.int(effectiveLimit)
       });
 
       for (const record of result.records) {
@@ -2229,7 +2255,7 @@ export async function multiHopQuery(query, options = {}) {
     uniquePaths.sort((a, b) => a.hops - b.hops);
 
     // 4. 生成上下文摘要
-    const entities = Array.from(relatedEntities.values()).slice(0, 15);
+    const entities = Array.from(relatedEntities.values()).slice(0, MAX_ENTITIES_LIMIT);
     let context = '';
     if (entities.length > 0) {
       const grouped = {};
@@ -2242,12 +2268,20 @@ export async function multiHopQuery(query, options = {}) {
         .join('\n');
     }
 
-    console.log(`[KnowledgeGraph] 多跳查询完成: ${entities.length} 相关实体, ${uniquePaths.length} 路径`);
+    const elapsedTime = Date.now() - startTime;
+    console.log(`[KnowledgeGraph] 多跳查询完成: ${entities.length} 相关实体, ${uniquePaths.length} 路径 (${elapsedTime}ms, maxHops=${effectiveMaxHops})`);
 
     return {
       entities,
-      paths: uniquePaths.slice(0, limit),
-      context
+      paths: uniquePaths.slice(0, effectiveLimit),
+      context,
+      metadata: {
+        elapsedTime,
+        maxHops: effectiveMaxHops,
+        timeout: timeout,
+        totalPaths: uniquePaths.length,
+        totalEntities: relatedEntities.size
+      }
     };
   } catch (error) {
     console.error('[KnowledgeGraph] 多跳查询失败:', error.message);

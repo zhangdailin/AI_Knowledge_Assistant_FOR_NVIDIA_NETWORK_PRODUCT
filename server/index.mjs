@@ -3,6 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import { createRequire } from 'node:module';
 import { WebSocketServer } from 'ws';
+import { createHash } from 'node:crypto';
 import * as storage from './storage-adapter.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText, rerankDocuments } from './embedding.mjs';
@@ -1114,22 +1115,15 @@ app.get('/api/chunks/search', async (req, res) => {
     const abVariant = await assignVariant(userId);
     const experimentConfig = abVariant ? abVariant.config : null;
 
-    const cacheKey = JSON.stringify({
-      q: query,
-      limit: searchLimit,
-      categoryId: categoryId || 'all',
-      embeddingModel: settings?.modelSelection?.embedding || 'default',
-      rerankModel: settings?.modelSelection?.reranking || 'default',
-      searchCacheTTL,
-      rrfK: retrievalConfig.rrfK ?? 'default',
-      keywordWeight: retrievalConfig.keywordWeight ?? 'default',
-      vectorWeight: retrievalConfig.vectorWeight ?? 'default',
-      vectorMinScore: retrievalConfig.vectorMinScore ?? 'default',
-      rerankTopN,
-      // 包含实验配置以隔离缓存
-      abExp: abVariant ? abVariant.experimentId : null,
-      abVar: abVariant ? abVariant.variantId : null
-    });
+    const cacheKey = createHash('md5')
+      .update(JSON.stringify({
+        q: query,
+        cat: categoryId || 'all',
+        // 只保留关键配置，其他配置变化不频繁，不影响缓存
+        ab: abVariant ? `${abVariant.experimentId}-${abVariant.variantId}` : null
+      }))
+      .digest('hex')
+      .slice(0, 16); // 16字符足够唯一标识
 
     const requestStartTime = Date.now();
 
@@ -1154,8 +1148,6 @@ app.get('/api/chunks/search', async (req, res) => {
     const searchPromise = searchPipeline.execute(query, {
       cacheKey,
       searchLimit,
-      categoryIds,
-      rerankTopN,
       categoryIds,
       rerankTopN,
       config: {

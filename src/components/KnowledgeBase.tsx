@@ -194,10 +194,12 @@ const KnowledgeBase: React.FC = () => {
       setKgLoading(false);
       setKgAction('idle');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 移除 kgLoading 依赖，避免无限循环
 
   useEffect(() => {
     fetchKnowledgeGraphStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 只在组件挂载时执行一次
 
   // 当搜索词或分类变化时，重置到第一页

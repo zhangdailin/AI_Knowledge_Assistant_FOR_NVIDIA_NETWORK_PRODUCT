@@ -72,11 +72,11 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, role }) => {
                 if (typeof child === 'string') {
                   return processText(child);
                 }
-                // @ts-ignore
+                // @ts-expect-error - React.cloneElement type narrowing issue
                 if (React.isValidElement(child) && child.props.children) {
-                  // @ts-ignore
+                  // @ts-expect-error - child.props type narrowing
                   return React.cloneElement(child, {
-                    // @ts-ignore
+                    // @ts-expect-error - children type compatibility
                     children: processChildren(child.props.children)
                   });
                 }

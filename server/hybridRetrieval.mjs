@@ -1,6 +1,11 @@
 /**
  * 混合检索模块 - 结合 RAG 和知识图谱
  * 提升检索准确率和相关性
+ *
+ * v2.0 增强：
+ * - 动态权重计算增加更多因子
+ * - 策略路由支持更多意图类型
+ * - 复杂查询检测与多跳支持
  */
 
 import fs from 'fs';
@@ -9,7 +14,14 @@ import { fileURLToPath } from 'url';
 import * as knowledgeGraph from './knowledgeGraph.mjs';
 import { embedText } from './embedding.mjs';
 import * as storage from './storage-adapter.mjs';
-import { COMMAND_CONTENT_PATTERNS, COMMAND_BOOST } from './constants.mjs';
+import {
+  COMMAND_CONTENT_PATTERNS,
+  COMMAND_BOOST,
+  STRATEGY_CONFIG,
+  DYNAMIC_WEIGHT_CONFIG,
+  SIGNAL_THRESHOLDS,
+  EXTENDED_TECHNICAL_KEYWORDS
+} from './constants.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +31,80 @@ const DEFAULT_VENDOR_NAME = process.env.DEFAULT_VENDOR || 'NVIDIA';
 
 let cachedVendorNames = null;
 let cachedVendorMtime = 0;
+
+// 反馈指标缓存（避免频繁数据库查询）
+let cachedFeedbackMetrics = null;
+let feedbackMetricsCacheTime = 0;
+const FEEDBACK_CACHE_TTL = 60000; // 1分钟缓存TTL
+
+/**
+ * 获取缓存的反馈指标（带TTL）
+ * @returns {Promise<{positivityRate: number, total: number}>}
+ */
+async function getCachedFeedbackMetrics() {
+  const now = Date.now();
+  if (cachedFeedbackMetrics && (now - feedbackMetricsCacheTime) < FEEDBACK_CACHE_TTL) {
+    return cachedFeedbackMetrics;
+  }
+
+  try {
+    const metrics = await storage.getFeedbackMetrics();
+    cachedFeedbackMetrics = {
+      positivityRate: metrics.positivityRate || 0,
+      total: metrics.total || 0,
+      positive: metrics.positive || 0,
+      negative: metrics.negative || 0
+    };
+    feedbackMetricsCacheTime = now;
+    return cachedFeedbackMetrics;
+  } catch (error) {
+    // 如果获取失败，返回默认值
+    return { positivityRate: 0.5, total: 0, positive: 0, negative: 0 };
+  }
+}
+
+/**
+ * 计算历史效果加成
+ * 基于用户反馈的正面率来调整检索权重
+ * @param {string} query - 查询文本
+ * @param {Array} vectorResults - 向量检索结果
+ * @returns {Promise<number>} 历史加成值 (0-1)
+ */
+async function computeHistoricalBoost(query, vectorResults) {
+  try {
+    const metrics = await getCachedFeedbackMetrics();
+
+    // 如果没有足够的反馈数据，返回中性值
+    if (metrics.total < 5) {
+      return 0;
+    }
+
+    // 基于正面率计算基础加成
+    // positivityRate = 0.5 (50%) -> boost = 0
+    // positivityRate = 0.8 (80%) -> boost = 0.3
+    // positivityRate = 0.3 (30%) -> boost = -0.2
+    const neutralRate = 0.5;
+    const baseBoost = (metrics.positivityRate - neutralRate) * 0.6;
+
+    // 如果有结果，检查是否有负样本惩罚
+    if (vectorResults && vectorResults.length > 0) {
+      const topResult = vectorResults[0];
+      const docId = topResult.documentId || topResult.id;
+      if (docId) {
+        const penalty = await storage.getNegativePenalty(query, docId);
+        if (penalty < 0) {
+          // 如果有负样本惩罚，减少加成
+          return Math.max(0, baseBoost + penalty);
+        }
+      }
+    }
+
+    return Math.max(0, Math.min(1, baseBoost));
+  } catch (error) {
+    // 发生错误时返回中性值
+    return 0;
+  }
+}
 
 function isDefaultCategoryName(name) {
   if (!name) return true;
@@ -88,53 +174,211 @@ function countQueryEntities(query) {
 }
 
 /**
- * 动态计算知识图谱权重
- * 根据查询特征、KG 结果置信度和向量检索分数分布自动调整权重
+ * 计算查询复杂度 (0-1)
+ * @param {string} query - 查询文本
+ * @returns {number} 复杂度分数
+ */
+function computeQueryComplexity(query) {
+  if (!query) return 0;
+
+  let complexity = 0;
+
+  // 1. 长度因子
+  const lengthScore = Math.min(query.length / 100, 1) * 0.25;
+  complexity += lengthScore;
+
+  // 2. 技术术语密度
+  const techTerms = query.match(/\b(bgp|ospf|evpn|vxlan|mlag|vrrp|lacp|bond|vlan|vrf|acl|qos|bfd|ecmp|roce|rdma|pfc|ecn)\b/gi) || [];
+  const techScore = Math.min(techTerms.length / 3, 1) * 0.25;
+  complexity += techScore;
+
+  // 3. 多实体检测
+  const entities = new Set(techTerms.map(t => t.toLowerCase()));
+  if (entities.size >= 2) {
+    complexity += 0.2;
+  }
+
+  // 4. 多意图检测
+  const intentPatterns = [
+    /配置|设置|安装|部署|步骤|how to|configure/i,
+    /查看|查询|显示|状态|show|display|status/i,
+    /故障|异常|错误|问题|排错|troubleshoot|error/i,
+    /什么是|含义|定义|原理|概念|what is/i
+  ];
+  const matchedIntents = intentPatterns.filter(p => p.test(query)).length;
+  if (matchedIntents >= 2) {
+    complexity += 0.15;
+  }
+
+  // 5. 复合句检测
+  if (/和|以及|同时|另外|还有|并且|而且/.test(query)) {
+    complexity += 0.15;
+  }
+
+  return Math.min(complexity, 1);
+}
+
+/**
+ * 检测文档类型与意图匹配度
+ * @param {string} query - 查询文本
+ * @param {Array} results - 检索结果
+ * @returns {number} 匹配度分数 (0-1)
+ */
+function computeDocumentTypeMatch(query, results) {
+  if (!results || results.length === 0) return 0;
+
+  const queryLower = query.toLowerCase();
+
+  // 检测查询意图
+  const isConfigQuery = /配置|设置|安装|部署|步骤|how to|configure|setup/i.test(query);
+  const isShowQuery = /查看|查询|显示|状态|show|display|status|state/i.test(query);
+  const isTroubleshootQuery = /故障|异常|错误|问题|排错|troubleshoot|error|fail|issue/i.test(query);
+  const isConceptQuery = /什么是|含义|定义|原理|概念|what is|overview|introduction/i.test(query);
+
+  let matchScore = 0;
+  let totalWeight = 0;
+
+  for (const result of results.slice(0, 5)) {
+    const content = (result.content || '').toLowerCase();
+    const weight = result.score || 0.5;
+    totalWeight += weight;
+
+    let docTypeMatch = 0;
+
+    if (isConfigQuery) {
+      // 配置类查询：检查是否包含配置步骤或命令
+      if (/nv set|configure|配置步骤|follow these steps|step \d+/i.test(content)) {
+        docTypeMatch = 1;
+      } else if (/```|command|命令/i.test(content)) {
+        docTypeMatch = 0.7;
+      }
+    } else if (isShowQuery) {
+      // 查看类查询：检查是否包含查看命令或状态信息
+      if (/nv show|show |display|状态|output/i.test(content)) {
+        docTypeMatch = 1;
+      }
+    } else if (isTroubleshootQuery) {
+      // 故障类查询：检查是否包含故障排查内容
+      if (/troubleshoot|故障|error|排查|解决方案|solution/i.test(content)) {
+        docTypeMatch = 1;
+      }
+    } else if (isConceptQuery) {
+      // 概念类查询：检查是否包含概念解释
+      if (/overview|introduction|概述|简介|是.*一种|定义/i.test(content)) {
+        docTypeMatch = 1;
+      }
+    } else {
+      docTypeMatch = 0.5; // 默认
+    }
+
+    matchScore += docTypeMatch * weight;
+  }
+
+  return totalWeight > 0 ? matchScore / totalWeight : 0;
+}
+
+/**
+ * 动态计算知识图谱权重（增强版）
+ * 根据查询特征、KG 结果置信度、向量检索分数分布和新增因子自动调整权重
  * @param {string} query - 用户查询
  * @param {Array} kgResults - 知识图谱检索结果
  * @param {Array} vectorResults - 向量检索结果
  * @param {number} baseWeight - 基础权重
+ * @param {Object} options - 额外选项
  * @returns {Object} { weight: number, factors: Object }
  */
-function computeDynamicWeight(query, kgResults, vectorResults, baseWeight = 0.25) {
+async function computeDynamicWeight(query, kgResults, vectorResults, baseWeight = 0.25, options = {}) {
+  const { queryComplexity: precomputedComplexity = null } = options;
+
+  const config = DYNAMIC_WEIGHT_CONFIG || {
+    factors: {
+      kgConfidence: 0.20,
+      scoreVariance: 0.25,
+      entityDensity: 0.20,
+      queryComplexity: 0.15,
+      documentTypeMatch: 0.15,
+      historicalBoost: 0.05
+    },
+    minWeight: 0.1,
+    maxWeight: 0.6,
+    maxWeightComplex: 0.7,
+    baseWeight: 0.25,
+    varianceMax: 0.5,
+    entityDensityCoeff: 0.1,
+    entityDensityMax: 0.3
+  };
+
   const factors = {
     kgConfidence: 0,
     scoreVariance: 0,
     entityDensity: 0,
+    queryComplexity: 0,
+    documentTypeMatch: 0,
+    historicalBoost: 0,
     adjustment: 0
   };
 
   // 1. KG 结果置信度因子
-  // 高置信度结果（relevance > 0.9）越多，权重越高
   if (kgResults && kgResults.length > 0) {
     const highConfidenceCount = kgResults.filter(r => (r.relevance || 0) > 0.9).length;
     factors.kgConfidence = highConfidenceCount / kgResults.length;
   }
 
   // 2. 向量检索分数方差因子
-  // 分数方差越大（不确定性高），KG 权重应该越高以帮助区分
   if (vectorResults && vectorResults.length > 1) {
     const scores = vectorResults.map(r => r.score || 0);
-    factors.scoreVariance = Math.min(computeVariance(scores), 0.5); // 上限 0.5
+    factors.scoreVariance = Math.min(computeVariance(scores), config.varianceMax);
   }
 
   // 3. 查询实体密度因子
-  // 查询中实体越多，KG 越有价值
   const entityCount = countQueryEntities(query);
-  factors.entityDensity = Math.min(entityCount * 0.1, 0.3); // 上限 0.3
+  factors.entityDensity = Math.min(entityCount * config.entityDensityCoeff, config.entityDensityMax);
 
-  // 计算最终调整
+  // 4. 查询复杂度因子（新增）
+  const complexity = precomputedComplexity !== null
+    ? precomputedComplexity
+    : computeQueryComplexity(query);
+  factors.queryComplexity = complexity;
+
+  // 5. 文档类型匹配度因子（新增）
+  factors.documentTypeMatch = computeDocumentTypeMatch(query, vectorResults);
+
+  // 6. 历史效果加成因子（基于用户反馈）
+  factors.historicalBoost = await computeHistoricalBoost(query, vectorResults);
+
+  // 计算最终调整值（使用配置的因子权重）
+  const factorWeights = config.factors;
   factors.adjustment =
-    factors.kgConfidence * 0.3 +    // KG 置信度贡献 30%
-    factors.scoreVariance * 0.4 +    // 向量分数方差贡献 40%
-    factors.entityDensity * 0.3;     // 实体密度贡献 30%
+    factors.kgConfidence * (factorWeights.kgConfidence || 0.20) +
+    factors.scoreVariance * (factorWeights.scoreVariance || 0.25) +
+    factors.entityDensity * (factorWeights.entityDensity || 0.20) +
+    factors.queryComplexity * (factorWeights.queryComplexity || 0.15) +
+    factors.documentTypeMatch * (factorWeights.documentTypeMatch || 0.15) +
+    factors.historicalBoost * (factorWeights.historicalBoost || 0.05);
 
-  // 最终权重 = 基础权重 * (1 + 调整因子)，上限为 0.6
-  const finalWeight = Math.min(baseWeight * (1 + factors.adjustment), 0.6);
+  // 动态上限：复杂查询允许更高的 KG 权重
+  const maxWeight = complexity > 0.6 ? config.maxWeightComplex : config.maxWeight;
+
+  // 最终权重 = 基础权重 * (1 + 调整因子)
+  const finalWeight = Math.max(
+    config.minWeight,
+    Math.min(baseWeight * (1 + factors.adjustment), maxWeight)
+  );
+
+  // 调试日志
+  if (process.env.DEBUG_HYBRID_RETRIEVAL === 'true') {
+    console.log('[DynamicWeight] 因子详情:', {
+      query: query.substring(0, 50),
+      factors,
+      baseWeight,
+      finalWeight
+    });
+  }
 
   return {
     weight: finalWeight,
-    factors
+    factors,
+    complexity
   };
 }
 
@@ -160,32 +404,36 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
   }
 
   try {
-    // 1. 从知识图谱中检索相关实体（单跳）
-    const kgResults = await knowledgeGraph.queryKnowledgeGraph(query, maxKgResults);
+    // 并行执行三个独立的知识图谱查询
+    const [kgResults, multiHopResults, kgChunks] = await Promise.all([
+      // 1. 从知识图谱中检索相关实体（单跳）
+      knowledgeGraph.queryKnowledgeGraph(query, maxKgResults).catch(e => {
+        console.warn('[HybridRetrieval] KG查询失败:', e.message);
+        return [];
+      }),
 
-    // 2. 多跳图谱遍历（发现间接关系）
-    let multiHopResults = { entities: [], paths: [], context: '' };
-    if (enableMultiHop && knowledgeGraph.multiHopQuery) {
-      try {
-        multiHopResults = await knowledgeGraph.multiHopQuery(query, { maxHops, limit: 15 });
-        if (multiHopResults.entities.length > 0) {
-          console.log(`[HybridRetrieval] 多跳查询发现 ${multiHopResults.entities.length} 个相关实体`);
-        }
-      } catch (e) {
-        console.log('[HybridRetrieval] 多跳查询不可用:', e.message);
-      }
+      // 2. 多跳图谱遍历（发现间接关系）
+      (enableMultiHop && knowledgeGraph.multiHopQuery)
+        ? knowledgeGraph.multiHopQuery(query, { maxHops, limit: 15 }).catch(e => {
+            console.log('[HybridRetrieval] 多跳查询不可用:', e.message);
+            return { entities: [], paths: [], context: '' };
+          })
+        : Promise.resolve({ entities: [], paths: [], context: '' }),
+
+      // 3. 获取基于实体的相关 chunks（使用 MENTIONS 关系）
+      knowledgeGraph.getChunksFromQuery
+        ? knowledgeGraph.getChunksFromQuery(query, 5).catch(e => {
+            console.log('[HybridRetrieval] getChunksFromQuery 不可用，跳过 chunk 交叉引用');
+            return [];
+          })
+        : Promise.resolve([])
+    ]);
+
+    if (multiHopResults.entities?.length > 0) {
+      console.log(`[HybridRetrieval] 多跳查询发现 ${multiHopResults.entities.length} 个相关实体`);
     }
 
-    // 3. 获取基于实体的相关 chunks（使用 MENTIONS 关系）
-    let kgChunks = [];
-    try {
-      kgChunks = await knowledgeGraph.getChunksFromQuery(query, 5);
-    } catch (e) {
-      // getChunksFromQuery 可能不存在于旧版本
-      console.log('[HybridRetrieval] getChunksFromQuery 不可用，跳过 chunk 交叉引用');
-    }
-
-    const hasKgResults = kgResults.length > 0 || kgChunks.length > 0 || multiHopResults.entities.length > 0;
+    const hasKgResults = kgResults.length > 0 || kgChunks.length > 0 || (multiHopResults.entities?.length || 0) > 0;
     if (!hasKgResults) {
       console.log('[HybridRetrieval] 知识图谱未找到相关结果，使用纯向量检索');
       return vectorResults;
@@ -196,7 +444,7 @@ export async function hybridRetrieval(query, vectorResults, options = {}) {
     let dynamicFactors = null;
 
     if (useDynamicWeight) {
-      const dynamicResult = computeDynamicWeight(query, kgResults, vectorResults, kgWeight);
+      const dynamicResult = await computeDynamicWeight(query, kgResults, vectorResults, kgWeight);
       effectiveWeight = dynamicResult.weight;
       dynamicFactors = dynamicResult.factors;
 
@@ -499,7 +747,141 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
 }
 
 /**
- * 智能路由：根据查询类型决定检索策略
+ * 检测查询信号
+ * @param {string} query - 查询文本
+ * @returns {Object} 信号检测结果
+ */
+function detectQuerySignals(query) {
+  const safeQuery = typeof query === 'string' ? query : '';
+  const queryLower = safeQuery.toLowerCase();
+
+  const signals = {
+    vendor: { detected: false, score: 0, matches: [] },
+    command: { detected: false, score: 0, matches: [] },
+    function: { detected: false, score: 0, matches: [] },
+    concept: { detected: false, score: 0, matches: [] },
+    troubleshoot: { detected: false, score: 0, matches: [] },
+    comparison: { detected: false, score: 0, matches: [] },
+    list: { detected: false, score: 0, matches: [] }
+  };
+
+  // 厂商信号
+  const vendorPatterns = [
+    /厂商|vendor|manufacturer|supplier|provider/i,
+    /供应商|公司|集团|品牌/i,
+    /\b(nvidia|cumulus|cisco|juniper|arista|mellanox)\b/i
+  ];
+  for (const pattern of vendorPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.vendor.detected = true;
+      signals.vendor.score += 0.3;
+      signals.vendor.matches.push(match[0]);
+    }
+  }
+
+  // 命令信号
+  const commandPatterns = [
+    { pattern: /\bnv\s+(set|show|config|unset|action)\b/i, weight: 0.5 },
+    { pattern: /\b(show|display|list|get)\b\s+\w+/i, weight: 0.3 },
+    { pattern: /命令|command|cli/i, weight: 0.2 },
+    { pattern: /(如何|怎么|怎样).*(配置|设置|启用|禁用)/i, weight: 0.6 },  // 提高权重，使其覆盖功能信号
+    { pattern: /(configure|enable|disable)\s+\w+/i, weight: 0.3 },
+    { pattern: /```[\s\S]*?```/, weight: 0.3 } // 代码块
+  ];
+  for (const { pattern, weight } of commandPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.command.detected = true;
+      signals.command.score += weight;
+      signals.command.matches.push(match[0]);
+    }
+  }
+
+  // 功能信号
+  const functionPatterns = [
+    { pattern: /\b(BGP|OSPF|EVPN|VXLAN|MLAG|LACP|RoCE|ACL|VLAN|VRF|VRRP|BFD|ECMP|PFC|ECN)\b/i, weight: 0.3 },
+    { pattern: /功能|feature|protocol|协议/i, weight: 0.2 }
+  ];
+  for (const { pattern, weight } of functionPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.function.detected = true;
+      signals.function.score += weight;
+      signals.function.matches.push(match[0]);
+    }
+  }
+
+  // 概念信号
+  const conceptPatterns = [
+    { pattern: /什么是|what is|介绍|explain/i, weight: 0.4 },
+    { pattern: /原理|principle|工作方式|机制/i, weight: 0.3 },
+    { pattern: /概念|概述|overview|introduction|定义/i, weight: 0.3 }
+  ];
+  for (const { pattern, weight } of conceptPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.concept.detected = true;
+      signals.concept.score += weight;
+      signals.concept.matches.push(match[0]);
+    }
+  }
+
+  // 故障排查信号
+  const troubleshootPatterns = [
+    { pattern: /故障|异常|错误|问题|排错|排查/i, weight: 0.4 },
+    { pattern: /troubleshoot|debug|diagnose|error|fail|issue/i, weight: 0.4 },
+    { pattern: /不工作|无法|cannot|unable|doesn't work/i, weight: 0.3 },
+    { pattern: /为什么.{0,6}不|why.{0,6}not/i, weight: 0.3 }
+  ];
+  for (const { pattern, weight } of troubleshootPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.troubleshoot.detected = true;
+      signals.troubleshoot.score += weight;
+      signals.troubleshoot.matches.push(match[0]);
+    }
+  }
+
+  // 比较信号
+  const comparisonPatterns = [
+    { pattern: /区别|差异|不同|对比|比较|vs|versus/i, weight: 0.4 },
+    { pattern: /哪个更好|which is better|优缺点|pros and cons/i, weight: 0.3 },
+    { pattern: /和.{1,10}(区别|对比|比较)/i, weight: 0.3 }
+  ];
+  for (const { pattern, weight } of comparisonPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.comparison.detected = true;
+      signals.comparison.score += weight;
+      signals.comparison.matches.push(match[0]);
+    }
+  }
+
+  // 列表信号
+  const listPatterns = [
+    { pattern: /有哪些|列出|列举|所有|全部|list all/i, weight: 0.4 },
+    { pattern: /支持哪些|都有什么|有多少/i, weight: 0.3 }
+  ];
+  for (const { pattern, weight } of listPatterns) {
+    const match = safeQuery.match(pattern);
+    if (match) {
+      signals.list.detected = true;
+      signals.list.score += weight;
+      signals.list.matches.push(match[0]);
+    }
+  }
+
+  // 限制分数上限
+  for (const key in signals) {
+    signals[key].score = Math.min(signals[key].score, 1);
+  }
+
+  return signals;
+}
+
+/**
+ * 智能路由：根据查询类型决定检索策略（增强版）
  * @param {string} query - 用户查询
  * @returns {Object} 检索策略配置
  */
@@ -507,6 +889,12 @@ async function enhanceWithKnowledgeGraph(vectorResults, kgResults, kgContext, kg
 export function determineRetrievalStrategy(query) {
   const safeQuery = typeof query === 'string' ? query : '';
   const queryLower = safeQuery.toLowerCase();
+
+  // 检测所有信号
+  const signals = detectQuerySignals(safeQuery);
+
+  // 计算查询复杂度
+  const complexity = computeQueryComplexity(safeQuery);
 
   const vendorNames = loadVendorNamesFromCategories();
   const vendorDetection = knowledgeGraph.detectPreferredVendors(safeQuery, vendorNames, {
@@ -524,92 +912,130 @@ export function determineRetrievalStrategy(query) {
   const hasFunctions = queryEntities.functions?.length > 0;
   const usesDefaultVendor = vendorDetection.usedDefault === true;
 
-  const vendorSignals = [
-    /厂商|vendor|manufacturer|supplier|provider/i,
-    /供应商|公司|集团|品牌/i
-  ];
-  const hasVendorSignal = vendorSignals.some(pattern => pattern.test(queryLower));
-
-  const commandPatterns = [
-    /\bnv\s+(set|show|config|unset)/i,
-    /\b(show|display|list|get)\b\s+\w+/i,
-    /命令|command|cli/i,
-    /(如何|怎么|怎样).*(配置|设置|启用|禁用)/i,
-    /(configure|enable|disable)\s+\w+/i
-  ];
-  const hasCommandSignal = hasCommands || commandPatterns.some(pattern => pattern.test(query));
-
-  const functionPatterns = [
-    /\b(BGP|OSPF|EVPN|VXLAN|MLAG|LACP|RoCE|ACL|VLAN|VRF)\b/i,
-    /功能|feature|protocol|协议/i
-  ];
-  const hasFunctionSignal = hasFunctions || functionPatterns.some(pattern => pattern.test(query));
-
-  const conceptPatterns = [
-    /什么是|what is|介绍|explain/i,
-    /原理|principle|工作方式/i
-  ];
-  const hasConceptSignal = conceptPatterns.some(pattern => pattern.test(query));
+  // 更新信号状态
+  if (hasVendors) signals.vendor.detected = true;
+  if (hasCommands) {
+    signals.command.detected = true;
+    signals.command.score += 0.3;
+  }
+  if (hasFunctions) {
+    signals.function.detected = true;
+    signals.function.score += 0.2;
+  }
 
   /** @type {Object} */
-  const finalStrategy = {
-    strategy: 'balanced',
+  const defaultConfig = STRATEGY_CONFIG?.['balanced'] || {
     enableKnowledgeGraph: false,
-    kgWeight: 0.05,
+    kgWeight: 0.1,
     maxKgResults: 5,
-    preferredVendors: vendorDetection.preferredVendors,
-    defaultVendor: DEFAULT_VENDOR_NAME
+    keywordBoost: 1.0,
+    vectorBoost: 1.0,
+    enableMultiHop: false
   };
 
-  // 1. 厂商相关查询
-  if (hasVendors || hasVendorSignal) {
-    Object.assign(finalStrategy, {
-      strategy: 'vendor-focused',
-      enableKnowledgeGraph: true,
-      kgWeight: 0.4,
-      maxKgResults: 8
-    });
+  const finalStrategy = {
+    strategy: 'balanced',
+    ...defaultConfig,
+    preferredVendors: vendorDetection.preferredVendors,
+    defaultVendor: DEFAULT_VENDOR_NAME,
+    complexity,
+    signals
+  };
+
+  // 使用信号分数排序确定主策略（映射到4种核心策略）
+  const signalScores = [
+    {
+      type: 'command-focused',
+      score: Math.max(signals.vendor.score, signals.command.score),
+      detected: signals.command.detected || signals.vendor.detected || hasVendors
+    },
+    {
+      type: 'concept-focused',
+      score: Math.max(signals.function.score, signals.concept.score),
+      detected: signals.function.detected || signals.concept.detected
+    },
+    {
+      type: 'troubleshoot-focused',
+      score: signals.troubleshoot.score,
+      detected: signals.troubleshoot.detected
+    },
+    {
+      type: 'balanced',
+      score: signals.comparison.score,
+      detected: signals.comparison.detected
+    }
+  ];
+
+  // 按分数排序，选择最强信号
+  signalScores.sort((a, b) => b.score - a.score);
+
+  const threshold = SIGNAL_THRESHOLDS?.strategyConfidence || 0.3;
+  const topSignal = signalScores.find(s => s.detected && s.score >= threshold);
+
+  if (topSignal) {
+    const strategyName = topSignal.type;
+    const strategyConfig = STRATEGY_CONFIG?.[strategyName];
+
+    if (strategyConfig) {
+      Object.assign(finalStrategy, {
+        strategy: strategyName,
+        ...strategyConfig
+      });
+
+      // 复杂查询调整
+      if (complexity > (SIGNAL_THRESHOLDS?.complexityThreshold || 0.6)) {
+        // 复杂查询：增加 KG 权重和结果数量
+        if (strategyConfig.kgWeightComplex) {
+          finalStrategy.kgWeight = strategyConfig.kgWeightComplex;
+        }
+        if (strategyConfig.maxKgResultsComplex) {
+          finalStrategy.maxKgResults = strategyConfig.maxKgResultsComplex;
+        }
+        // 复杂查询启用多跳
+        if (complexity > 0.7 && !finalStrategy.enableMultiHop) {
+          finalStrategy.enableMultiHop = true;
+        }
+      }
+
+      // 使用默认厂商时降低权重
+      if (usesDefaultVendor && finalStrategy.kgWeight > 0.2) {
+        finalStrategy.kgWeight *= 0.8;
+      }
+    }
   }
-  // 2. 命令相关查询 - 增强命令检测和权重
-  else if (hasCommandSignal) {
-    // 判断是否是强命令查询（包含具体命令语法）
+
+  // 特殊处理：故障排查总是启用多跳
+  if (signals.troubleshoot.detected && signals.troubleshoot.score > 0.3) {
+    finalStrategy.enableMultiHop = true;
+  }
+
+  // 命令查询的额外优化
+  if (signals.command.detected && signals.command.score > 0.4) {
+    // 判断是否是强命令查询
     const strongCommandPatterns = [
       /\bnv\s+(set|show|config|unset|action)\b/i,
-      /\b(configure|no\s+\w+)\b/i,
-      /```[\s\S]*?```/,                    // 包含代码块
+      /```[\s\S]*?```/,
       /如何.*(配置|设置|启用|禁用|查看)/i,
-      /怎么.*(配置|设置|启用|禁用|查看)/i,
-      /(show|display)\s+(interface|route|bgp|evpn|mlag)/i
+      /怎么.*(配置|设置|启用|禁用|查看)/i
     ];
-    const isStrongCommandQuery = strongCommandPatterns.some(p => p.test(query));
+    const isStrongCommandQuery = strongCommandPatterns.some(p => p.test(safeQuery));
 
-    Object.assign(finalStrategy, {
-      strategy: 'command-focused',
-      enableKnowledgeGraph: true,
-      kgWeight: isStrongCommandQuery ? 0.4 : (usesDefaultVendor ? 0.3 : 0.35),
-      maxKgResults: isStrongCommandQuery ? 8 : 6,
-      prioritizeCommands: true,              // 新增：优先命令结果
-      commandBoostMultiplier: isStrongCommandQuery ? 1.5 : 1.2  // 新增：命令加分倍数
-    });
+    if (isStrongCommandQuery) {
+      finalStrategy.prioritizeCommands = true;
+      finalStrategy.commandBoostMultiplier = 1.5;
+      if (finalStrategy.kgWeight < 0.4) {
+        finalStrategy.kgWeight = 0.4;
+      }
+      if (finalStrategy.maxKgResults < 8) {
+        finalStrategy.maxKgResults = 8;
+      }
+    } else {
+      finalStrategy.prioritizeCommands = true;
+      finalStrategy.commandBoostMultiplier = 1.2;
+    }
   }
-  // 3. 功能相关查询
-  else if (hasFunctionSignal) {
-    Object.assign(finalStrategy, {
-      strategy: 'function-focused',
-      enableKnowledgeGraph: true,
-      kgWeight: usesDefaultVendor ? 0.2 : 0.3,
-      maxKgResults: 5
-    });
-  }
-  // 4. 概念性查询
-  else if (hasConceptSignal) {
-    Object.assign(finalStrategy, {
-      strategy: 'concept-focused',
-      enableKnowledgeGraph: false,
-      kgWeight: 0.1,
-      maxKgResults: 3
-    });
-  }
+
+  console.log(`[Strategy] ${finalStrategy.strategy} (complexity=${complexity.toFixed(2)}, kgWeight=${finalStrategy.kgWeight})`);
 
   return finalStrategy;
 }

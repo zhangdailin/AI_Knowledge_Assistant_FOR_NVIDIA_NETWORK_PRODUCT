@@ -23,6 +23,7 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        if (ws !== wsRef.current) return;
         console.log('[WebSocket] 已连接');
 
         // Start heartbeat
@@ -40,6 +41,7 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
       };
 
       ws.onmessage = (event) => {
+        if (ws !== wsRef.current) return;
         try {
           const message = JSON.parse(event.data);
 
@@ -58,10 +60,14 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
       };
 
       ws.onerror = (error) => {
-        console.error('[WebSocket] 错误:', error);
+        if (ws !== wsRef.current) return;
+        if (!isUnmountedRef.current) {
+          console.error('[WebSocket] 错误:', error);
+        }
       };
 
       ws.onclose = () => {
+        if (ws !== wsRef.current) return;
         console.log('[WebSocket] 已断开，5秒后重连...');
 
         // Clear heartbeat timers
@@ -87,10 +93,23 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
   }, [onMessage]);
 
   useEffect(() => {
-    connect();
+    isUnmountedRef.current = false;
+
+    // Use a small timeout to debounce the connection.
+    // In Strict Mode, the component mounts, unmounts, and mounts again immediately.
+    // This delay ensures we don't open a socket during the first (temporary) mount,
+    // avoiding the "WebSocket is closed before the connection is established" warning
+    // when that first socket is immediately closed.
+    const startTimeout = setTimeout(() => {
+      if (!isUnmountedRef.current) {
+        connect();
+      }
+    }, 100);
 
     return () => {
       isUnmountedRef.current = true;
+      clearTimeout(startTimeout);
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -101,6 +120,8 @@ export function useWebSocket(onMessage: (message: WebSocketMessage) => void) {
         clearTimeout(pongTimeoutRef.current);
       }
       if (wsRef.current) {
+        // 防止关闭正在连接中的 socket 导致浏览器控制台报错
+        // 但 Strict Mode 下不可避免会触发 "closed before established"
         wsRef.current.close();
       }
     };

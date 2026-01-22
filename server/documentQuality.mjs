@@ -1,3 +1,5 @@
+import { BASE_COMMAND_PATTERNS } from './constants.mjs';
+
 /**
  * 文档质量评分系统
  * 基于多维度指标评估文档质量，优先推荐高质量内容
@@ -176,12 +178,8 @@ function evaluateTechnicalContent(chunks, insights) {
     score += 3;
   }
 
-  // 检查是否有命令示例
-  const commandPatterns = [
-    /nv\s+(set|show|config|unset)/gi,
-    /netq\s+(show|check|trace)/gi,
-    /ip\s+(route|link|addr)/gi
-  ];
+  // 检查是否有命令示例（使用统一的基础模式）
+  const commandPatterns = BASE_COMMAND_PATTERNS.map(p => new RegExp(p.source, 'gi'));
 
   let commandCount = 0;
   for (const pattern of commandPatterns) {

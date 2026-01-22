@@ -70,8 +70,8 @@ describe('Knowledge Graph Module', () => {
 
       const extractCommands = (text: string) => {
         const patterns = [
-          /\bnv\s+(set|show|config|unset)\s+[\w\-\.]+(?:\s+[\w\-\.]+)*/gi,
-          /\b(ip|ifconfig)\s+[\w\-]+/gi
+          /\bnv\s+(set|show|config|unset)\s+[\w.-]+(?:\s+[\w.-]+)*/gi,
+          /\b(ip|ifconfig)\s+[\w-]+/gi
         ];
 
         const commands = [];

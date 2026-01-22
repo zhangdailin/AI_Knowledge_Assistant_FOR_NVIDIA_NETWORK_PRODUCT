@@ -38,8 +38,14 @@ describe('Query Expansion', () => {
       expect(result.some(v => v.includes('检查') || v.includes('show') || v.includes('显示'))).toBe(true);
     });
 
-    it('should limit variants to 10', () => {
+    it('should limit variants to maxVariants (default 15)', () => {
       const result = expandQuery('如何配置BGP EVPN VXLAN');
+      // v2.0: 默认最大变体数从 10 增加到 15
+      expect(result.length).toBeLessThanOrEqual(15);
+    });
+
+    it('should respect custom maxVariants option', () => {
+      const result = expandQuery('如何配置BGP EVPN VXLAN', { maxVariants: 10 });
       expect(result.length).toBeLessThanOrEqual(10);
     });
 

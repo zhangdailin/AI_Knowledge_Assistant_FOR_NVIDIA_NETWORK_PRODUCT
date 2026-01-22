@@ -22,45 +22,98 @@ interface Stats {
 
 type SystemStatus = 'checking' | 'online' | 'offline' | 'error';
 
+// 统一的系统状态配置
+const STATUS_CONFIG: Record<SystemStatus, {
+  title: string;
+  description: string;
+  gradient: string;
+  indicatorColor: string;
+  label: string;
+}> = {
+  checking: {
+    title: '正在检测...',
+    description: '正在连接后端服务...',
+    gradient: 'bg-gradient-to-r from-gray-400 to-gray-500',
+    indicatorColor: 'bg-yellow-400 animate-pulse',
+    label: '检测中'
+  },
+  online: {
+    title: '系统运行正常',
+    description: '后端服务响应正常，知识库已就绪',
+    gradient: 'bg-gradient-to-r from-indigo-500 to-purple-600',
+    indicatorColor: 'bg-green-400 animate-pulse',
+    label: '在线'
+  },
+  offline: {
+    title: '服务器离线',
+    description: '无法连接到后端服务',
+    gradient: 'bg-gradient-to-r from-red-500 to-orange-500',
+    indicatorColor: 'bg-red-400',
+    label: '离线'
+  },
+  error: {
+    title: '服务异常',
+    description: '无法连接到后端服务',
+    gradient: 'bg-gradient-to-r from-red-500 to-orange-500',
+    indicatorColor: 'bg-red-400',
+    label: '异常'
+  }
+};
+
+// 统一的状态更新函数类型
+interface SystemState {
+  stats: Stats | null;
+  status: SystemStatus;
+  error: string;
+  loading: boolean;
+}
+
 const Dashboard: React.FC = () => {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [systemStatus, setSystemStatus] = useState<SystemStatus>('checking');
-  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [state, setState] = useState<SystemState>({
+    stats: null,
+    status: 'checking',
+    error: '',
+    loading: true
+  });
+
+  // 统一的状态更新方法
+  const updateState = (updates: Partial<SystemState>) => {
+    setState(prev => ({ ...prev, ...updates }));
+  };
 
   useEffect(() => {
     fetchStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchStats = async () => {
-    setSystemStatus('checking');
-    setErrorMessage('');
+    updateState({ status: 'checking', error: '' });
     try {
       const response = await fetch(`${getApiServerUrl()}/api/stats`);
       if (response.ok) {
         const data = await response.json();
         if (data.ok !== false) {
-          setStats(data);
-          setSystemStatus('online');
+          updateState({ stats: data, status: 'online', loading: false });
         } else {
-          setStats(null);
-          setSystemStatus('error');
-          setErrorMessage(data.error || '获取数据失败');
+          updateState({ stats: null, status: 'error', error: data.error || '获取数据失败', loading: false });
         }
       } else {
-        setStats(null);
-        setSystemStatus('offline');
-        setErrorMessage(`服务器响应错误: ${response.status}`);
+        updateState({ stats: null, status: 'offline', error: `服务器响应错误: ${response.status}`, loading: false });
       }
     } catch (error) {
       console.error('获取统计数据失败:', error);
-      setStats(null);
-      setSystemStatus('offline');
-      setErrorMessage(error instanceof Error ? error.message : '无法连接到服务器');
-    } finally {
-      setLoading(false);
+      updateState({
+        stats: null,
+        status: 'offline',
+        error: error instanceof Error ? error.message : '无法连接到服务器',
+        loading: false
+      });
     }
   };
+
+  // 解构状态以便使用
+  const { stats, status, error, loading } = state;
+  const statusConfig = STATUS_CONFIG[status];
 
   if (loading) {
     return (
@@ -79,7 +132,7 @@ const Dashboard: React.FC = () => {
   }
 
   if (!stats) {
-    // API 失败时显示错误状态
+    // API 失败时显示错误状态 - 使用统一的状态配置
     return (
       <div className="admin-page">
         <div className="max-w-6xl mx-auto space-y-6">
@@ -101,21 +154,19 @@ const Dashboard: React.FC = () => {
         <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
           <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-red-700">无法获取统计数据</h3>
-          <p className="text-red-600 mt-2">{errorMessage || '请检查后端服务是否正常运行'}</p>
+          <p className="text-red-600 mt-2">{error || '请检查后端服务是否正常运行'}</p>
         </div>
 
-        {/* 系统状态 */}
-        <div className="bg-gradient-to-r from-red-500 to-orange-500 rounded-xl p-6 text-white">
+        {/* 系统状态 - 使用统一配置 */}
+        <div className={`${statusConfig.gradient} rounded-xl p-6 text-white`}>
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold">
-                {systemStatus === 'offline' ? '服务器离线' : '服务异常'}
-              </h3>
-              <p className="text-white/80 mt-1">{errorMessage || '无法连接到后端服务'}</p>
+              <h3 className="text-lg font-semibold">{statusConfig.title}</h3>
+              <p className="text-white/80 mt-1">{error || statusConfig.description}</p>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-3 h-3 bg-red-400 rounded-full" />
-              <span className="text-sm font-medium">{systemStatus === 'offline' ? '离线' : '异常'}</span>
+              <span className={`w-3 h-3 rounded-full ${statusConfig.indicatorColor}`} />
+              <span className="text-sm font-medium">{statusConfig.label}</span>
             </div>
           </div>
         </div>
@@ -288,38 +339,18 @@ const Dashboard: React.FC = () => {
         </ResponsiveContainer>
       </div>
 
-      {/* 系统状态 - 真实检测 */}
-      <div className={`rounded-xl p-6 text-white ${
-        systemStatus === 'online' ? 'bg-gradient-to-r from-indigo-500 to-purple-600' :
-        systemStatus === 'checking' ? 'bg-gradient-to-r from-gray-400 to-gray-500' :
-        'bg-gradient-to-r from-red-500 to-orange-500'
-      }`}>
+      {/* 系统状态 - 使用统一配置 */}
+      <div className={`${statusConfig.gradient} rounded-xl p-6 text-white`}>
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold">
-              {systemStatus === 'online' && '系统运行正常'}
-              {systemStatus === 'checking' && '正在检测...'}
-              {systemStatus === 'offline' && '服务器离线'}
-              {systemStatus === 'error' && '服务异常'}
-            </h3>
+            <h3 className="text-lg font-semibold">{statusConfig.title}</h3>
             <p className="text-white/80 mt-1">
-              {systemStatus === 'online' && '后端服务响应正常，知识库已就绪'}
-              {systemStatus === 'checking' && '正在连接后端服务...'}
-              {(systemStatus === 'offline' || systemStatus === 'error') && (errorMessage || '无法连接到后端服务')}
+              {status === 'online' ? statusConfig.description : (error || statusConfig.description)}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className={`w-3 h-3 rounded-full ${
-              systemStatus === 'online' ? 'bg-green-400 animate-pulse' :
-              systemStatus === 'checking' ? 'bg-yellow-400 animate-pulse' :
-              'bg-red-400'
-            }`} />
-            <span className="text-sm font-medium">
-              {systemStatus === 'online' && '在线'}
-              {systemStatus === 'checking' && '检测中'}
-              {systemStatus === 'offline' && '离线'}
-              {systemStatus === 'error' && '异常'}
-            </span>
+            <span className={`w-3 h-3 rounded-full ${statusConfig.indicatorColor}`} />
+            <span className="text-sm font-medium">{statusConfig.label}</span>
           </div>
         </div>
       </div>

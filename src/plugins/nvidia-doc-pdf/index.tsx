@@ -180,6 +180,7 @@ const NvidiaDocPdfTool: React.FC = () => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const pluginMeta = {
   id: 'nvidia-doc-pdf',
   name: '英伟达文档转 PDF',

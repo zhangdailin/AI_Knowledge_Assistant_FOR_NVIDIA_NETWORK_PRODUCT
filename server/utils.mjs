@@ -67,26 +67,73 @@ export function createError(message, statusCode = 500, userMessage = null) {
 }
 
 /**
- * 计算两个向量的余弦相似度
- * @param {number[]} vecA - 向量A
- * @param {number[]} vecB - 向量B
+ * 计算两个向量的余弦相似度（性能优化版）
+ * 使用循环展开和数学优化减少计算开销
+ * @param {number[]|Float32Array|Float64Array} vecA - 向量A
+ * @param {number[]|Float32Array|Float64Array} vecB - 向量B
+ * @param {number} [precomputedNormA] - 预计算的向量A范数（可选，用于批量计算）
  * @returns {number} 余弦相似度 (0-1)
  */
-export function cosineSimilarity(vecA, vecB) {
+export function cosineSimilarity(vecA, vecB, precomputedNormA = 0) {
     if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
 
+    const len = vecA.length;
     let dotProduct = 0;
     let normA = 0;
     let normB = 0;
 
-    for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i];
-        normA += vecA[i] * vecA[i];
-        normB += vecB[i] * vecB[i];
+    // 循环展开：每次处理4个元素，减少循环开销
+    const limit = len - (len % 4);
+    let i = 0;
+
+    for (; i < limit; i += 4) {
+        const a0 = vecA[i], a1 = vecA[i + 1], a2 = vecA[i + 2], a3 = vecA[i + 3];
+        const b0 = vecB[i], b1 = vecB[i + 1], b2 = vecB[i + 2], b3 = vecB[i + 3];
+
+        dotProduct += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
+        normA += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
+        normB += b0 * b0 + b1 * b1 + b2 * b2 + b3 * b3;
     }
 
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    // 处理剩余元素
+    for (; i < len; i++) {
+        const a = vecA[i], b = vecB[i];
+        dotProduct += a * b;
+        normA += a * a;
+        normB += b * b;
+    }
+
+    // 如果提供了预计算的范数A，使用它（批量计算优化）
+    const finalNormA = precomputedNormA > 0 ? precomputedNormA * precomputedNormA : normA;
+
+    // 数学优化：sqrt(a) * sqrt(b) = sqrt(a * b)
+    const denominator = Math.sqrt(finalNormA * normB);
     return denominator > 0 ? dotProduct / denominator : 0;
+}
+
+/**
+ * 计算向量范数（用于批量相似度计算的预处理）
+ * @param {number[]|Float32Array|Float64Array} vec - 向量
+ * @returns {number} 向量的L2范数
+ */
+export function vectorNorm(vec) {
+    if (!vec || vec.length === 0) return 0;
+
+    let sum = 0;
+    const len = vec.length;
+    const limit = len - (len % 4);
+    let i = 0;
+
+    for (; i < limit; i += 4) {
+        const a0 = vec[i], a1 = vec[i + 1], a2 = vec[i + 2], a3 = vec[i + 3];
+        sum += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
+    }
+
+    for (; i < len; i++) {
+        sum += vec[i] * vec[i];
+    }
+
+    return Math.sqrt(sum);
 }
 
 /**

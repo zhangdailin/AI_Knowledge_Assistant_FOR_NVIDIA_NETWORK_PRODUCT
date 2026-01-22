@@ -3,6 +3,8 @@
  * 通过文本分析和模糊匹配检测回答中是否包含参考文档没有的命令
  */
 
+import { COMMAND_LINE_PATTERNS, COMMAND_EXCLUDE_PATTERNS } from './constants.mjs';
+
 function normalizeText(text = '') {
   return text
     .replace(/\r/g, '')
@@ -147,29 +149,7 @@ function matchCommandAgainstReferences(command, referencesMeta) {
   return bestMatch;
 }
 
-// 命令模式定义 - 支持更多网络设备和系统命令
-const COMMAND_PATTERNS = [
-  // 英伟达网络设备命令（优先匹配）
-  /^nv\s+(show|set|unset|config|apply)/i,
-  // 其他网络设备命令
-  /^(nv-|netq|cumulus|show\s+|ip\s+|ping\s+|traceroute\s+|mtr\s+)/i,
-  // 配置命令（必须有空格或参数）
-  /^(conf\s+|config\s+|set\s+|delete\s+|remove\s+|enable\s+|disable\s+|shutdown|no\s+shutdown)/i,
-  // Linux系统命令
-  /^(sudo\s+|apt\s+|yum\s+|systemctl\s+|service\s+|docker\s+|kubectl\s+|git\s+)/i,
-  // 网络工具
-  /^(curl\s+|wget\s+|ssh\s+|scp\s+|rsync\s+|nc\s+|telnet\s+)/i,
-  // 文件操作
-  /^(cat\s+|grep\s+|awk\s+|sed\s+|find\s+|ls\s+|cd\s+|mkdir\s+|rm\s+|cp\s+|mv\s+)/i
-];
-
-// 排除模式 - 这些不是命令
-const EXCLUDE_PATTERNS = [
-  /^(system|config|interface|router|switch|vlan|port|network|device|server|host|node|cluster|pod|namespace|service|deployment|container|image|volume|secret|configmap):?\s*$/i,
-  /^(注意|说明|示例|例如|提示|警告|重要|备注|参考|步骤|方法|配置|设置|选项|参数|说明|描述)[:：]/i,
-  /^\d+[\.\)]\s+/,  // 列表项编号
-  /^[-*]\s+/,       // 列表项标记
-];
+// 命令模式使用 constants.mjs 中的统一定义
 
 function cleanCommand(line) {
   let cleaned = line.trim();
@@ -200,7 +180,7 @@ function isLikelyCommand(line) {
   if (!cleaned || cleaned.startsWith('//')) return false;
 
   // 排除明显不是命令的内容
-  if (EXCLUDE_PATTERNS.some(pattern => pattern.test(cleaned))) return false;
+  if (COMMAND_EXCLUDE_PATTERNS.some(pattern => pattern.test(cleaned))) return false;
 
   // 排除只有一个单词且以冒号结尾的（标签）
   if (/^[a-z]+:$/i.test(cleaned)) return false;
@@ -209,7 +189,7 @@ function isLikelyCommand(line) {
   if (cleaned.length < 3) return false;
 
   // 匹配命令模式
-  return COMMAND_PATTERNS.some(pattern => pattern.test(cleaned));
+  return COMMAND_LINE_PATTERNS.some(pattern => pattern.test(cleaned));
 }
 
 function extractCommandLines(answer = '') {
@@ -424,15 +404,5 @@ export function validateAnswerConsistency(answer, references = [], question = ''
     referenceSummaries,
     referenceMatches,
     analyzedAt: new Date().toISOString()
-  };
-}
-
-export function summarizeValidation(validation) {
-  if (!validation) return null;
-  const { isConsistent, confidenceScore, hallucinations = [] } = validation;
-  return {
-    ok: isConsistent,
-    confidenceScore,
-    hallucinationCount: hallucinations.length
   };
 }

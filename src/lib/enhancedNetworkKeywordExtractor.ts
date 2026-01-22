@@ -66,7 +66,7 @@ export class EnhancedNetworkKeywordExtractor {
       }
     }
 
-    for (const match of query.matchAll(/\b[A-Z][A-Z0-9&.\-]{2,}\b/g)) {
+    for (const match of query.matchAll(/\b[A-Z][A-Z0-9&.-]{2,}\b/g)) {
       const token = match[0].toLowerCase();
       if (!this.vendorStopwords.has(token)) {
         vendors.add(token);

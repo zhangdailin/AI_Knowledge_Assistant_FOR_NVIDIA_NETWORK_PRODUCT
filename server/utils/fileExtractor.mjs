@@ -5,35 +5,6 @@ import mammoth from 'mammoth';
 import XLSX from 'xlsx';
 
 /**
- * 根据文件名和MIME类型判断文件类别
- */
-export function getFileCategory(filename, mime) {
-  const lower = filename.toLowerCase();
-  if (lower.endsWith('.pdf') || mime === 'application/pdf') return 'pdf';
-  if (lower.endsWith('.doc') || lower.endsWith('.docx') || mime.includes('word')) return 'word';
-  if (lower.endsWith('.xls') || lower.endsWith('.xlsx') || mime.includes('excel') || mime.includes('spreadsheet')) return 'excel';
-  if (lower.endsWith('.txt') || lower.endsWith('.md') || mime.startsWith('text/')) return 'text';
-  return 'unknown';
-}
-
-/**
- * 验证文件类型
- */
-export function validateFileType(filename, mime) {
-  const category = getFileCategory(filename, mime);
-  const allowedTypes = ['pdf', 'word', 'excel', 'text'];
-
-  if (!allowedTypes.includes(category)) {
-    return {
-      valid: false,
-      error: `不支持的文件类型: ${filename}。仅支持 PDF, Word, Excel, TXT 文件。`
-    };
-  }
-
-  return { valid: true };
-}
-
-/**
  * 从PDF文件提取文本
  */
 export async function extractPdfText(buffer, pdfParseModule) {

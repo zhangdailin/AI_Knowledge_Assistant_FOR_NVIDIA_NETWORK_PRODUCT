@@ -59,7 +59,7 @@ describe('性能基线测试套件', () => {
     console.log('\n🚀 开始性能基线测试...\n');
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     // 生成性能报告
     console.log('\n' + '='.repeat(80));
     console.log('📊 性能基线测试报告');
@@ -113,8 +113,8 @@ describe('性能基线测试套件', () => {
     };
 
     // 写入文件
-    const fs = require('fs');
-    const path = require('path');
+    const fs = await import('fs');
+    const path = await import('path');
     const outputDir = path.join(process.cwd(), 'test', 'performance', 'reports');
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });

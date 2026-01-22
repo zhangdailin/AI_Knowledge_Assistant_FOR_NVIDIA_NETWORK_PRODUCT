@@ -99,7 +99,7 @@ export class SearchPipeline {
   }
 
   /**
-   * 执行搜索（关键词 + 向量）
+   * 执行搜索（关键词 + 向量）- 并行优化版
    */
   async executeSearch(queries, queryEmbedding, options = {}) {
     const {
@@ -107,34 +107,51 @@ export class SearchPipeline {
       categoryIds = []
     } = options;
 
-    const allKeywordResults = [];
-    const allVectorResults = [];
+    // 并行处理所有查询变体
+    const searchPromises = queries.map(async (sq, index) => {
+      const isOriginalQuery = index === 0;
 
-    for (const sq of queries) {
-      // 关键词搜索
-      const kwResults = await this.storage.searchChunks(sq, searchLimit, categoryIds);
-      allKeywordResults.push(...kwResults);
+      // 对每个查询，并行执行关键词搜索和向量搜索
+      const [kwResults, vecResults] = await Promise.all([
+        // 关键词搜索
+        this.storage.searchChunks(sq, searchLimit, categoryIds).catch(error => {
+          console.warn(`[SearchPipeline] 关键词搜索失败 (query: "${sq}"):`, error.message);
+          return [];
+        }),
 
-      // 向量搜索
-      try {
-        let embedding;
-        // 只对原查询复用之前生成的embedding
-        if (sq === queries[0] && queryEmbedding) {
-          embedding = queryEmbedding;
-        } else {
-          embedding = await this.embedText(sq);
-        }
+        // 向量搜索
+        (async () => {
+          try {
+            let embedding;
+            // 只对原查询复用之前生成的embedding
+            if (isOriginalQuery && queryEmbedding) {
+              embedding = queryEmbedding;
+            } else {
+              embedding = await this.embedText(sq);
+            }
 
-        if (embedding) {
-          const vecResults = await this.storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
-          allVectorResults.push(...vecResults);
-        }
-      } catch (error) {
-        console.warn(`[SearchPipeline] 向量搜索失败 (query: "${sq}"):`, error.message);
-      }
-    }
+            if (embedding) {
+              return await this.storage.vectorSearchChunks(embedding, searchLimit, categoryIds);
+            }
+            return [];
+          } catch (error) {
+            console.warn(`[SearchPipeline] 向量搜索失败 (query: "${sq}"):`, error.message);
+            return [];
+          }
+        })()
+      ]);
 
-    // 去重（基于chunk id）
+      return { kwResults, vecResults };
+    });
+
+    // 等待所有查询完成
+    const allResults = await Promise.all(searchPromises);
+
+    // 合并结果
+    const allKeywordResults = allResults.flatMap(r => r.kwResults);
+    const allVectorResults = allResults.flatMap(r => r.vecResults);
+
+    // 去重（基于chunk id，保留最高分）
     const keywordResultsMap = new Map();
     allKeywordResults.forEach(r => {
       const id = r.id;
@@ -153,7 +170,7 @@ export class SearchPipeline {
     });
     const vectorResults = Array.from(vectorResultsMap.values());
 
-    console.log(`[SearchPipeline] 搜索完成: Keyword=${keywordResults.length}, Vector=${vectorResults.length}`);
+    console.log(`[SearchPipeline] 搜索完成（并行执行${queries.length}个变体）: Keyword=${keywordResults.length}, Vector=${vectorResults.length}`);
 
     return { keywordResults, vectorResults };
   }
@@ -322,10 +339,11 @@ export class SearchPipeline {
   }
 
   /**
-   * 执行完整的搜索管道
+   * 执行完整的搜索管道（带超时保护）
    */
   async execute(query, options = {}) {
     const startTime = Date.now();
+    const GLOBAL_TIMEOUT = 30000; // 30秒全局超时
     const {
       cacheKey,
       searchLimit = LIMITS.SEARCH_LIMIT,
@@ -360,7 +378,39 @@ export class SearchPipeline {
       };
     }
 
-    const queryEmbedding = semanticCache.queryEmbedding;
+    // 使用 Promise.race 实现全局超时保护
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Search timeout after 30s')), GLOBAL_TIMEOUT);
+    });
+
+    try {
+      const searchPromise = this._executeSearchPipeline(
+        query,
+        semanticCache.queryEmbedding,
+        { cacheKey, searchLimit, categoryIds, rerankTopN, config, startTime }
+      );
+
+      return await Promise.race([searchPromise, timeoutPromise]);
+    } catch (error) {
+      if (error.message.includes('timeout')) {
+        console.error(`[SearchPipeline] ⚠️ 搜索超时: "${query}" (>${GLOBAL_TIMEOUT}ms)`);
+        return {
+          results: [],
+          cached: false,
+          duration: Date.now() - startTime,
+          error: 'timeout',
+          variantCount: 0
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 内部搜索管道执行（从execute分离出来支持超时）
+   */
+  async _executeSearchPipeline(query, queryEmbedding, options) {
+    const { cacheKey, searchLimit, categoryIds, rerankTopN, config, startTime } = options;
 
     // 3. 查询扩展
     const queries = this.expandQuery(query, config);
@@ -380,11 +430,10 @@ export class SearchPipeline {
       { searchLimit, config }
     );
 
-    // 6. 知识图谱增强（新增）
-    const enableKnowledgeGraph = config.enableKnowledgeGraph !== false; // 默认启用
+    // 6. 知识图谱增强
+    const enableKnowledgeGraph = config.enableKnowledgeGraph !== false;
     if (enableKnowledgeGraph && this.hybridRetrieval && this.determineRetrievalStrategy) {
       try {
-        // 传入实验配置 (config.experimentConfig) 如果存在
         const strategy = this.determineRetrievalStrategy(query, config.experimentConfig);
         fusedResults = await this.hybridRetrieval(query, fusedResults, strategy);
         console.log(`[SearchPipeline] 知识图谱增强完成 (策略: ${strategy.strategy})`);
@@ -396,11 +445,8 @@ export class SearchPipeline {
     // 7. Reranking
     let rankedResults = await this.rerank(fusedResults, query, { rerankTopN });
 
-    // 7.5. 重新应用知识图谱增强 (适应 Rerank 分数体系)
-    // Reranking 会重置分数，我们需要把 KG 的贡献加回去
-    if (enableKnowledgeGraph && rankedResults.length > 0) {
-      this.reapplyKnowledgeGraphBoost(rankedResults);
-    }
+    // 注意：移除了 reapplyKnowledgeGraphBoost，避免双重加分
+    // KG boost 已在 hybridRetrieval 中一次性应用
 
     // 8. 引用显示优化 (去重、合并相邻)
     const finalResults = this.optimizeReferences

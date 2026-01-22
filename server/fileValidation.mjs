@@ -3,28 +3,37 @@
  * 集中处理文件类型检查和验证
  */
 
-export function isExcelFile(filename, mime) {
+function isExcelFile(filename, mime) {
   const name = filename.toLowerCase();
   return name.endsWith('.xlsx') || name.endsWith('.xls') || mime?.includes('spreadsheet') || mime?.includes('excel');
 }
 
-export function isPdfFile(filename, mime) {
+function isPdfFile(filename, mime) {
   const name = filename.toLowerCase();
   return name.endsWith('.pdf') || mime?.includes('pdf');
 }
 
-export function isWordFile(filename, mime) {
+function isWordFile(filename, mime) {
   const name = filename.toLowerCase();
   return name.endsWith('.doc') || name.endsWith('.docx') || mime?.includes('word');
 }
 
-export function isTextFile(filename, mime) {
+function isTextFile(filename, mime) {
   const name = filename.toLowerCase();
   return name.endsWith('.txt') || name.endsWith('.md') || mime?.includes('text');
 }
 
 export function validateFileType(filename, mime) {
-  // Excel files are now supported
+  const category = getFileCategory(filename, mime);
+  const allowedTypes = ['pdf', 'word', 'excel', 'text'];
+
+  if (!allowedTypes.includes(category)) {
+    return {
+      valid: false,
+      error: `不支持的文件类型: ${filename}。仅支持 PDF, Word, Excel, TXT 文件。`
+    };
+  }
+
   return { valid: true };
 }
 

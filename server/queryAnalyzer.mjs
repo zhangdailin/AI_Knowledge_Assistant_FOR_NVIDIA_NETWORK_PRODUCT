@@ -5,41 +5,65 @@
 
 import * as storage from './storage-adapter.mjs';
 
-/**
- * 加载查询日志（从 SQLite）
- */
-async function loadQueryLogs() {
-  try {
-    const stats = await storage.getQueryStats();
-    return stats.recentQueries || [];
-  } catch (e) {
-    return [];
-  }
-}
+// ========== 统一的数据加载器 ==========
 
 /**
- * 加载负样本数据（从 SQLite）
+ * 数据加载配置
  */
-async function loadNegativeSamples() {
-  try {
-    // 从反馈表获取负样本数据
-    const feedback = await storage.getAllFeedback();
-    const negativeFeedback = feedback.filter(f => f.verdict === 'not_helpful' || f.verdict === 'wrong');
-    return {
-      samples: negativeFeedback,
-      stats: {
-        totalSamples: negativeFeedback.length,
-        byFeedbackType: negativeFeedback.reduce((acc, f) => {
-          const type = f.verdict || 'unknown';
-          acc[type] = (acc[type] || 0) + 1;
-          return acc;
-        }, {})
-      },
-      version: '2.0.0'
-    };
-  } catch (e) {
-    return { samples: [], stats: {}, version: '2.0.0' };
+const DATA_LOADERS = {
+  queries: {
+    loader: async () => {
+      const stats = await storage.getQueryStats();
+      return stats.recentQueries || [];
+    },
+    defaultValue: []
+  },
+  feedback: {
+    loader: async () => {
+      const feedback = await storage.getAllFeedback();
+      const negativeFeedback = feedback.filter(f => f.verdict === 'not_helpful' || f.verdict === 'wrong');
+      return {
+        samples: negativeFeedback,
+        stats: {
+          totalSamples: negativeFeedback.length,
+          byFeedbackType: negativeFeedback.reduce((acc, f) => {
+            const type = f.verdict || 'unknown';
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+          }, {})
+        },
+        version: '2.0.0'
+      };
+    },
+    defaultValue: { samples: [], stats: {}, version: '2.0.0' }
   }
+};
+
+/**
+ * 统一的数据加载函数
+ * @param {string|string[]} types - 要加载的数据类型
+ * @returns {Promise<Object>} 加载的数据
+ */
+async function loadAnalysisData(types = ['queries', 'feedback']) {
+  const typeList = Array.isArray(types) ? types : [types];
+  const results = {};
+
+  await Promise.all(typeList.map(async (type) => {
+    const config = DATA_LOADERS[type];
+    if (!config) {
+      console.warn(`[QueryAnalyzer] 未知的数据类型: ${type}`);
+      return;
+    }
+
+    try {
+      results[type] = await config.loader();
+    } catch (e) {
+      console.error(`[QueryAnalyzer] 加载 ${type} 失败:`, e.message);
+      results[type] = config.defaultValue;
+    }
+  }));
+
+  return results;
 }
 
 /**
@@ -282,8 +306,10 @@ export async function analyzeQueries() {
   console.log('='.repeat(60));
   console.log();
 
-  const logs = await loadQueryLogs();
-  const negativeSamples = await loadNegativeSamples();
+  // 使用统一的数据加载器
+  const data = await loadAnalysisData(['queries', 'feedback']);
+  const logs = data.queries;
+  const negativeSamples = data.feedback;
 
   if (logs.length === 0) {
     console.log('❌ 没有查询日志数据');
