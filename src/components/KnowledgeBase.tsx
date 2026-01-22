@@ -7,17 +7,11 @@ import {
   Trash2,
   Download,
   Eye,
-  Plus,
   FolderOpen,
   RefreshCw,
-  MoreVertical,
-  FileText,
   Table,
   Grid,
   Move,
-  Share2,
-  Activity,
-  AlertTriangle,
   Scissors
 } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
@@ -564,89 +558,6 @@ const KnowledgeBase: React.FC = () => {
         <div className="mb-6">
           <h1 className="text-xl font-bold text-gray-900">知识库管理</h1>
           <p className="text-sm text-gray-500 mt-1">上传和管理您的文档资料</p>
-        </div>
-
-        {/* 知识图谱状态 */}
-        <div className="admin-card p-5 mb-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                <Share2 className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                  知识图谱状态
-                  {kgLoading && <RefreshCw className="w-4 h-4 animate-spin text-gray-400" />}
-                </h2>
-                <p className="text-sm text-gray-500">
-                  {kgLastUpdated ? `最近更新：${kgLastUpdated.toLocaleString()}` : '尚未获取最新状态'}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span
-                className={`px-3 py-1 text-xs font-medium rounded-full ${kgStatus === 'active'
-                  ? 'bg-green-100 text-green-700'
-                  : kgStatus === 'error'
-                    ? 'bg-red-100 text-red-700'
-                    : 'bg-gray-100 text-gray-700'
-                  }`}
-              >
-                {kgStatus === 'active' ? '运行中' : kgStatus === 'error' ? '异常' : '待检测'}
-              </span>
-              <button
-                onClick={() => fetchKnowledgeGraphStatus(true)}
-                disabled={kgAction !== 'idle'}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
-              >
-                <RefreshCw className="w-4 h-4" />
-                刷新状态
-              </button>
-              <button
-                onClick={handleInitKnowledgeGraph}
-                disabled={kgAction !== 'idle'}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border border-blue-100 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-              >
-                <Activity className="w-4 h-4" />
-                初始化连接
-              </button>
-              <button
-                onClick={handleBuildKnowledgeGraph}
-                disabled={kgAction !== 'idle'}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                <Share2 className="w-4 h-4" />
-                手动构建
-              </button>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-5">
-            {[
-              { label: '厂商', key: 'vendors', totalKey: 'vendorsTotal' },
-              { label: '功能', key: 'functions', totalKey: 'functionsTotal' },
-              { label: '命令', key: 'commands', totalKey: 'commandsTotal' },
-              { label: '参数', key: 'parameters', totalKey: 'parametersTotal' },
-              { label: '关系', key: 'relationships' }
-            ].map(item => {
-              const totalKey = item.totalKey as keyof KnowledgeGraphStats | undefined;
-              const totalValue = totalKey ? kgStats[totalKey] : undefined;
-              const displayValue = totalValue ?? kgStats[item.key as keyof KnowledgeGraphStats] ?? 0;
-              return (
-              <div key={item.key} className="p-3 rounded-xl bg-gray-50">
-                <p className="text-xs text-gray-500">{item.label}</p>
-                <p className="text-xl font-semibold text-gray-900 mt-1">
-                  {kgLoading ? '...' : displayValue}
-                </p>
-              </div>
-              );
-            })}
-          </div>
-          {kgMessage && (
-            <div className={`mt-4 flex items-center gap-2 text-sm ${kgStatus === 'error' ? 'text-red-600' : 'text-gray-600'}`}>
-              <AlertTriangle className="w-4 h-4" />
-              {kgMessage}
-            </div>
-          )}
         </div>
 
         <div className="flex gap-4 h-[calc(100%-80px)]">

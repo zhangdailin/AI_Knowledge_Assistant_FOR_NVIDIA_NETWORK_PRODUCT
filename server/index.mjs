@@ -7,12 +7,12 @@ import * as storage from './storage-adapter.mjs';
 import * as taskQueue from './taskQueue.mjs';
 import { embedText, rerankDocuments } from './embedding.mjs';
 import { validateFileType, getFileCategory } from './fileValidation.mjs';
-import { asyncHandler, SimpleLRUCache } from './utils.mjs';
+import { asyncHandler, SimpleLRUCache, cosineSimilarity } from './utils.mjs';
 import XLSX from 'xlsx';
 
 // 新增工具类导入
 import { LIMITS, CACHE, SCORING, WEBSOCKET, RRF_WEIGHTS, TECHNICAL_KEYWORDS, COMMAND_PATTERNS, COMMAND_CONTENT_PATTERNS, COMMAND_BOOST } from './constants.mjs';
-import { ApiResponse, asyncHandler as asyncHandlerV2, RequestValidator, ValidationError } from './utils/apiResponse.mjs';
+import { ApiResponse } from './utils/apiResponse.mjs';
 import { extractFileContent, fixFilename as fixFilenameUtil } from './utils/fileExtractor.mjs';
 import { findById, findByName } from './utils/treeUtils.mjs';
 import { SearchPipeline } from './utils/searchPipeline.mjs';
@@ -71,26 +71,6 @@ function cleanupPendingSearch(cacheKey) {
     pendingSearchTimeouts.delete(cacheKey);
   }
   pendingSearches.delete(cacheKey);
-}
-
-/**
- * 计算两个向量的余弦相似度
- */
-function cosineSimilarity(vecA, vecB) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i] * vecB[i];
-    normA += vecA[i] * vecA[i];
-    normB += vecB[i] * vecB[i];
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-  return denominator > 0 ? dotProduct / denominator : 0;
 }
 
 /**
@@ -2868,7 +2848,7 @@ app.get('/api/models/gemini', async (req, res) => {
 // ============== 拓扑还原 API ==============
 
 // ============== 统一拓扑 API 端点 (处理所有拓扑相关操作) ==============
-app.post('/api/topology/:operation', upload.single('file'), asyncHandlerV2(async (req, res) => {
+app.post('/api/topology/:operation', upload.single('file'), asyncHandler(async (req, res) => {
   const { operation } = req.params;
   const file = req.file;
   const params = { ...req.body, ...req.query, res }; // Pass res for streaming operations

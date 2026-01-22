@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, FolderOpen, History, Settings, Home, Wrench,
-  ChevronLeft, ChevronRight, Bot, LogOut, User, Bell, Cpu, Sliders, MessageSquare
+  ChevronLeft, ChevronRight, Bot, User, Bell, Cpu, Sliders, MessageSquare, Network
 } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 
@@ -14,6 +14,7 @@ const AdminLayout: React.FC = () => {
   const navItems = [
     { path: '/admin/dashboard', label: '仪表盘', icon: LayoutDashboard },
     { path: '/admin/knowledge', label: '知识库', icon: FolderOpen },
+    { path: '/admin/knowledge-graph', label: '知识图谱', icon: Network },
     { path: '/admin/tools', label: 'AI工具', icon: Wrench },
     { path: '/admin/history', label: '历史记录', icon: History },
     { path: '/admin/feedback', label: '反馈分析', icon: MessageSquare },

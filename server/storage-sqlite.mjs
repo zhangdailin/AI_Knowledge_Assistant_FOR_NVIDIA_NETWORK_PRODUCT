@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { hnswIndex } from './hnswIndex.mjs';
+import { cosineSimilarity } from './utils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -664,23 +665,6 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
     // 按相似度排序
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, limit);
-}
-
-function cosineSimilarity(a, b) {
-    if (!a || !b || a.length !== b.length) return 0;
-
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-        dotProduct += a[i] * b[i];
-        normA += a[i] * a[i];
-        normB += b[i] * b[i];
-    }
-
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    return denominator === 0 ? 0 : dotProduct / denominator;
 }
 
 // ========== 设置管理 ==========

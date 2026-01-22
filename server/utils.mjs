@@ -67,6 +67,29 @@ export function createError(message, statusCode = 500, userMessage = null) {
 }
 
 /**
+ * 计算两个向量的余弦相似度
+ * @param {number[]} vecA - 向量A
+ * @param {number[]} vecB - 向量B
+ * @returns {number} 余弦相似度 (0-1)
+ */
+export function cosineSimilarity(vecA, vecB) {
+    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < vecA.length; i++) {
+        dotProduct += vecA[i] * vecB[i];
+        normA += vecA[i] * vecA[i];
+        normB += vecB[i] * vecB[i];
+    }
+
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    return denominator > 0 ? dotProduct / denominator : 0;
+}
+
+/**
  * 简单的 LRU 缓存实现
  * 用于缓存搜索结果等数据
  */

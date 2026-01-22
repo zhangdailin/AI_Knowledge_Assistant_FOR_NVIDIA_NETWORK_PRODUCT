@@ -15,7 +15,6 @@ import 'reactflow/dist/style.css';
 import { Search, Upload, RefreshCw, Layers, Zap } from 'lucide-react';
 import { bundleEdges, collapseBundle, expandBundle } from '../../utils/edge-bundling';
 import CytoscapeTopology from './CytoscapeTopology';
-import useVirtualViewport from '../../hooks/useVirtualViewport';
 import { getApiServerUrl } from '../../utils/apiUtils';
 
 type NetworkType = 'ib' | 'roce';

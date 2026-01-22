@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, Bot, User, Trash2, History, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard, ShieldCheck, AlertTriangle, ThumbsUp, ThumbsDown, Info } from 'lucide-react';
+import { Send, Bot, User, Trash2, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard, ShieldCheck, AlertTriangle, ThumbsUp, ThumbsDown, Info } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import MessageContent from './MessageContent';
@@ -464,23 +464,23 @@ const ChatInterface: React.FC = () => {
         </div>
       )}
 
-    <div className="flex h-screen bg-gradient-to-br from-slate-50 to-gray-100">
-      {/* 左侧边栏 - 深色主题 */}
-      <div className="w-72 bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col h-screen">
+    <div className="flex h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-purple-50/30">
+      {/* 左侧边栏 - 优化版 */}
+      <div className="w-72 bg-gradient-to-b from-gray-900 via-gray-900 to-gray-800 flex flex-col h-screen shadow-2xl">
         {/* 顶部：Logo和新建按钮 */}
-        <div className="p-4 border-b border-slate-700/50">
+        <div className="p-4 border-b border-gray-800/50">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
+            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-accent-600 rounded-2xl flex items-center justify-center shadow-lg shadow-primary-500/30 ring-2 ring-white">
               <Bot className="w-6 h-6 text-white" />
             </div>
             <div>
               <h2 className="text-white font-bold text-lg">AI知识助手</h2>
-              <p className="text-slate-400 text-xs">智能问答系统</p>
+              <p className="text-gray-400 text-xs">智能问答系统</p>
             </div>
           </div>
           <button
             onClick={() => createConversation(user.id, '新对话')}
-            className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium hover:from-indigo-600 hover:to-purple-700 transition-all shadow-lg shadow-indigo-500/25 flex items-center justify-center gap-2"
+            className="w-full bg-gradient-to-r from-primary-500 to-accent-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium hover:from-primary-600 hover:to-accent-700 transition-all shadow-soft-lg hover:shadow-glow transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
           >
             <Plus className="w-4 h-4" />
             新建对话
@@ -488,13 +488,13 @@ const ChatInterface: React.FC = () => {
         </div>
 
         {/* 对话列表 */}
-        <div className="flex-1 overflow-y-auto p-3">
-          <p className="text-slate-500 text-xs font-medium px-2 mb-2 uppercase tracking-wider">对话历史</p>
+        <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+          <p className="text-gray-500 text-xs font-medium px-2 mb-2 uppercase tracking-wider">对话历史</p>
           {sortedConversations.length === 0 ? (
-            <div className="text-center text-slate-500 text-sm mt-8 px-4">
+            <div className="text-center text-gray-500 text-sm mt-8 px-4">
               <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
               <p>暂无对话记录</p>
-              <p className="text-xs mt-1 text-slate-600">点击上方按钮开始新对话</p>
+              <p className="text-xs mt-1 text-gray-600">点击上方按钮开始新对话</p>
             </div>
           ) : (
             <div className="space-y-1">
@@ -505,8 +505,8 @@ const ChatInterface: React.FC = () => {
                   <div
                     key={conversation.id}
                     className={`group relative flex items-center rounded-xl transition-all duration-200 ${isActive
-                        ? 'bg-indigo-500/20 text-indigo-300'
-                        : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
+                        ? 'bg-primary-500/20 text-primary-300 shadow-soft'
+                        : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
                       }`}
                   >
                     <button
@@ -522,7 +522,7 @@ const ChatInterface: React.FC = () => {
                     </button>
                     <button
                       onClick={(e) => handleDeleteConversation(e, conversation.id)}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 mr-2 text-slate-500 hover:text-red-400 transition-all rounded-lg hover:bg-red-500/10"
+                      className="opacity-0 group-hover:opacity-100 p-1.5 mr-2 text-gray-500 hover:text-red-400 transition-all rounded-lg hover:bg-red-500/10"
                       title="删除对话"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -535,12 +535,12 @@ const ChatInterface: React.FC = () => {
         </div>
 
         {/* 底部导航 */}
-        <div className="p-3 border-t border-slate-700/50 space-y-1">
+        <div className="p-3 border-t border-gray-800/50 space-y-1">
           <Link
             to="/admin/dashboard"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-gray-800/50 transition-all group"
           >
-            <LayoutDashboard className="w-5 h-5" />
+            <LayoutDashboard className="w-5 h-5 group-hover:scale-110 transition-transform" />
             <span className="text-sm font-medium">管理后台</span>
           </Link>
         </div>
@@ -548,8 +548,8 @@ const ChatInterface: React.FC = () => {
 
       {/* 右侧主内容区 */}
       <div className="flex-1 flex flex-col h-screen min-w-0">
-        {/* 头部工具栏 */}
-        <div className="flex items-center justify-between px-6 py-3 bg-white/80 backdrop-blur-sm border-b border-gray-200/50">
+        {/* 头部工具栏 - 优化版 */}
+        <div className="flex items-center justify-between px-6 py-3 bg-white/80 backdrop-blur-xl border-b border-gray-200/50 shadow-soft">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-gray-600">
               {currentConversation ? '当前对话' : '开始新对话'}
@@ -558,14 +558,14 @@ const ChatInterface: React.FC = () => {
           <div className="flex items-center gap-1">
             <Link
               to="/admin/knowledge"
-              className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+              className="p-2 text-gray-500 hover:text-primary-600 hover:bg-primary-50 rounded-xl transition-all"
               title="知识库"
             >
               <BookOpen className="w-5 h-5" />
             </Link>
             <Link
               to="/admin/settings"
-              className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+              className="p-2 text-gray-500 hover:text-primary-600 hover:bg-primary-50 rounded-xl transition-all"
               title="设置"
             >
               <Settings className="w-5 h-5" />
@@ -574,44 +574,44 @@ const ChatInterface: React.FC = () => {
         </div>
 
         {/* 对话内容区 */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="flex-1 overflow-y-auto px-6 py-4 custom-scrollbar">
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto">
-              <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-500/30 mb-6">
+              <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto">
+              <div className="w-20 h-20 bg-gradient-to-br from-primary-500 to-accent-600 rounded-3xl flex items-center justify-center shadow-xl shadow-primary-500/40 mb-6 animate-bounce-subtle ring-4 ring-white">
                 <Bot className="w-10 h-10 text-white" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-3">欢迎使用AI知识助手</h3>
+              <h3 className="text-2xl font-bold bg-gradient-to-r from-gray-900 to-gray-600 bg-clip-text text-transparent mb-3">欢迎使用AI知识助手</h3>
               <p className="text-gray-500 mb-8 leading-relaxed">
                 我是您的智能知识助手，可以回答基于知识库的各种问题。<br />
                 请在下方输入您的问题，我会尽力为您提供准确的答案。
               </p>
 
-              {/* 快捷提示卡片 */}
+              {/* 快捷提示卡片 - 优化版 */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
                 <button
                   onClick={() => setInputValue('如何配置MLAG？')}
-                  className="p-4 bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow cursor-pointer group text-left"
+                  className="p-4 bg-white rounded-2xl border border-gray-100 shadow-soft hover:shadow-soft-lg transition-all cursor-pointer group text-left hover:border-primary-200 hover:-translate-y-0.5"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center group-hover:bg-blue-100 transition-colors">
-                      <BookOpen className="w-5 h-5 text-blue-600" />
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-soft">
+                      <BookOpen className="w-5 h-5 text-white" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-900">查询配置</p>
+                      <p className="text-sm font-semibold text-gray-900">查询配置</p>
                       <p className="text-xs text-gray-500">如何配置MLAG？</p>
                     </div>
                   </div>
                 </button>
                 <button
                   onClick={() => setInputValue('接口状态异常怎么办？')}
-                  className="p-4 bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow cursor-pointer group text-left"
+                  className="p-4 bg-white rounded-2xl border border-gray-100 shadow-soft hover:shadow-soft-lg transition-all cursor-pointer group text-left hover:border-accent-200 hover:-translate-y-0.5"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center group-hover:bg-purple-100 transition-colors">
-                      <Brain className="w-5 h-5 text-purple-600" />
+                    <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-soft">
+                      <Brain className="w-5 h-5 text-white" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-900">故障排查</p>
+                      <p className="text-sm font-semibold text-gray-900">故障排查</p>
                       <p className="text-xs text-gray-500">接口状态异常怎么办？</p>
                     </div>
                   </div>
@@ -637,10 +637,10 @@ const ChatInterface: React.FC = () => {
                 const hasReferenceBadges = referenceBadgeEntries.length > 0;
 
                 return (
-                <div key={message.id} className={`flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 ${message.role === 'user' ? 'justify-end' : 'justify-start'
+                <div key={message.id} className={`flex items-start gap-4 animate-slide-up ${message.role === 'user' ? 'justify-end' : 'justify-start'
                   }`}>
                   {message.role === 'assistant' && (
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-indigo-500/20 mt-1">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary-500/30 mt-1 ring-2 ring-white">
                       <Bot className="w-5 h-5 text-white" />
                     </div>
                   )}
@@ -649,10 +649,10 @@ const ChatInterface: React.FC = () => {
                       ? 'order-1'
                       : 'order-2'
                     }`}>
-                    {/* 消息气泡 */}
-                    <div className={`px-5 py-4 shadow-sm ${message.role === 'user'
-                        ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl rounded-tr-md'
-                        : 'bg-white border border-gray-100 rounded-2xl rounded-tl-md shadow-md'
+                    {/* 消息气泡 - 优化版 */}
+                    <div className={`px-5 py-4 ${message.role === 'user'
+                        ? 'bg-gradient-to-br from-primary-500 to-accent-600 text-white rounded-3xl rounded-tr-lg shadow-soft-lg'
+                        : 'bg-white border border-gray-100 rounded-3xl rounded-tl-lg shadow-soft-lg hover:shadow-soft-xl transition-shadow'
                       }`}>
                       <MessageContent content={message.content} role={message.role} />
                     </div>
@@ -756,7 +756,7 @@ const ChatInterface: React.FC = () => {
                   </div>
 
                   {message.role === 'user' && (
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center flex-shrink-0 shadow-lg shadow-blue-500/20 mt-1 order-2">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center flex-shrink-0 shadow-lg shadow-blue-500/30 mt-1 order-2 ring-2 ring-white">
                       <User className="w-5 h-5 text-white" />
                     </div>
                   )}
@@ -764,22 +764,22 @@ const ChatInterface: React.FC = () => {
                 );
               })}
 
-              {/* 加载状态 */}
+              {/* 加载状态 - 优化版 */}
               {isLoading && (
-                <div className="flex items-start gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-indigo-500/20 mt-1">
+                <div className="flex items-start gap-4 animate-slide-up">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary-500/30 mt-1 ring-2 ring-white">
                     <Bot className="w-5 h-5 text-white animate-pulse" />
                   </div>
                   <div className="flex flex-col gap-2 max-w-[85%] w-full">
-                    {/* 状态栏：深度思考中 + 停止按钮 */}
+                    {/* 状态栏 */}
                     <div className="flex items-center gap-3 text-sm text-gray-500 pl-1">
-                    <div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100 shadow-sm">
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-primary-50 to-accent-50 text-primary-700 rounded-full border border-primary-100 shadow-soft">
                       <Brain className="w-4 h-4 animate-pulse" />
-                      <span className="font-medium">{deepThinking ? '深度思考中...' : '思考中...'}</span>
+                      <span className="font-medium text-sm">{deepThinking ? '深度思考中...' : '思考中...'}</span>
                     </div>
                       <button
                         onClick={handleStop}
-                        className="flex items-center gap-1 px-3 py-1 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all border border-transparent hover:border-red-200 shadow-soft"
                         title="停止响应"
                       >
                         <Square className="w-3 h-3 fill-current" />
@@ -788,11 +788,11 @@ const ChatInterface: React.FC = () => {
                     </div>
 
                     {/* 占位气泡 */}
-                    <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm p-6 shadow-sm min-h-[80px] flex items-center">
+                    <div className="bg-white border border-gray-100 rounded-3xl rounded-tl-lg p-6 shadow-soft-lg min-h-[80px] flex items-center">
                       <div className="flex space-x-2">
-                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
-                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                        <div className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
                       </div>
                     </div>
                   </div>
@@ -804,8 +804,8 @@ const ChatInterface: React.FC = () => {
           )}
         </div>
 
-        {/* 输入区域 */}
-        <div className="px-6 pb-6 pt-3 bg-gradient-to-t from-gray-100 to-transparent">
+        {/* 输入区域 - 优化版 */}
+        <div className="px-6 pb-6 pt-3 bg-gradient-to-t from-white via-white to-transparent">
           <form onSubmit={handleSubmit} className="max-w-4xl mx-auto relative">
             {/* 深度思考标签 */}
             <div className="absolute -top-8 left-4 flex items-center gap-3">
@@ -813,10 +813,10 @@ const ChatInterface: React.FC = () => {
                 type="button"
                 onClick={handleToggleDeepThinking}
                 disabled={isLoading || isSending}
-                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full border transition-all ${deepThinking
-                    ? 'bg-gradient-to-r from-indigo-500/10 to-purple-500/10 text-indigo-600 border-indigo-200/50'
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-all shadow-soft ${deepThinking
+                    ? 'bg-gradient-to-r from-primary-500/10 to-accent-500/10 text-primary-700 border-primary-200 shadow-glow'
                     : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-                  } ${isLoading || isSending ? 'opacity-60 cursor-not-allowed' : 'hover:border-indigo-200'}`}
+                  } ${isLoading || isSending ? 'opacity-60 cursor-not-allowed' : 'hover:border-primary-300 hover:scale-105 active:scale-95'}`}
                 title={deepThinking ? '点击关闭深度思考' : '点击启用深度思考'}
               >
                 <Brain className="w-3.5 h-3.5" />
@@ -824,7 +824,7 @@ const ChatInterface: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex items-end bg-white rounded-2xl shadow-xl border border-gray-200/50 px-4 py-3 transition-all hover:shadow-2xl hover:border-indigo-200/50 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-500/10">
+            <div className="flex items-end bg-white rounded-3xl shadow-soft-xl border border-gray-200/50 px-4 py-3 transition-all hover:shadow-glow focus-within:border-primary-300 focus-within:shadow-glow">
               <textarea
                 ref={textareaRef}
                 value={inputValue}
@@ -839,9 +839,9 @@ const ChatInterface: React.FC = () => {
               <button
                 type="submit"
                 disabled={!inputValue.trim() || isSending || isLoading}
-                className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 ${!inputValue.trim() || isSending || isLoading
+                className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 ${!inputValue.trim() || isSending || isLoading
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:from-indigo-600 hover:to-purple-700 shadow-lg shadow-indigo-500/25 transform hover:-translate-y-0.5'
+                    : 'bg-gradient-to-br from-primary-500 to-accent-600 text-white hover:from-primary-600 hover:to-accent-700 shadow-soft-lg hover:shadow-glow transform hover:scale-110 active:scale-95'
                   }`}
                 title={isSending ? '发送中...' : '发送消息'}
               >
