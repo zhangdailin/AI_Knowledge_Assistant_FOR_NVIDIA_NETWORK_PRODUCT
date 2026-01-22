@@ -21,3 +21,18 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
+*.sw*
+
+# Data and runtime files
+data/*.db
+data/*.bin
+data/*.json
+!data/settings.json
+
+# Test results and reports
+test/integration/results/
+test/performance/reports/
+test/stress/results/
+
+# Local configuration
+.claude/settings.local.json

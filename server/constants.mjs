@@ -16,10 +16,11 @@ export const LIMITS = {
 
 // 缓存配置
 export const CACHE = {
-  SEARCH_CACHE_SIZE: 300,         // 扩大搜索缓存
-  SEMANTIC_CACHE_SIZE: 150,       // 扩大语义缓存
-  SEMANTIC_CACHE_THRESHOLD: 0.88, // 降低阈值提高命中率
-  STATS_CACHE_TTL: 60000
+  SEARCH_CACHE_SIZE: 500,         // 增加搜索缓存以提高命中率
+  SEMANTIC_CACHE_SIZE: 200,       // 增加语义缓存
+  SEMANTIC_CACHE_THRESHOLD: 0.85, // 降低阈值以提高命中率
+  STATS_CACHE_TTL: 60000,         // 统计缓存TTL (1分钟)
+  CACHE_TTL: 3600000              // 通用缓存TTL (1小时)
 };
 
 // 向量和评分配置

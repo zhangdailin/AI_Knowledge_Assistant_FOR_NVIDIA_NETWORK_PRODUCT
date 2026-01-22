@@ -37,8 +37,6 @@
     "cytoscape": "^3.33.1",
     "cytoscape-cose-bilkent": "^4.1.0",
     "express": "^5.2.1",
-    "graphology": "^0.26.0",
-    "graphology-shortest-path": "^2.1.0",
     "hnswlib-node": "^3.0.0",
     "lucide-react": "^0.511.0",
     "mammoth": "^1.11.0",

@@ -63,6 +63,10 @@ export async function initStorage() {
       error_message TEXT,
       metadata TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_documents_uploaded ON documents(uploaded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_documents_category ON documents(category_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
     
     -- Chunks 表
     CREATE TABLE IF NOT EXISTS chunks (
@@ -82,6 +86,9 @@ export async function initStorage() {
     CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
     CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
     CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_chunks_created ON chunks(created_at);
+    CREATE INDEX IF NOT EXISTS idx_chunks_has_embedding ON chunks(embedding) WHERE embedding IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_chunks_doc_type ON chunks(document_id, chunk_type);
     
     -- 设置表
     CREATE TABLE IF NOT EXISTS settings (
