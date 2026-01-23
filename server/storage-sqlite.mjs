@@ -20,6 +20,88 @@ const DB_PATH = path.join(DATA_DIR, 'knowledge.db');
 let db = null;
 let isInitialized = false;
 let searchCacheInvalidator = null;
+let hnswRebuildPromise = null;
+
+function deserializeEmbedding(raw) {
+    if (!raw || raw.length % 4 !== 0) return null;
+    const floatArray = new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4);
+    return Array.from(floatArray);
+}
+
+async function rebuildHnswIndexIfNeeded(reason) {
+    if (hnswRebuildPromise) return hnswRebuildPromise;
+
+    hnswRebuildPromise = (async () => {
+        const ready = await hnswIndex.initialize();
+        if (!ready) return false;
+
+        const database = getDatabase();
+        const countRow = database.prepare(`
+            SELECT COUNT(*) as count
+            FROM chunks
+            WHERE embedding IS NOT NULL
+              AND chunk_type != 'parent'
+        `).get();
+        const expectedCount = countRow?.count || 0;
+
+        if (expectedCount === 0) return true;
+        if (hnswIndex.getSize() > 0 && !hnswIndex.needsRebuild(expectedCount)) return true;
+
+        const maxElements = hnswIndex.config?.maxElements;
+        if (Number.isFinite(maxElements) && expectedCount > maxElements) {
+            console.warn(`[HnswIndex] 索引大小 ${expectedCount} 超过上限 ${maxElements}，跳过重建`);
+            return false;
+        }
+
+        console.log(`[HnswIndex] 开始重建索引 (${reason || 'unknown'})...`);
+        const rows = database.prepare(`
+            SELECT id, embedding
+            FROM chunks
+            WHERE embedding IS NOT NULL
+              AND chunk_type != 'parent'
+        `).all();
+
+        const items = [];
+        for (const row of rows) {
+            const vector = deserializeEmbedding(row.embedding);
+            if (Array.isArray(vector) && vector.length > 0) {
+                items.push({ id: row.id, vector });
+            }
+        }
+
+        if (items.length === 0) return true;
+        await hnswIndex.rebuild(items);
+        return true;
+    })().finally(() => {
+        hnswRebuildPromise = null;
+    });
+
+    return hnswRebuildPromise;
+}
+
+async function addEmbeddingsToHnsw(items, reason) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    try {
+        const ready = await hnswIndex.initialize();
+        if (!ready) return;
+        if (hnswRebuildPromise) await hnswRebuildPromise;
+        await hnswIndex.addVectors(items);
+    } catch (error) {
+        console.warn(`[HnswIndex] 向量更新失败 (${reason || 'unknown'}):`, error.message);
+    }
+}
+
+async function removeEmbeddingsFromHnsw(ids, reason) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    try {
+        const ready = await hnswIndex.initialize();
+        if (!ready) return;
+        if (hnswRebuildPromise) await hnswRebuildPromise;
+        await hnswIndex.removeVectors(ids);
+    } catch (error) {
+        console.warn(`[HnswIndex] 向量删除失败 (${reason || 'unknown'}):`, error.message);
+    }
+}
 
 // ========== 数据库初始化 ==========
 
@@ -154,6 +236,7 @@ export async function initStorage() {
 
     isInitialized = true;
     console.log('[SQLite] 数据库初始化完成');
+    void rebuildHnswIndexIfNeeded('startup');
 }
 
 // ========== 文档管理 ==========
@@ -406,6 +489,12 @@ export async function deleteChunksByDocument(documentId) {
     await initStorage();
     const database = getDatabase();
 
+    const chunkIds = database.prepare(`
+    SELECT id FROM chunks
+    WHERE document_id = ?
+      AND embedding IS NOT NULL
+  `).all(documentId).map(row => row.id);
+
     // 先删除 FTS 索引
     database.prepare(`
     DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE document_id = ?)
@@ -419,6 +508,9 @@ export async function deleteChunksByDocument(documentId) {
 
     if (searchCacheInvalidator) searchCacheInvalidator('deleteChunksByDocument');
     console.log(`[SQLite] 已删除文档 ${documentId} 的 ${result.changes} 个 chunks`);
+    if (chunkIds.length > 0) {
+        void removeEmbeddingsFromHnsw(chunkIds, 'deleteChunksByDocument');
+    }
     return true;
 }
 
@@ -434,6 +526,13 @@ export async function updateChunkEmbedding(chunkId, embedding) {
     const result = database.prepare('UPDATE chunks SET embedding = ? WHERE id = ?').run(embeddingBlob, chunkId);
 
     if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbedding');
+    if (result.changes > 0) {
+        if (Array.isArray(embedding) && embedding.length > 0) {
+            void addEmbeddingsToHnsw([{ id: chunkId, vector: embedding }], 'updateChunkEmbedding');
+        } else {
+            void removeEmbeddingsFromHnsw([chunkId], 'updateChunkEmbedding');
+        }
+    }
     return result.changes > 0;
 }
 
@@ -446,29 +545,34 @@ export async function updateChunkEmbeddings(updates, documentId) {
 
     const transaction = database.transaction((updates) => {
         let success = 0;
+        const updated = [];
         for (const update of updates) {
             let embeddingBlob = null;
             if (Array.isArray(update.embedding) && update.embedding.length > 0) {
                 embeddingBlob = Buffer.from(new Float32Array(update.embedding).buffer);
             }
             const result = updateStmt.run(embeddingBlob, update.chunkId);
-            if (result.changes > 0) success++;
+            if (result.changes > 0) {
+                success++;
+                if (Array.isArray(update.embedding) && update.embedding.length > 0) {
+                    updated.push({ id: update.chunkId, vector: update.embedding });
+                }
+            }
         }
-        return success;
+        return { success, updated };
     });
 
-    const success = transaction(updates);
+    const { success, updated } = transaction(updates);
     if (searchCacheInvalidator) searchCacheInvalidator('updateChunkEmbeddings');
+    if (updated.length > 0) {
+        void addEmbeddingsToHnsw(updated, 'updateChunkEmbeddings');
+    }
     return { success, failed: updates.length - success };
 }
 
 function rowToChunk(row) {
     // 反序列化 embedding
-    let embedding = null;
-    if (row.embedding) {
-        const floatArray = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.length / 4);
-        embedding = Array.from(floatArray);
-    }
+    const embedding = deserializeEmbedding(row.embedding);
 
     return {
         id: row.id,
@@ -625,6 +729,9 @@ export async function vectorSearchChunks(queryEmbedding, limit = 30, categoryIds
                 console.log(`[SQLite] HNSW 向量搜索: 返回 ${results.length} 个结果`);
                 return results.slice(0, limit);
             }
+        }
+        if (hnswReady && hnswIndex.getSize() === 0) {
+            void rebuildHnswIndexIfNeeded('vector_search');
         }
     } catch (hnswError) {
         console.warn('[SQLite] HNSW 搜索失败，回退到线性扫描:', hnswError.message);

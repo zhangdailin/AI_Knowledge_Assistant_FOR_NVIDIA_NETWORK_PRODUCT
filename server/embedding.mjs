@@ -5,10 +5,15 @@
 
 import * as storage from './storage-adapter.mjs';
 
-const SILICONFLOW_EMBED_URL = 'https://api.siliconflow.cn/v1/embeddings';
-const SILICONFLOW_RERANK_URL = 'https://api.siliconflow.cn/v1/rerank';
+const DEFAULT_SILICONFLOW_BASE_URL = 'https://api.siliconflow.cn';
 const DEFAULT_EMBEDDING_MODEL = 'BAAI/bge-m3';
 const DEFAULT_RERANKING_MODEL = 'BAAI/bge-reranker-v2-m3';
+const EMBEDDING_TIMEOUT_MS = Number.isFinite(Number(process.env.SILICONFLOW_EMBED_TIMEOUT_MS))
+  ? Number(process.env.SILICONFLOW_EMBED_TIMEOUT_MS)
+  : 15000;
+const RERANK_TIMEOUT_MS = Number.isFinite(Number(process.env.SILICONFLOW_RERANK_TIMEOUT_MS))
+  ? Number(process.env.SILICONFLOW_RERANK_TIMEOUT_MS)
+  : 20000;
 
 // Reranking 模型配置（按上下文大小排序）
 const RERANKING_MODELS = [
@@ -35,6 +40,37 @@ async function getRerankingModel() {
     return settings?.modelSelection?.reranking || DEFAULT_RERANKING_MODEL;
   } catch (e) {
     return DEFAULT_RERANKING_MODEL;
+  }
+}
+
+async function getSiliconFlowBaseUrl() {
+  try {
+    const settings = await storage.getSettings();
+    return settings?.providers?.siliconflow?.baseUrl || DEFAULT_SILICONFLOW_BASE_URL;
+  } catch (e) {
+    return DEFAULT_SILICONFLOW_BASE_URL;
+  }
+}
+
+function normalizeBaseUrl(baseUrl) {
+  const safe = baseUrl || DEFAULT_SILICONFLOW_BASE_URL;
+  return safe.endsWith('/') ? safe.slice(0, -1) : safe;
+}
+
+function isModelNotFoundMessage(message) {
+  const text = (message || '').toLowerCase();
+  return text.includes('model does not exist') ||
+    text.includes('model not found') ||
+    text.includes('模型不存在');
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -70,27 +106,41 @@ export async function embedTexts(texts) {
   if (!apiKey) throw new Error('SiliconFlow API key 未配置');
 
   const embeddingModel = await getEmbeddingModel();
+  const baseUrl = normalizeBaseUrl(await getSiliconFlowBaseUrl());
+  const embedUrl = `${baseUrl}/v1/embeddings`;
 
-  try {
-    const res = await fetch(SILICONFLOW_EMBED_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: embeddingModel,
-        input: textsToEmbed
-      })
-    });
+  const requestEmbeddings = async (modelName) => {
+    let res;
+    try {
+      res = await fetchWithTimeout(embedUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: modelName,
+          input: textsToEmbed
+        })
+      }, EMBEDDING_TIMEOUT_MS);
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`Embedding API 超时 (${EMBEDDING_TIMEOUT_MS}ms)`);
+      }
+      throw error;
+    }
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
-      if (res.status === 429) throw new Error(`Rate Limit Exceeded (429)`);
-      throw new Error(`Embedding API 错误 ${res.status}: ${errorText.substring(0, 100)}`);
+      if (res.status === 429) throw new Error('Rate Limit Exceeded (429)');
+      throw new Error(`Embedding API 错误 ${res.status}: ${errorText.substring(0, 200)}`);
     }
 
-    const data = await res.json();
+    return res.json();
+  };
+
+  try {
+    const data = await requestEmbeddings(embeddingModel);
     const results = new Array(texts.length).fill(null);
 
     // 解析返回结果 (SiliconFlow 通常在 data 数组中按顺序返回)
@@ -104,7 +154,21 @@ export async function embedTexts(texts) {
 
     return results;
   } catch (error) {
-    console.error('批量生成 embedding 失败:', error.message);
+    const message = error?.message || '';
+    if (embeddingModel !== DEFAULT_EMBEDDING_MODEL && isModelNotFoundMessage(message)) {
+      console.warn(`[Embedding] 模型 ${embeddingModel} 不可用，回退到 ${DEFAULT_EMBEDDING_MODEL}`);
+      const data = await requestEmbeddings(DEFAULT_EMBEDDING_MODEL);
+      const results = new Array(texts.length).fill(null);
+      const embeddings = data?.data;
+      if (Array.isArray(embeddings)) {
+        embeddings.forEach((item, idx) => {
+          const originalIdx = validIndices[idx];
+          results[originalIdx] = item.embedding || item;
+        });
+      }
+      return results;
+    }
+    console.error('批量生成 embedding 失败:', message);
     throw error;
   }
 }
@@ -136,23 +200,31 @@ function isContextLengthError(errorText) {
 }
 
 // 使用指定模型进行 rerank
-async function rerankWithModel(apiKey, modelName, query, documents, topN, maxCharsPerDoc) {
+async function rerankWithModel(apiKey, baseUrl, modelName, query, documents, topN, maxCharsPerDoc) {
   const truncatedDocs = truncateDocuments(documents, maxCharsPerDoc);
 
-  const res = await fetch(SILICONFLOW_RERANK_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: modelName,
-      query: query,
-      documents: truncatedDocs,
-      top_n: Math.min(topN, documents.length),
-      return_documents: false
-    })
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(`${baseUrl}/v1/rerank`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: modelName,
+        query: query,
+        documents: truncatedDocs,
+        top_n: Math.min(topN, documents.length),
+        return_documents: false
+      })
+    }, RERANK_TIMEOUT_MS);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw { status: 408, message: `Rerank API 超时 (${RERANK_TIMEOUT_MS}ms)` };
+    }
+    throw error;
+  }
 
   if (!res.ok) {
     const errorText = await res.text().catch(() => '');
@@ -178,6 +250,7 @@ export async function rerankDocuments(query, documents, topN = 10) {
 
   // 获取配置的模型
   const configuredModel = await getRerankingModel();
+  const baseUrl = normalizeBaseUrl(await getSiliconFlowBaseUrl());
 
   // 查找配置的模型信息
   let currentModelConfig = RERANKING_MODELS.find(m => m.name === configuredModel);
@@ -195,6 +268,7 @@ export async function rerankDocuments(query, documents, topN = 10) {
   try {
     const results = await rerankWithModel(
       apiKey,
+      baseUrl,
       currentModelConfig.name,
       query,
       documents,
@@ -229,6 +303,7 @@ export async function rerankDocuments(query, documents, topN = 10) {
         try {
           const results = await rerankWithModel(
             apiKey,
+            baseUrl,
             currentModelConfig.name,
             query,
             documents.slice(0, topN),
@@ -255,6 +330,7 @@ export async function rerankDocuments(query, documents, topN = 10) {
       try {
         const results = await rerankWithModel(
           apiKey,
+          baseUrl,
           currentModelConfig.name,
           query,
           documents.slice(0, topN),
@@ -282,6 +358,7 @@ export async function rerankDocuments(query, documents, topN = 10) {
         try {
           const results = await rerankWithModel(
             apiKey,
+            baseUrl,
             modelConfig.name,
             query,
             documents.slice(0, topN),

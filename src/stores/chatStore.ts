@@ -560,6 +560,10 @@ function getQueryComplexity(query: string): number {
   return intentClassifier.getQueryComplexity(query);
 }
 
+// 分类检测缓存（基于厂商关键词）
+const categoryDetectionCache = new Map<string, { categoryId: string | undefined; timestamp: number }>();
+const CATEGORY_CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
+
 // 自动检测查询应该搜索的分类
 async function detectCategory(query: string): Promise<string | undefined> {
   const queryLower = query.toLowerCase();
@@ -570,10 +574,26 @@ async function detectCategory(query: string): Promise<string | undefined> {
       .filter(Boolean)
   );
 
+  // 生成缓存键（基于厂商关键词和查询中的分类名称）
+  const cacheKey = Array.from(normalizedVendors).sort().join(',') + '|' + queryLower.substring(0, 50);
+
+  // 检查缓存
+  const cached = categoryDetectionCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CATEGORY_CACHE_TTL) {
+    if (cached.categoryId) {
+      console.log(`[CategoryDetect] 使用缓存结果: ${cached.categoryId}`);
+    }
+    return cached.categoryId;
+  }
+
   // 获取所有分类
   try {
     const res = await fetch(`${getApiServerUrl()}/api/categories`);
-    if (!res.ok) return undefined;
+    if (!res.ok) {
+      // 缓存失败结果
+      categoryDetectionCache.set(cacheKey, { categoryId: undefined, timestamp: Date.now() });
+      return undefined;
+    }
     const data = await res.json();
     const categories = data.tree || [];
 
@@ -612,9 +632,16 @@ async function detectCategory(query: string): Promise<string | undefined> {
       return undefined;
     };
 
-    return findMatchingCategory(categories);
+    const categoryId = findMatchingCategory(categories);
+
+    // 缓存结果
+    categoryDetectionCache.set(cacheKey, { categoryId, timestamp: Date.now() });
+
+    return categoryId;
   } catch (error) {
     console.error('[CategoryDetect] 分类检测失败:', error);
+    // 缓存失败结果
+    categoryDetectionCache.set(cacheKey, { categoryId: undefined, timestamp: Date.now() });
     return undefined;
   }
 }
@@ -994,80 +1021,220 @@ ${isConfigQuery ? `\n**配置问题格式要求**：\n${CONFIG_TEMPLATE}` : ''}
 参考文档：
 ${knowledgeContext}`;
 
-      // Use backend proxy to avoid CORS
-      const response = await fetch(`${getApiServerUrl()}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          // 不发送 model，让后端使用配置的模型
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...historyMessages,
-            { role: 'user', content }
-          ],
-          max_tokens: AI_MODEL_CONFIG.MAX_TOKENS,
-          temperature: deepThinking ? AI_MODEL_CONFIG.DEEP_THINKING_TEMPERATURE : AI_MODEL_CONFIG.DEFAULT_TEMPERATURE,
-          useGemini,
-          question: content,
-          // 传递前8-14条参考文档用于验证，与上下文保持一致
-          references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
-            id: r.id ?? `ref-${idx}`,
-            title: r.title ?? `参考文档 #${idx + 1}`,
-            content: r.content,
-            documentId: r.documentId ?? undefined
-          })) : []
-        }),
-        signal: abortController.signal
-      });
+      // 使用流式响应以提升用户体验
+      const useStreaming = true; // 启用流式响应
+      const apiEndpoint = useStreaming ? '/api/chat/stream' : '/api/chat';
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `API 请求失败: ${response.status}`);
-      }
+      const requestBody = {
+        // 不发送 model，让后端使用配置的模型
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages,
+          { role: 'user', content }
+        ],
+        max_tokens: AI_MODEL_CONFIG.MAX_TOKENS,
+        temperature: deepThinking ? AI_MODEL_CONFIG.DEEP_THINKING_TEMPERATURE : AI_MODEL_CONFIG.DEFAULT_TEMPERATURE,
+        useGemini,
+        question: content,
+        // 传递前8-14条参考文档用于验证，与上下文保持一致
+        references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
+          id: r.id ?? `ref-${idx}`,
+          title: r.title ?? `参考文档 #${idx + 1}`,
+          content: r.content,
+          documentId: r.documentId ?? undefined
+        })) : []
+      };
 
-      const data = await response.json();
-      const assistantContent = data.choices?.[0]?.message?.content || '抱歉，我无法生成回复。';
-      const modelUsed = data.source === 'gemini' ? 'Gemini' : (data.model || '已配置模型');
-      const validation = data.validation;
+      let assistantContent = '';
+      let modelUsed = '';
+      let validation: any = null;
 
-      const assistantMessage = localStorageManager.addMessage({
-        conversationId: currentConversation.id,
-        role: 'assistant',
-        content: assistantContent,
-        metadata: {
-          model: modelUsed,
-          deepThinking,
-          // 保存前8-14条参考文档，提供更完整的来源信息
-          references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
-            id: r.id ?? `ref-${idx}`,
-            documentId: r.documentId ?? undefined,
-            title: r.title ?? `参考文档 #${idx + 1}`,
-            content: r.content,
-            score: r.score,
-            // 传递合并元数据
-            mergedHeaders: (r as any).mergedHeaders,
-            mergedIds: (r as any).mergedIds,
-            isOptimized: (r as any).isOptimized
-          })) : [],
-          validation,
-          relatedMessageId: userMessage.id,
-          // 添加工具调用结果
-          toolResults: snIblfResult ? {
-            snIblf: {
-              queriedSNs,
-              result: snIblfResult
-            }
-          } : undefined
+      if (useStreaming) {
+        // 流式响应处理
+        const response = await fetch(`${getApiServerUrl()}${apiEndpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody),
+          signal: abortController.signal
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `API 请求失败: ${response.status}`);
         }
-      });
 
-      set(state => ({
-        messages: [...state.messages, assistantMessage],
-        isLoading: false,
-        abortController: null
-      }));
+        // 创建临时助手消息用于实时更新
+        const tempAssistantMessage = localStorageManager.addMessage({
+          conversationId: currentConversation.id,
+          role: 'assistant',
+          content: '',
+          metadata: {
+            model: '生成中...',
+            deepThinking,
+            references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
+              id: r.id ?? `ref-${idx}`,
+              documentId: r.documentId ?? undefined,
+              title: r.title ?? `参考文档 #${idx + 1}`,
+              content: r.content,
+              score: r.score,
+              mergedHeaders: (r as any).mergedHeaders,
+              mergedIds: (r as any).mergedIds,
+              isOptimized: (r as any).isOptimized
+            })) : [],
+            relatedMessageId: userMessage.id,
+            toolResults: snIblfResult ? {
+              snIblf: {
+                queriedSNs,
+                result: snIblfResult
+              }
+            } : undefined
+          }
+        });
+
+        set(state => ({
+          messages: [...state.messages, tempAssistantMessage]
+        }));
+
+        // 处理 SSE 流
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                try {
+                  const parsed = JSON.parse(data);
+
+                  if (parsed.error) {
+                    throw new Error(parsed.error);
+                  }
+
+                  if (parsed.content) {
+                    assistantContent += parsed.content;
+
+                    // 实时更新消息内容
+                    localStorageManager.updateMessage(tempAssistantMessage.id, {
+                      content: assistantContent
+                    });
+
+                    set(state => ({
+                      messages: state.messages.map(msg =>
+                        msg.id === tempAssistantMessage.id
+                          ? { ...msg, content: assistantContent }
+                          : msg
+                      )
+                    }));
+                  }
+
+                  if (parsed.done) {
+                    validation = parsed.validation;
+                    modelUsed = parsed.source === 'gemini' ? 'Gemini' : (parsed.model || '已配置模型');
+                  }
+                } catch (e) {
+                  console.error('[Chat] SSE parse error:', e);
+                }
+              }
+            }
+          }
+        }
+
+        // 更新最终的元数据
+        localStorageManager.updateMessage(tempAssistantMessage.id, {
+          content: assistantContent || '抱歉，我无法生成回复。',
+          metadata: {
+            ...tempAssistantMessage.metadata,
+            model: modelUsed,
+            validation
+          }
+        });
+
+        set(state => ({
+          messages: state.messages.map(msg =>
+            msg.id === tempAssistantMessage.id
+              ? {
+                ...msg,
+                content: assistantContent || '抱歉，我无法生成回复。',
+                metadata: {
+                  ...msg.metadata,
+                  model: modelUsed,
+                  validation
+                }
+              }
+              : msg
+          ),
+          isLoading: false,
+          abortController: null
+        }));
+      } else {
+        // 非流式响应处理（保留原有逻辑）
+        const response = await fetch(`${getApiServerUrl()}${apiEndpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody),
+          signal: abortController.signal
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `API 请求失败: ${response.status}`);
+        }
+
+        const data = await response.json();
+        assistantContent = data.choices?.[0]?.message?.content || '抱歉，我无法生成回复。';
+        modelUsed = data.source === 'gemini' ? 'Gemini' : (data.model || '已配置模型');
+        validation = data.validation;
+
+        const assistantMessage = localStorageManager.addMessage({
+          conversationId: currentConversation.id,
+          role: 'assistant',
+          content: assistantContent,
+          metadata: {
+            model: modelUsed,
+            deepThinking,
+            // 保存前8-14条参考文档，提供更完整的来源信息
+            references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
+              id: r.id ?? `ref-${idx}`,
+              documentId: r.documentId ?? undefined,
+              title: r.title ?? `参考文档 #${idx + 1}`,
+              content: r.content,
+              score: r.score,
+              // 传递合并元数据
+              mergedHeaders: (r as any).mergedHeaders,
+              mergedIds: (r as any).mergedIds,
+              isOptimized: (r as any).isOptimized
+            })) : [],
+            validation,
+            relatedMessageId: userMessage.id,
+            // 添加工具调用结果
+            toolResults: snIblfResult ? {
+              snIblf: {
+                queriedSNs,
+                result: snIblfResult
+              }
+            } : undefined
+          }
+        });
+
+        set(state => ({
+          messages: [...state.messages, assistantMessage],
+          isLoading: false,
+          abortController: null
+        }));
+      }
 
       // 记录查询日志
       const responseTime = Date.now() - startTime;

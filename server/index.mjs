@@ -2235,12 +2235,26 @@ async function getProviderConfig(provider) {
   // 默认配置
   const defaults = {
     siliconflow: { baseUrl: 'https://api.siliconflow.cn', apiKey: '' },
-    gemini: { baseUrl: 'https://gemini.chinablog.xyz', apiKey: 'Zhang1996' }
+    gemini: { baseUrl: 'https://gemini.chinablog.xyz', apiKey: '' }
   };
 
+  const envOverrides = {
+    siliconflow: {
+      baseUrl: process.env.SILICONFLOW_BASE_URL,
+      apiKey: process.env.SILICONFLOW_API_KEY
+    },
+    gemini: {
+      baseUrl: process.env.GOOGLE_GEMINI_BASE_URL || process.env.GEMINI_BASE_URL,
+      apiKey: process.env.GEMINI_API_KEY
+    }
+  };
+
+  const override = envOverrides[provider] || {};
+  const baseUrl = (override.baseUrl || config?.baseUrl || defaults[provider]?.baseUrl || '').replace(/\/$/, '');
+
   return {
-    baseUrl: config?.baseUrl || defaults[provider]?.baseUrl || '',
-    apiKey: config?.apiKey || defaults[provider]?.apiKey || ''
+    baseUrl,
+    apiKey: override.apiKey || config?.apiKey || defaults[provider]?.apiKey || ''
   };
 }
 
@@ -2275,18 +2289,22 @@ const NVIDIA_PDF_CSS = `
 body { color: #111827; font-size: 12pt; line-height: 1.5; }
 `;
 
-const fetchWithTimeout = async (targetUrl, timeoutMs = 30_000) => {
+const fetchWithTimeout = async (targetUrl, optionsOrTimeout = {}, maybeTimeoutMs) => {
+  const options = typeof optionsOrTimeout === 'number' ? {} : optionsOrTimeout;
+  const timeoutMs = typeof optionsOrTimeout === 'number'
+    ? optionsOrTimeout
+    : (maybeTimeoutMs ?? 30_000);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(targetUrl, { signal: controller.signal });
+    return await fetch(targetUrl, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
 };
 
 const fetchPdf = async (targetUrl) => {
-  const pdfRes = await fetchWithTimeout(targetUrl, 45_000);
+  const pdfRes = await fetchWithTimeout(targetUrl, {}, 45_000);
   if (!pdfRes.ok) return null;
   const contentType = pdfRes.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/pdf')) return null;
@@ -2312,7 +2330,7 @@ const generateNvidiaPdf = async (url, filename) => {
       return { outPath, filename };
     }
 
-    const htmlRes = await fetchWithTimeout(url, 30_000);
+    const htmlRes = await fetchWithTimeout(url, {}, 30_000);
     if (htmlRes.ok) {
       const html = await htmlRes.text();
       const pdfLink = guessPdfUrlFromHtml(html);
@@ -2488,6 +2506,192 @@ app.get('/api/nvidia-doc-pdf/tasks/:taskId/download', async (req, res) => {
   res.download(outPath, filename || 'nvidia-doc.pdf', cleanupTempFile);
 });
 
+const SILICONFLOW_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.SILICONFLOW_CHAT_TIMEOUT_MS))
+  ? Number(process.env.SILICONFLOW_CHAT_TIMEOUT_MS)
+  : 45000;
+const GEMINI_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.GEMINI_CHAT_TIMEOUT_MS))
+  ? Number(process.env.GEMINI_CHAT_TIMEOUT_MS)
+  : 30000;
+const FALLBACK_LLM_MODEL = process.env.SILICONFLOW_FALLBACK_LLM_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+
+// 流式响应接口
+app.post('/api/chat/stream', async (req, res) => {
+  try {
+    const {
+      messages = [],
+      model,
+      max_tokens,
+      temperature,
+      useGemini,
+      references = [],
+      question
+    } = req.body;
+    const latestUserMessage = question ||
+      [...messages].reverse().find(msg => msg.role === 'user')?.content ||
+      '';
+
+    // 设置 SSE 响应头
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // 如果指定使用 Gemini
+    if (useGemini) {
+      console.log('[Chat] Using Gemini API with streaming');
+      try {
+        const geminiConfig = await getProviderConfig('gemini');
+        if (!geminiConfig.apiKey) {
+          throw new Error('未配置 Gemini API Key');
+        }
+
+        const response = await fetchWithTimeout(`${geminiConfig.baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${geminiConfig.apiKey}`
+          },
+          body: JSON.stringify({
+            model: model || 'gemini-3-flash-preview',
+            messages,
+            max_tokens: max_tokens || 8192,
+            temperature: temperature || 0.7,
+            stream: true,
+            tools: [{ type: 'google_search' }]
+          })
+        }, GEMINI_CHAT_TIMEOUT_MS);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('[Chat] Gemini API error:', response.status, errorData);
+          res.write(`data: ${JSON.stringify({ error: `Gemini API 请求失败: ${response.status}` })}\n\n`);
+          res.end();
+          return;
+        }
+
+        // 处理流式响应
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullContent = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content || '';
+                if (content) {
+                  fullContent += content;
+                  res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
+                }
+              } catch (e) {
+                // 忽略解析错误
+              }
+            }
+          }
+        }
+
+        // 发送完成信号和验证结果
+        const validation = validateAnswerConsistency(fullContent, references, latestUserMessage);
+        res.write(`data: ${JSON.stringify({ done: true, validation, source: 'gemini' })}\n\n`);
+        res.end();
+        return;
+      } catch (geminiError) {
+        console.error('[Chat] Gemini streaming failed:', geminiError.message);
+        res.write(`data: ${JSON.stringify({ error: geminiError.message })}\n\n`);
+        res.end();
+        return;
+      }
+    }
+
+    // 默认使用 SiliconFlow 流式响应
+    const siliconflowConfig = await getProviderConfig('siliconflow');
+    const apiKey = siliconflowConfig.apiKey || await storage.getApiKey('siliconflow');
+    if (!apiKey) {
+      res.write(`data: ${JSON.stringify({ error: '未配置 SiliconFlow API Key' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const defaultModel = model || await getLLMModel();
+    const response = await fetchWithTimeout(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: defaultModel,
+        messages,
+        max_tokens: max_tokens || 8192,
+        temperature: temperature || 0.7,
+        stream: true
+      })
+    }, SILICONFLOW_CHAT_TIMEOUT_MS);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[Chat] API error:', response.status, errorData);
+      res.write(`data: ${JSON.stringify({ error: `API 请求失败: ${response.status}` })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // 处理流式响应
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content || '';
+            if (content) {
+              fullContent += content;
+              res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
+            }
+          } catch (e) {
+            // 忽略解析错误
+          }
+        }
+      }
+    }
+
+    // 发送完成信号和验证结果
+    const validation = validateAnswerConsistency(fullContent, references, latestUserMessage);
+    res.write(`data: ${JSON.stringify({ done: true, validation, source: 'siliconflow', model: defaultModel })}\n\n`);
+    res.end();
+  } catch (error) {
+    console.error('[Chat] Streaming error:', error);
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
 app.post('/api/chat', async (req, res) => {
   try {
     const {
@@ -2512,7 +2716,7 @@ app.post('/api/chat', async (req, res) => {
           throw new Error('未配置 Gemini API Key');
         }
 
-        const response = await fetch(`${geminiConfig.baseUrl}/v1/chat/completions`, {
+        const response = await fetchWithTimeout(`${geminiConfig.baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2526,7 +2730,7 @@ app.post('/api/chat', async (req, res) => {
             // 启用 Google Search grounding（联网搜索）
             tools: [{ type: 'google_search' }]
           })
-        });
+        }, GEMINI_CHAT_TIMEOUT_MS);
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
@@ -2539,7 +2743,10 @@ app.post('/api/chat', async (req, res) => {
         const validation = validateAnswerConsistency(answerText, references, latestUserMessage);
         return res.json({ ok: true, ...data, source: 'gemini', validation });
       } catch (geminiError) {
-        console.error('[Chat] Gemini failed, falling back to SiliconFlow:', geminiError.message);
+        const geminiMessage = geminiError?.name === 'AbortError'
+          ? `Gemini API 超时 (${GEMINI_CHAT_TIMEOUT_MS}ms)`
+          : geminiError.message;
+        console.error('[Chat] Gemini failed, falling back to SiliconFlow:', geminiMessage);
         // Gemini 失败，回退到 SiliconFlow
       }
     }
@@ -2557,24 +2764,32 @@ app.post('/api/chat', async (req, res) => {
     const retryDelay = 2000; // 2秒
     let lastError = null;
 
+    const defaultModel = model || await getLLMModel();
+    let currentModel = defaultModel;
+    let triedFallbackModel = false;
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await fetch(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
+        const response = await fetchWithTimeout(`${siliconflowConfig.baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
           },
           body: JSON.stringify({
-            model: model || await getLLMModel(),
+            model: currentModel,
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7
           })
-        });
+        }, SILICONFLOW_CHAT_TIMEOUT_MS);
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
+          const errorMessage = errorData.error?.message || errorData.message || JSON.stringify(errorData);
+          const isModelNotFound = response.status === 404 &&
+            /model/i.test(errorMessage) &&
+            /(not\s+exist|not\s+found|不存在)/i.test(errorMessage);
 
           // 如果是 503 错误且还有重试次数，则等待后重试
           if (response.status === 503 && attempt < maxRetries) {
@@ -2584,11 +2799,18 @@ app.post('/api/chat', async (req, res) => {
             continue; // 重试
           }
 
+          if (isModelNotFound && !triedFallbackModel && FALLBACK_LLM_MODEL && FALLBACK_LLM_MODEL !== currentModel) {
+            console.warn(`[Chat] 模型 ${currentModel} 不存在，改用回退模型 ${FALLBACK_LLM_MODEL}`);
+            currentModel = FALLBACK_LLM_MODEL;
+            triedFallbackModel = true;
+            continue;
+          }
+
           // 其他错误或重试次数用尽，直接返回错误
           console.error('[Chat] API error:', response.status, errorData);
           return res.status(response.status).json({
             ok: false,
-            error: errorData.error?.message || errorData.message || `API 请求失败: ${response.status}`
+            error: errorMessage || `API 请求失败: ${response.status}`
           });
         }
 
@@ -2605,7 +2827,10 @@ app.post('/api/chat', async (req, res) => {
       } catch (fetchError) {
         lastError = fetchError;
         if (attempt < maxRetries) {
-          console.warn(`[Chat] 请求失败 (尝试 ${attempt}/${maxRetries})，${retryDelay}ms 后重试...`, fetchError.message);
+          const errorMessage = fetchError?.name === 'AbortError'
+            ? `请求超时 (${SILICONFLOW_CHAT_TIMEOUT_MS}ms)`
+            : fetchError.message;
+          console.warn(`[Chat] 请求失败 (尝试 ${attempt}/${maxRetries})，${retryDelay}ms 后重试...`, errorMessage);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
           continue;
         }

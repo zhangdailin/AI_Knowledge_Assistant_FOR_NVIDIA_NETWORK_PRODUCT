@@ -217,6 +217,21 @@ const KnowledgeGraph: React.FC = () => {
 
       const { nodes, relationships } = data.data;
 
+      // 创建节点ID集合用于验证边的有效性
+      const nodeIds = new Set(nodes.map((node: any) => node.id));
+
+      // 过滤掉引用不存在节点的边
+      const validRelationships = relationships.filter((rel: any) => {
+        const hasValidSource = nodeIds.has(rel.startNode);
+        const hasValidTarget = nodeIds.has(rel.endNode);
+
+        if (!hasValidSource || !hasValidTarget) {
+          console.warn(`[KnowledgeGraph] 跳过无效边: source=${rel.startNode} (存在:${hasValidSource}), target=${rel.endNode} (存在:${hasValidTarget})`);
+          return false;
+        }
+        return true;
+      });
+
       // 转换为 Cytoscape 格式
       const elements = [
         // 节点
@@ -228,8 +243,8 @@ const KnowledgeGraph: React.FC = () => {
             properties: node.properties
           }
         })),
-        // 边
-        ...relationships.map((rel: any, idx: number) => ({
+        // 边（仅包含有效的边）
+        ...validRelationships.map((rel: any, idx: number) => ({
           data: {
             id: `edge-${idx}`,
             source: rel.startNode,
