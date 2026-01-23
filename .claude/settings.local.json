@@ -56,7 +56,18 @@
       "Bash(elif [ -f ~/.ssh/id_ed25519.pub ])",
       "Bash(else echo \"未找到SSH密钥\")",
       "Bash(fi)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(npm run dev:*)",
+      "Bash(sqlite3:*)",
+      "Bash(pm2 restart:*)",
+      "Bash(npm run type-check:*)",
+      "Bash(python3:*)",
+      "Bash(npm run check)",
+      "Bash(npm run server:*)",
+      "Bash(scp:*)",
+      "Bash(npm run typecheck)",
+      "Bash(npx vite build:*)",
+      "Bash(npx -y vite build)"
     ]
   }
 }

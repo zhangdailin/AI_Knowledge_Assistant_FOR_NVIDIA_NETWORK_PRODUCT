@@ -8,7 +8,7 @@ import Cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import {
   Network, RefreshCw, Download, Maximize2,
-  Search, Filter, Info, Database, TrendingUp, Activity,
+  Search, Info, Database, TrendingUp, Activity,
   Share2, AlertTriangle, Layers, GitBranch
 } from 'lucide-react';
 import { getApiServerUrl } from '../utils/apiUtils';
@@ -79,9 +79,7 @@ const KnowledgeGraph: React.FC = () => {
   const [stats, setStats] = useState<GraphStats>({});
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
-  const [viewMode, setViewMode] = useState<'all' | 'vendor-function'>('vendor-function'); // 新增：视图模式，默认为 Vendor-Function 视图
-  const [layoutMode, setLayoutMode] = useState<'force' | 'hierarchy'>('hierarchy'); // 修改：默认使用分层布局
+  const [layoutMode, setLayoutMode] = useState<'force' | 'hierarchy'>('hierarchy'); // 布局模式：力导向或分层
   const [kgStatus, setKgStatus] = useState<'idle' | 'active' | 'error'>('idle');
   const [kgMessage, setKgMessage] = useState('');
   const [kgLastUpdated, setKgLastUpdated] = useState<Date | null>(null);
@@ -201,13 +199,8 @@ const KnowledgeGraph: React.FC = () => {
     setError('');
 
     try {
-      // 根据视图模式构建 API URL
-      let apiUrl = `${getApiServerUrl()}/api/knowledge-graph/export`;
-
-      if (viewMode === 'vendor-function') {
-        // Vendor-Function 视图：只加载 Vendor 和 Function 节点及其关系
-        apiUrl += '?nodeTypes=Vendor,Function&relationshipTypes=HAS_FUNCTION';
-      }
+      // 只加载 Vendor 和 Function 节点及其关系
+      const apiUrl = `${getApiServerUrl()}/api/knowledge-graph/export?nodeTypes=Vendor,Function&relationshipTypes=HAS_FUNCTION`;
 
       // 导出图谱数据
       const response = await fetch(apiUrl);
@@ -247,37 +240,60 @@ const KnowledgeGraph: React.FC = () => {
         }))
       ];
 
-      // 初始化或更新 Cytoscape
-      if (cyRef.current) {
-        cyRef.current.elements().remove();
-        cyRef.current.add(elements);
+      // 更新统计信息 - 当前视图数据（区分视图统计和全库统计）
+      const vendorCount = nodes.filter((n: any) => n.labels.includes('Vendor')).length;
+      const functionCount = nodes.filter((n: any) => n.labels.includes('Function')).length;
 
-        // 根据视图模式选择布局
-        if (viewMode === 'vendor-function') {
-          // Vendor-Function 视图：使用分层布局
+      // 保存全库统计，更新当前视图统计
+      setStats(prev => ({
+        ...prev,
+        vendors: vendorCount,           // 当前视图厂商数
+        functions: functionCount,       // 当前视图功能数
+        relationships: relationships.length,
+        // 保留全库统计（如果存在）
+        vendorsTotal: prev.vendorsTotal || prev.vendors,
+        functionsTotal: prev.functionsTotal || prev.functions
+      }));
+
+      // 初始化或更新 Cytoscape（批量操作优化）
+      if (cyRef.current) {
+        // 使用 batch 批量更新以减少DOM操作
+        cyRef.current.batch(() => {
+          cyRef.current!.elements().remove();
+          cyRef.current!.add(elements);
+        });
+
+        // 根据当前布局模式重新布局
+        if (layoutMode === 'hierarchy') {
+          // 放射状布局 - 以厂商为中心（性能优化）
           (cyRef.current.layout({
-            name: 'breadthfirst',
-            directed: true,
-            spacingFactor: 2,
-            animate: true,
-            animationDuration: 800,
+            name: 'concentric',
+            concentric: (node: any) => {
+              return node.data('type') === 'Vendor' ? 100 : 1;
+            },
+            levelWidth: () => 1,
+            minNodeSpacing: 120,
+            animate: false, // 禁用动画以提升性能
             avoidOverlap: true,
             nodeDimensionsIncludeLabels: true,
-            roots: cyRef.current.nodes().filter((node: any) => node.data('type') === 'Vendor').map(node => node.id())
+            spacingFactor: 1.5,
+            fit: true,
+            padding: 50
           } as any) as any).run();
         } else {
-          // 完整视图：使用力导向布局
+          // 力导向布局（性能优化）
           (cyRef.current.layout({
             name: 'cose-bilkent',
-            animate: elements.length < 100,
-            animationDuration: 800,
+            animate: false, // 禁用动画
             nodeDimensionsIncludeLabels: true,
-            idealEdgeLength: 100,
+            idealEdgeLength: 120,
             edgeElasticity: 0.45,
-            gravity: 0.25,
-            numIter: Math.min(2500, elements.length * 10),
+            gravity: 0.3,
+            numIter: 1500, // 减少迭代次数（从2000降到1500）
             tile: true,
-            randomize: false
+            randomize: false,
+            fit: true,
+            padding: 50
           } as any) as any).run();
         }
       } else {
@@ -293,7 +309,7 @@ const KnowledgeGraph: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [viewMode]); // 添加 viewMode 依赖
+  }, [layoutMode]); // 依赖 layoutMode
 
   /**
    * 初始化 Cytoscape 实例
@@ -308,55 +324,53 @@ const KnowledgeGraph: React.FC = () => {
         {
           selector: 'node',
           style: {
+            'shape': 'ellipse',
             'background-color': (ele: any) => NODE_COLORS[ele.data('type')] || NODE_COLORS.default,
             'label': 'data(label)',
             'color': '#fff',
             'text-valign': 'center',
             'text-halign': 'center',
-            'font-size': '11px',
+            'font-size': '14px',
             'font-weight': 'bold',
             'font-family': 'system-ui, -apple-system, sans-serif',
-            'width': 70,
-            'height': 70,
-            'border-width': 3,
+            'width': (ele: any) => ele.data('type') === 'Vendor' ? 120 : 90,
+            'height': (ele: any) => ele.data('type') === 'Vendor' ? 120 : 90,
+            'border-width': 4,
             'border-color': '#fff',
-            'text-outline-width': 2,
+            'text-outline-width': 3,
             'text-outline-color': (ele: any) => NODE_COLORS[ele.data('type')] || NODE_COLORS.default,
             'text-wrap': 'wrap',
-            'text-max-width': '80px'
+            'text-max-width': '110px',
+            'overlay-opacity': 0
           }
         },
         {
           selector: 'node:selected',
           style: {
-            'border-width': 4,
+            'border-width': 6,
             'border-color': '#fbbf24',
-            'background-color': (ele: any) => NODE_COLORS[ele.data('type')] || NODE_COLORS.default
+            'z-index': 999
           }
         },
         {
           selector: 'node.highlighted',
           style: {
-            'border-width': 5,
+            'border-width': 6,
             'border-color': '#ef4444',
-            'background-color': (ele: any) => NODE_COLORS[ele.data('type')] || NODE_COLORS.default,
             'z-index': 999
           }
         },
         {
           selector: 'edge',
           style: {
-            'width': (ele: any) => EDGE_STYLES[ele.data('type')]?.width || EDGE_STYLES.default.width,
+            'width': 3,
             'line-color': (ele: any) => EDGE_STYLES[ele.data('type')]?.color || EDGE_STYLES.default.color,
             'target-arrow-color': (ele: any) => EDGE_STYLES[ele.data('type')]?.color || EDGE_STYLES.default.color,
             'target-arrow-shape': 'triangle',
+            'arrow-scale': 1.5,
             'curve-style': 'bezier',
-            'opacity': 0.6,
-            // 移除边标签，让图谱更清晰
-            // 'label': 'data(label)',
-            // 'font-size': '10px',
-            // 'text-rotation': 'autorotate',
-            // 'text-margin-y': -10
+            'opacity': 0.7,
+            'overlay-opacity': 0
           }
         },
         {
@@ -364,31 +378,29 @@ const KnowledgeGraph: React.FC = () => {
           style: {
             'line-color': '#fbbf24',
             'target-arrow-color': '#fbbf24',
-            'width': 3,
+            'width': 4,
             'opacity': 1,
-            // 选中时可以显示标签
             'label': 'data(label)',
-            'font-size': '11px',
+            'font-size': '12px',
             'color': '#374151',
             'text-background-color': '#ffffff',
-            'text-background-opacity': 0.8,
-            'text-background-padding': '3px'
+            'text-background-opacity': 0.9,
+            'text-background-padding': '4px',
+            'text-background-shape': 'roundrectangle'
           }
         }
       ],
       layout: {
-        name: 'cose-bilkent',
-        animate: false, // 初始加载时禁用动画以提高性能
-        animationDuration: 0,
+        name: 'concentric',
+        concentric: (node: any) => {
+          return node.data('type') === 'Vendor' ? 100 : 1;
+        },
+        levelWidth: () => 1,
+        minNodeSpacing: 120,
+        animate: false, // 禁用初始动画以提升性能
+        avoidOverlap: true,
         nodeDimensionsIncludeLabels: true,
-        idealEdgeLength: 120,
-        edgeElasticity: 0.45,
-        gravity: 0.3,
-        numIter: 2000, // 减少迭代次数提高性能
-        tile: true,
-        tilingPaddingVertical: 20,
-        tilingPaddingHorizontal: 20,
-        randomize: false
+        spacingFactor: 1.5
       } as any,
       wheelSensitivity: 0.2,
       minZoom: 0.1,
@@ -445,7 +457,7 @@ const KnowledgeGraph: React.FC = () => {
   }, [searchTerm]);
 
   /**
-   * 切换布局模式
+   * 切换布局模式（性能优化版）
    */
   const handleLayoutChange = useCallback((mode: 'force' | 'hierarchy') => {
     setLayoutMode(mode);
@@ -454,55 +466,36 @@ const KnowledgeGraph: React.FC = () => {
     const cy = cyRef.current;
 
     if (mode === 'hierarchy') {
-      // 分层布局 - 按节点类型分层
+      // 放射状布局（快速切换，无动画）
       (cy.layout({
-        name: 'breadthfirst',
-        directed: true,
-        spacingFactor: 1.5,
-        animate: true,
-        animationDuration: 800,
+        name: 'concentric',
+        concentric: (node: any) => {
+          return node.data('type') === 'Vendor' ? 100 : 1;
+        },
+        levelWidth: () => 1,
+        minNodeSpacing: 120,
+        animate: false, // 禁用动画
         avoidOverlap: true,
         nodeDimensionsIncludeLabels: true,
-        // 根据节点类型定义层级
-        roots: cy.nodes().filter((node: any) => node.data('type') === 'Vendor').map(node => node.id())
+        spacingFactor: 1.5,
+        fit: true,
+        padding: 50
       } as any) as any).run();
     } else {
-      // 力导向布局
+      // 力导向布局（性能优化）
       (cy.layout({
         name: 'cose-bilkent',
-        animate: true,
-        animationDuration: 800,
+        animate: false, // 禁用动画
         nodeDimensionsIncludeLabels: true,
         idealEdgeLength: 120,
         edgeElasticity: 0.45,
         gravity: 0.3,
-        numIter: 2000,
+        numIter: 1500, // 减少迭代次数
         tile: true,
-        randomize: false
+        randomize: false,
+        fit: true,
+        padding: 50
       } as any) as any).run();
-    }
-  }, []);
-
-  /**
-   * 过滤节点类型
-   */
-  const handleFilter = useCallback((type: string) => {
-    setFilterType(type);
-    if (!cyRef.current) return;
-
-    const cy = cyRef.current;
-
-    if (type === 'all') {
-      cy.elements().style('display', 'element');
-    } else {
-      cy.nodes().style('display', (ele: any) =>
-        ele.data('type') === type ? 'element' : 'none'
-      );
-      cy.edges().style('display', (ele: any) => {
-        const source = cy.$id(ele.data('source'));
-        const target = cy.$id(ele.data('target'));
-        return source.visible() && target.visible() ? 'element' : 'none';
-      });
     }
   }, []);
 
@@ -538,8 +531,13 @@ const KnowledgeGraph: React.FC = () => {
 
   // 初始化 - 只在组件挂载时执行一次
   useEffect(() => {
-    fetchStats();
-    loadGraph();
+    const init = async () => {
+      // 先获取完整统计数据（包括命令和参数）
+      await fetchStats();
+      // 再加载图谱，只更新厂商和功能的数量
+      await loadGraph();
+    };
+    init();
 
     return () => {
       if (cyRef.current) {
@@ -624,7 +622,7 @@ const KnowledgeGraph: React.FC = () => {
               <span className="text-xs font-medium text-gray-600">厂商</span>
             </div>
             <p className="text-xl font-semibold text-gray-900">
-              {loading ? '...' : (stats.vendorsTotal ?? stats.vendors ?? 0)}
+              {loading ? '...' : (stats.vendors ?? 0)}
             </p>
           </div>
 
@@ -635,7 +633,7 @@ const KnowledgeGraph: React.FC = () => {
               <span className="text-xs font-medium text-gray-600">功能</span>
             </div>
             <p className="text-xl font-semibold text-gray-900">
-              {loading ? '...' : (stats.functionsTotal ?? stats.functions ?? 0)}
+              {loading ? '...' : (stats.functions ?? 0)}
             </p>
           </div>
 
@@ -685,37 +683,6 @@ const KnowledgeGraph: React.FC = () => {
       {/* 搜索和过滤工具栏 */}
       <div className="bg-white border-b border-gray-200 p-4">
         <div className="flex items-center gap-3 flex-wrap">
-          {/* 视图模式切换 */}
-          <div className="flex items-center gap-2 border-r pr-3 border-gray-300">
-            <span className="text-sm font-medium text-gray-700 whitespace-nowrap">视图:</span>
-            <div className="flex rounded-lg border border-gray-300 overflow-hidden">
-              <button
-                onClick={() => {
-                  setViewMode('vendor-function');
-                  setLayoutMode('hierarchy');
-                }}
-                className={`px-3 py-1.5 text-sm transition-colors ${viewMode === 'vendor-function'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
-                  }`}
-              >
-                Vendor-Function
-              </button>
-              <button
-                onClick={() => {
-                  setViewMode('all');
-                  setLayoutMode('force');
-                }}
-                className={`px-3 py-1.5 text-sm border-l border-gray-300 transition-colors ${viewMode === 'all'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
-                  }`}
-              >
-                完整视图
-              </button>
-            </div>
-          </div>
-
           <div className="flex-1 flex items-center gap-2 min-w-[300px]">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -735,23 +702,6 @@ const KnowledgeGraph: React.FC = () => {
               搜索
             </button>
           </div>
-
-          {viewMode === 'all' && (
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-gray-500" />
-              <select
-                value={filterType}
-                onChange={(e) => handleFilter(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value="all">全部类型</option>
-                <option value="Vendor">厂商</option>
-                <option value="Function">功能</option>
-                <option value="Command">命令</option>
-                <option value="Parameter">参数</option>
-              </select>
-            </div>
-          )}
 
           {/* 布局模式切换 */}
           <div className="flex items-center gap-2 border-l pl-3 border-gray-300">

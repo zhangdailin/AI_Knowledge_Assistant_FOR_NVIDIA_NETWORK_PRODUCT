@@ -713,7 +713,18 @@ export async function updateSettings(updates) {
 
 export async function getApiKey(provider) {
     const settings = await getSettings();
-    return settings.apiKeys?.[provider] || null;
+
+    // 优先从 apiKeys 读取（旧的存储方式）
+    if (settings.apiKeys?.[provider]) {
+        return settings.apiKeys[provider];
+    }
+
+    // 兼容新的存储方式：从 providers 读取
+    if (settings.providers?.[provider]?.apiKey) {
+        return settings.providers[provider].apiKey;
+    }
+
+    return null;
 }
 
 // ========== 查询日志 ==========

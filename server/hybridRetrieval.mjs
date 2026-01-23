@@ -1122,7 +1122,7 @@ export async function getHybridRetrievalStats() {
     const graphStats = await knowledgeGraph.getGraphStats();
     return {
       knowledgeGraph: graphStats,
-      status: 'active'
+      status: 'success'
     };
   } catch (error) {
     console.error('[HybridRetrieval] 获取统计信息失败:', error.message);

@@ -44,8 +44,10 @@ type KnowledgeSearchResult = {
   title: string;
   content: string;
   score: number;
-  rrfScore: number;
-  rerankScore: number;
+  rrfScore?: number;
+  rerankScore?: number;
+  isTruncated?: boolean;
+  [key: string]: any;
 };
 
 async function searchKnowledgeBase(
@@ -111,8 +113,8 @@ type LocalQueryIntent = {
   isTroubleshoot: boolean;
   isShow: boolean;
   isConcept: boolean;
-  isComparison?: boolean;
-  isListRequest?: boolean;
+  isComparison: boolean;
+  isListRequest: boolean;
 };
 
 // 使用增强型意图分类器
@@ -123,8 +125,8 @@ function inferQueryIntent(query: string): LocalQueryIntent {
   const result = classifyQueryIntent(query);
   return {
     ...result.primary,
-    isComparison: result.primary.isComparison,
-    isListRequest: result.primary.isListRequest
+    isComparison: result.primary.isComparison ?? false,
+    isListRequest: result.primary.isListRequest ?? false
   };
 }
 

@@ -5,6 +5,7 @@
 
 import * as storage from './storage-adapter.mjs';
 import { embedTexts } from './embedding.mjs';
+import * as knowledgeGraph from './knowledgeGraph.mjs';
 
 // 任务状态
 const TASK_STATUS = {
@@ -117,9 +118,9 @@ export async function processEmbeddingTask(taskId, documentId) {
     task.progress = 0;
 
     // 优化批处理参数：
-    // - 增加批次大小到 100（SiliconFlow 支持大批次请求）
+    // - SiliconFlow API 最大批次大小限制为 64
     // - 增加并发度到 5（在 API 限速允许范围内最大化并行）
-    const batchSize = 100; // 批次大小：每次 API 调用处理的文本数量
+    const batchSize = 64; // 批次大小：每次 API 调用处理的文本数量（API 最大限制）
     const concurrency = 5; // 并发批次数：同时进行的 API 调用数量
     let successCount = 0;
     let failCount = 0;
@@ -193,6 +194,16 @@ export async function processEmbeddingTask(taskId, documentId) {
     }
 
     completeTask(taskId, { successCount, failCount });
+
+    // 🆕 自动触发知识图谱构建
+    console.log(`[任务 ${taskId}] Embedding 生成完成，开始自动构建知识图谱...`);
+    try {
+      await knowledgeGraph.processDocument(documentId);
+      console.log(`[任务 ${taskId}] ✅ 知识图谱构建完成`);
+    } catch (kgError) {
+      console.error(`[任务 ${taskId}] ⚠️ 知识图谱构建失败（不影响文档可用性）:`, kgError.message);
+      // 知识图谱构建失败不影响主流程，只记录警告
+    }
   } catch (error) {
     console.error(`[任务 ${taskId}] 处理失败:`, error);
     failTask(taskId, error);

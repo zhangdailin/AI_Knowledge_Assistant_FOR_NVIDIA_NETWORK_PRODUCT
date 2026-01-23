@@ -1,6 +1,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -40,17 +44,31 @@ const color = (str, colorCode) => jsonOutput ? str : `${colorCode}${str}${COLORS
 
 // 1. 定义基准测试集 (Golden Dataset)
 // 格式: { query: "问题", expected: ["关键词1", "关键词2"], minRank: 5 }
-const ALL_TEST_CASES = [
+
+// 加载扩展测试用例（如果存在）
+let EXTENDED_TEST_CASES = [];
+try {
+  const extendedPath = path.join(__dirname, 'extended_test_cases.json');
+  if (fs.existsSync(extendedPath)) {
+    const rawData = fs.readFileSync(extendedPath, 'utf8');
+    EXTENDED_TEST_CASES = JSON.parse(rawData);
+    console.log(`✅ 已加载 ${EXTENDED_TEST_CASES.length} 个扩展测试用例`);
+  }
+} catch (error) {
+  console.warn('⚠️  无法加载扩展测试用例:', error.message);
+}
+
+const BASIC_TEST_CASES = [
   // --- 命令类 (Command) ---
-  { 
-    query: "列出当前设备所有的配置", 
-    expected: ["nv config show", "running configuration"], 
+  {
+    query: "列出当前设备所有的配置",
+    expected: ["nv config show", "running configuration"],
     minRank: 5,
     type: "command"
   },
-  { 
-    query: "如何查看 BGP 邻居状态", 
-    expected: ["nv show router bgp neighbor", "Established"], 
+  {
+    query: "如何查看 BGP 邻居状态",
+    expected: ["nv show router bgp neighbor", "Established"],
     minRank: 5,
     type: "command"
   },
@@ -62,15 +80,15 @@ const ALL_TEST_CASES = [
   },
 
   // --- 概念类 (Concept) ---
-  { 
-    query: "什么是 MLAG", 
-    expected: ["Multi-Chassis Link Aggregation", "redundancy"], 
+  {
+    query: "什么是 MLAG",
+    expected: ["Multi-Chassis Link Aggregation", "redundancy"],
     minRank: 10,
     type: "concept"
   },
-  { 
-    query: "解释一下 VXLAN 的 VNI", 
-    expected: ["Virtual Network Identifier", "overlay"], 
+  {
+    query: "解释一下 VXLAN 的 VNI",
+    expected: ["Virtual Network Identifier", "overlay"],
     minRank: 10,
     type: "concept"
   },
@@ -109,6 +127,9 @@ const ALL_TEST_CASES = [
     type: "command"
   }
 ];
+
+// 合并基础测试用例和扩展测试用例
+const ALL_TEST_CASES = [...BASIC_TEST_CASES, ...EXTENDED_TEST_CASES];
 
 const TEST_CASES = FILTER_TYPE 
   ? ALL_TEST_CASES.filter(tc => tc.type === FILTER_TYPE)

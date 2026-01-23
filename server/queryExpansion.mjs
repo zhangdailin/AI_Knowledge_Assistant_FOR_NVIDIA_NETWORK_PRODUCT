@@ -17,14 +17,18 @@ import { EXTENDED_TECHNICAL_KEYWORDS, BASE_COMMAND_PATTERNS } from './constants.
  */
 const ACTION_SYNONYMS = {
   // 配置类
-  '配置': ['设置', '设定', 'config', 'configure', 'setup', '部署'],
+  '配置': ['设置', '设定', 'config', 'configure', 'setup', '部署', 'configuration'],
   '设置': ['配置', '设定', 'set', 'config'],
   'configure': ['config', 'setup', 'set up', '配置'],
 
+  // 列出/获取类（新增）
+  '列出': ['查看', '显示', 'list', 'show', 'display', '获取', 'get'],
+  'list': ['show', 'display', 'get', '列出', '查看'],
+
   // 查看类
-  '查看': ['查询', '检查', '显示', 'show', 'display', 'view', 'list', '看'],
-  '显示': ['查看', '展示', 'show', 'display'],
-  'show': ['display', 'view', 'list', 'get', '查看', '显示'],
+  '查看': ['查询', '检查', '显示', 'show', 'display', 'view', 'list', '看', '列出'],
+  '显示': ['查看', '展示', 'show', 'display', 'list'],
+  'show': ['display', 'view', 'list', 'get', '查看', '显示', '列出'],
 
   // 删除类
   '删除': ['移除', '清除', 'remove', 'delete', 'unset', 'clear', '去掉'],
@@ -52,7 +56,7 @@ const ACTION_SYNONYMS = {
  */
 const TECH_SYNONYMS = {
   // 网络协议
-  'bgp': ['边界网关协议', 'border gateway protocol', 'ebgp', 'ibgp'],
+  'bgp': ['边界网关协议', 'border gateway protocol', 'ebgp', 'ibgp', 'bgp协议'],
   'ospf': ['开放最短路径优先', 'open shortest path first', 'ospfv2', 'ospfv3'],
   'evpn': ['以太网vpn', 'ethernet vpn', 'evpn-vxlan'],
   'vxlan': ['虚拟扩展局域网', 'virtual extensible lan', 'vxlan隧道'],
@@ -76,7 +80,11 @@ const TECH_SYNONYMS = {
   // 厂商特定
   'cumulus': ['cumulus linux', 'nvidia cumulus', 'nvidia网络'],
   'nvue': ['nvidia用户体验', 'nv命令', 'nv set', 'nv show'],
-  'netq': ['网络监控', 'nvidia netq', 'netq agent']
+  'netq': ['网络监控', 'nvidia netq', 'netq agent'],
+
+  // 配置相关（新增）
+  'configuration': ['配置', 'config', 'running-config', 'startup-config', '配置文件'],
+  'running': ['当前', '运行中', 'active', '生效中']
 };
 
 /**
@@ -85,11 +93,13 @@ const TECH_SYNONYMS = {
 const OBJECT_SYNONYMS = {
   '接口': ['端口', 'interface', 'port', 'eth', 'swp', '网口'],
   '路由': ['路由表', 'route', 'routing', '路由条目', '路由信息'],
-  '邻居': ['对等体', 'neighbor', 'peer', 'adjacency', '邻接'],
+  '邻居': ['对等体', 'neighbor', 'peer', 'adjacency', '邻接', 'peering'],
   '链路': ['连接', 'link', 'connection', '链路状态'],
   '隧道': ['通道', 'tunnel', 'overlay', '封装'],
   '网关': ['默认网关', 'gateway', 'default gateway', 'next-hop'],
-  '地址': ['IP地址', 'address', 'ip', 'ip addr', 'ip地址']
+  '地址': ['IP地址', 'address', 'ip', 'ip addr', 'ip地址'],
+  '设备': ['交换机', 'switch', 'device', '节点', 'node'],  // 新增
+  '当前': ['current', 'running', 'active', '生效中']  // 新增
 };
 
 /**
@@ -299,6 +309,45 @@ export function expandQuery(query, options = {}) {
       variants.push(withoutHow + ' 步骤');
       variants.push(withoutHow + ' 配置');
     }
+  }
+
+  // 3.5 领域特定的查询改写（新增）
+  // 针对"列出配置"类查询
+  if (/列出.*配置|查看.*配置|显示.*配置|所有.*配置/.test(normalizedQuery)) {
+    variants.push('nv config show');
+    variants.push('nv show configuration');
+    variants.push('show running-config');
+    variants.push('show configuration');
+    variants.push('running configuration');
+  }
+
+  // 针对"BGP邻居"类查询（增强版）
+  if (/bgp.*邻居|bgp.*neighbor|查看.*bgp.*邻居|如何.*bgp.*邻居|bgp.*状态/i.test(normalizedQuery)) {
+    variants.push('nv show vrf default router bgp neighbor');
+    variants.push('nv show router bgp neighbor');
+    variants.push('show bgp neighbor');
+    variants.push('show ip bgp summary');
+    variants.push('show bgp summary');
+    variants.push('bgp neighbor status');
+    variants.push('bgp peer status');
+    variants.push('show bgp neighbor status');
+    variants.push('check bgp neighbor');
+    variants.push('view bgp neighbor');
+    variants.push('vtysh show ip bgp summary');
+    variants.push('BGP Route Information');
+    variants.push('show bgp route');
+  }
+
+  // 针对"控制面防护/CoPP"类查询（新增）
+  if (/控制面.*防护|control.*plane.*protection|copp|policer|控制面.*策略/i.test(normalizedQuery)) {
+    variants.push('nv set system control-plane policeman');
+    variants.push('control plane policer');
+    variants.push('CoPP configuration');
+    variants.push('nv set system control-plane');
+    variants.push('control plane protection');
+    variants.push('policers.conf');
+    variants.push('control-plane rate limit');
+    variants.push('system control-plane policeman');
   }
 
   // 4. 添加同义动作词（使用扩展词典）

@@ -1,0 +1,302 @@
+[
+  {
+    "query": "NVUE 的四种基本语法类别是什么",
+    "expected": ["nv show", "nv set", "nv unset", "nv action"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何通过 nv action 导出交换机的完整技术支持包",
+    "expected": ["cl-support", "nv action", "tech support"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "nv config apply 与 nv config save 的区别",
+    "expected": ["apply", "save", "pending", "startup"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何配置 VLAN 100 虚拟网关地址为 192.168.100.254",
+    "expected": ["nv set", "vlan", "virtual", "gateway", "192.168.100.254"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "什么是 MLAG 的系统 MAC 地址",
+    "expected": ["system mac", "mlag", "peer", "同步"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何定义 MLAG 的 Peerlink",
+    "expected": ["peerlink", "mlag", "bond"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "BGP Unnumbered 技术如何建立邻居关系",
+    "expected": ["unnumbered", "ipv6", "link-local", "ra"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何配置 BGP 的 remote-as external",
+    "expected": ["nv set", "bgp", "remote-as external", "neighbor"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何开启 BGP ECMP 实现负载均衡",
+    "expected": ["ecmp", "multipath", "bgp"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置 BGP 优雅重启",
+    "expected": ["graceful restart", "bgp", "gr"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何通过 nv set router bgp peer-group 批量下发邻居策略",
+    "expected": ["peer-group", "bgp", "nv set"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "nv set qos roce mode lossless 命令的作用",
+    "expected": ["roce", "lossless", "qos", "pfc"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何手动配置 PFC 的接收和发送状态",
+    "expected": ["pfc", "rx", "tx", "priority flow control"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "ECN 的标记阈值 Kmin Kmax 如何调整",
+    "expected": ["ecn", "kmin", "kmax", "threshold"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "什么是多优先级无损网络",
+    "expected": ["lossless", "cos", "priority", "qos"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何配置 ETS 确保 AI 通信流量获得固定比例带宽",
+    "expected": ["ets", "bandwidth", "traffic class"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何通过 NVUE 命令启用端口的显式流量限制",
+    "expected": ["traffic shaping", "rate limit", "nv set"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "LLDP 如何通过 DCBX 协商 PFC 参数",
+    "expected": ["lldp", "dcbx", "pfc", "negotiate"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何定义一个包含多个 IP 段的命名前缀列表",
+    "expected": ["prefix-list", "ip", "route-map"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "ACL 规则的执行顺序是如何确定的",
+    "expected": ["acl", "sequence", "order", "priority"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何将 ACL 应用到特定接口的出方向",
+    "expected": ["acl", "egress", "outbound", "interface"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置策略路由根据源 IP 选择不同的出口",
+    "expected": ["pbr", "policy routing", "source ip", "nexthop"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置硬件限速防止非关键业务流占用带宽",
+    "expected": ["policing", "rate limit", "bandwidth"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何利用 NVUE 配置控制面防护",
+    "expected": ["copp", "control plane", "protection"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何通过 NetQ CLI 快速找出 BGP 会话未建立的节点",
+    "expected": ["netq", "bgp", "down", "session"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何在 NetQ 中利用 netq trace 追踪报文转发路径",
+    "expected": ["netq trace", "path", "vxlan"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何利用 WJH 实时监控缓冲区拥塞导致的报文丢弃",
+    "expected": ["wjh", "what just happened", "buffer", "drop"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何通过 NetQ 验证 MLAG 配置的镜像对称性",
+    "expected": ["netq", "mlag", "validation", "check"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "NetQ 如何通过时间旅行功能查看历史拓扑状态",
+    "expected": ["netq", "time travel", "snapshot", "history"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何利用 NetQ 的 LCM 模块对全网交换机进行固件版本审计",
+    "expected": ["netq", "lcm", "lifecycle", "upgrade", "version"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何通过 UFM Web UI 创建新的 PKey 分区",
+    "expected": ["ufm", "pkey", "partition", "infiniband"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "UFM 监控中的不理想链路代表什么含义",
+    "expected": ["ufm", "non-optimal", "link", "routing"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何通过 UFM 配置 NVIDIA SHARP 加速 All-Reduce 操作",
+    "expected": ["sharp", "ufm", "all-reduce", "collective"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "InfiniBand 中的自适应路由在 UFM 中如何配置",
+    "expected": ["adaptive routing", "ufm", "infiniband"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置 UFM 与 SLURM 集成实现作业级网络资源隔离",
+    "expected": ["ufm", "slurm", "job", "isolation"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何在接入交换机上将物理端口 swp1 加入到 VLAN 100",
+    "expected": ["nv set", "interface swp1", "vlan 100", "access"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置接口的 LACP 超时时间以适应高速故障切换",
+    "expected": ["lacp", "timeout", "fast", "bond"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何使用 NVUE 命令手动清除特定的二层 MAC 地址表项",
+    "expected": ["mac", "flush", "clear", "fdb"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "VRR 与 VRRP 在数据包处理路径上有何本质区别",
+    "expected": ["vrr", "vrrp", "virtual router", "gateway"],
+    "minRank": 10,
+    "type": "concept"
+  },
+  {
+    "query": "如何通过 nv set bridge domain 创建 VLAN-aware 桥接器",
+    "expected": ["bridge", "domain", "vlan-aware", "br_default"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置下一跳为 10.1.1.1 的默认静态路由",
+    "expected": ["static route", "default", "0.0.0.0", "10.1.1.1"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何监控 MLAG 状态机识别 Primary 还是 Secondary",
+    "expected": ["mlag", "role", "primary", "secondary", "status"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何在多租户环境中配置 VRF 实例",
+    "expected": ["vrf", "routing table", "isolation"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置 BGP 动态邻居简化大规模叶脊互联",
+    "expected": ["dynamic neighbor", "bgp", "listen-range", "peer-group"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何配置 BGP allowas-in 支持复杂的内联 AS 拓扑",
+    "expected": ["allowas-in", "bgp", "as-path"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何查看 BGP 邻居的收发路由详细信息及社区属性",
+    "expected": ["show bgp", "neighbor", "routes", "community"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何启用 BGP 对路由信息的日志记录追溯路由翻动事件",
+    "expected": ["bgp", "log", "neighbor-changes", "route flap"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何验证交换机端口上 PFC PAUSE 帧的统计",
+    "expected": ["pfc", "pause", "statistics", "ethtool"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何利用 nv show qos roce 查看 ASIC 的共享缓存利用率",
+    "expected": ["nv show qos roce", "buffer", "asic"],
+    "minRank": 5,
+    "type": "command"
+  },
+  {
+    "query": "如何排查 PFC 死锁导致的端口流量挂死问题",
+    "expected": ["pfc deadlock", "troubleshoot", "watchdog"],
+    "minRank": 10,
+    "type": "troubleshoot"
+  }
+]
