@@ -3845,7 +3845,17 @@ app.delete('/api/knowledge-graph/clear', asyncHandler(async (req, res) => {
 // 导出知识图谱数据
 app.get('/api/knowledge-graph/export', asyncHandler(async (req, res) => {
   try {
-    const graphData = await knowledgeGraph.exportGraphData();
+    const { nodeTypes, relationshipTypes } = req.query;
+
+    const options = {};
+    if (nodeTypes) {
+      options.nodeTypes = nodeTypes.split(',').map(t => t.trim());
+    }
+    if (relationshipTypes) {
+      options.relationshipTypes = relationshipTypes.split(',').map(t => t.trim());
+    }
+
+    const graphData = await knowledgeGraph.exportGraphData(options);
     res.json({ ok: true, data: graphData });
   } catch (error) {
     console.error('导出知识图谱数据失败:', error);

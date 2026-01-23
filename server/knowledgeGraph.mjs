@@ -9,6 +9,8 @@ import * as storage from './storage-adapter.mjs';
 // Neo4j 连接配置
 let driver = null;
 let isConnected = false;
+let schemaInitialized = false;
+let schemaInitializing = false;
 
 // SiliconFlow API 配置
 const SILICONFLOW_CHAT_URL = 'https://api.siliconflow.cn/v1/chat/completions';
@@ -275,50 +277,78 @@ export async function initNeo4j() {
  * 创建索引和约束以提升查询性能
  */
 async function initSchema() {
+  // 防止并发初始化
+  if (schemaInitialized) {
+    return;
+  }
+
+  if (schemaInitializing) {
+    // 等待其他进程完成初始化
+    let retries = 0;
+    while (schemaInitializing && retries < 30) {
+      await new Promise(r => setTimeout(r, 1000));
+      retries++;
+    }
+    return;
+  }
+
+  schemaInitializing = true;
   const session = driver.session();
+
   try {
-    // 创建唯一性约束（自动创建索引）
-    await session.run(`
-      CREATE CONSTRAINT vendor_name_unique IF NOT EXISTS
-      FOR (v:Vendor) REQUIRE v.name IS UNIQUE
-    `);
+    // 使用单个事务创建所有约束和索引
+    const tx = session.beginTransaction();
 
-    await session.run(`
-      CREATE CONSTRAINT function_name_unique IF NOT EXISTS
-      FOR (f:Function) REQUIRE f.name IS UNIQUE
-    `);
+    try {
+      // 创建唯一性约束（自动创建索引）
+      await tx.run(`
+        CREATE CONSTRAINT vendor_name_unique IF NOT EXISTS
+        FOR (v:Vendor) REQUIRE v.name IS UNIQUE
+      `);
 
-    await session.run(`
-      CREATE CONSTRAINT command_name_unique IF NOT EXISTS
-      FOR (c:Command) REQUIRE c.name IS UNIQUE
-    `);
+      await tx.run(`
+        CREATE CONSTRAINT function_name_unique IF NOT EXISTS
+        FOR (f:Function) REQUIRE f.name IS UNIQUE
+      `);
 
-    await session.run(`
-      CREATE CONSTRAINT parameter_name_unique IF NOT EXISTS
-      FOR (p:Parameter) REQUIRE p.name IS UNIQUE
-    `);
+      await tx.run(`
+        CREATE CONSTRAINT command_name_unique IF NOT EXISTS
+        FOR (c:Command) REQUIRE c.name IS UNIQUE
+      `);
 
-    // 创建 Chunk 节点约束和索引
-    await session.run(`
-      CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS
-      FOR (ch:Chunk) REQUIRE ch.id IS UNIQUE
-    `);
+      await tx.run(`
+        CREATE CONSTRAINT parameter_name_unique IF NOT EXISTS
+        FOR (p:Parameter) REQUIRE p.name IS UNIQUE
+      `);
 
-    await session.run(`
-      CREATE INDEX chunk_document_idx IF NOT EXISTS
-      FOR (ch:Chunk) ON (ch.documentId)
-    `);
+      // 创建 Chunk 节点约束和索引
+      await tx.run(`
+        CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS
+        FOR (ch:Chunk) REQUIRE ch.id IS UNIQUE
+      `);
 
-    // 创建全文索引用于搜索
-    await session.run(`
-      CREATE FULLTEXT INDEX kg_search IF NOT EXISTS
-      FOR (n:Vendor|Function|Command) ON EACH [n.name]
-    `);
+      await tx.run(`
+        CREATE INDEX chunk_document_idx IF NOT EXISTS
+        FOR (ch:Chunk) ON (ch.documentId)
+      `);
 
-    console.log('[KnowledgeGraph] ✅ Schema 初始化完成');
+      // 创建全文索引用于搜索
+      await tx.run(`
+        CREATE FULLTEXT INDEX kg_search IF NOT EXISTS
+        FOR (n:Vendor|Function|Command) ON EACH [n.name]
+      `);
+
+      await tx.commit();
+      schemaInitialized = true;
+      console.log('[KnowledgeGraph] ✅ Schema 初始化完成');
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
   } catch (error) {
     console.error('[KnowledgeGraph] Schema 初始化错误:', error.message);
   } finally {
+    schemaInitializing = false;
     await session.close();
   }
 }
@@ -2695,21 +2725,30 @@ export async function clearGraph() {
 }
 
 /**
- * 导出完整知识图谱数据用于可视化
+ * 导出知识图谱数据（用于可视化）
+ * @param {Object} options - 过滤选项
+ * @param {Array<string>} options.nodeTypes - 要导出的节点类型（如 ['Vendor', 'Function']）
+ * @param {Array<string>} options.relationshipTypes - 要导出的关系类型（如 ['HAS_FUNCTION']）
  * @returns {Object} 包含节点和关系的图谱数据
  */
-export async function exportGraphData() {
+export async function exportGraphData(options = {}) {
   if (!isConnected) {
     await initNeo4j();
   }
 
+  const { nodeTypes = null, relationshipTypes = null } = options;
+
   const session = driver.session();
   try {
-    // 获取所有节点
-    const nodesResult = await session.run(`
-      MATCH(n)
-      RETURN labels(n) as labels, properties(n) as props, id(n) as id
-    `);
+    // 构建节点查询
+    let nodeQuery = 'MATCH(n)';
+    if (nodeTypes && nodeTypes.length > 0) {
+      const labelConditions = nodeTypes.map(type => `'${type}' IN labels(n)`).join(' OR ');
+      nodeQuery += ` WHERE ${labelConditions}`;
+    }
+    nodeQuery += ' RETURN labels(n) as labels, properties(n) as props, id(n) as id';
+
+    const nodesResult = await session.run(nodeQuery);
 
     const nodes = nodesResult.records.map(record => ({
       id: record.get('id'),
@@ -2717,20 +2756,42 @@ export async function exportGraphData() {
       properties: record.get('props')
     }));
 
-    // 获取所有关系
-    const relsResult = await session.run(`
-      MATCH(a) - [r] -> (b)
-      RETURN id(a) as fromId, id(b) as toId, type(r) as type, properties(r) as props
-    `);
+    // 构建关系查询
+    let relQuery = 'MATCH(a) - [r] -> (b)';
+    const relConditions = [];
+
+    if (nodeTypes && nodeTypes.length > 0) {
+      const labelConditionsA = nodeTypes.map(type => `'${type}' IN labels(a)`).join(' OR ');
+      const labelConditionsB = nodeTypes.map(type => `'${type}' IN labels(b)`).join(' OR ');
+      relConditions.push(`(${labelConditionsA})`);
+      relConditions.push(`(${labelConditionsB})`);
+    }
+
+    if (relationshipTypes && relationshipTypes.length > 0) {
+      const typeConditions = relationshipTypes.map(type => `type(r) = '${type}'`).join(' OR ');
+      relConditions.push(`(${typeConditions})`);
+    }
+
+    if (relConditions.length > 0) {
+      relQuery += ` WHERE ${relConditions.join(' AND ')}`;
+    }
+
+    relQuery += ' RETURN id(a) as fromId, id(b) as toId, type(r) as type, properties(r) as props';
+
+    const relsResult = await session.run(relQuery);
 
     const relationships = relsResult.records.map(record => ({
-      from: record.get('fromId'),
-      to: record.get('toId'),
+      startNode: record.get('fromId'),
+      endNode: record.get('toId'),
       type: record.get('type'),
       properties: record.get('props')
     }));
 
-    console.log(`[KnowledgeGraph] 导出数据: ${nodes.length} 节点, ${relationships.length} 关系`);
+    const filterInfo = nodeTypes || relationshipTypes
+      ? ` (过滤: ${nodeTypes ? `节点=${nodeTypes.join(',')}` : ''} ${relationshipTypes ? `关系=${relationshipTypes.join(',')}` : ''})`
+      : '';
+
+    console.log(`[KnowledgeGraph] 导出数据${filterInfo}: ${nodes.length} 节点, ${relationships.length} 关系`);
 
     return {
       nodes,

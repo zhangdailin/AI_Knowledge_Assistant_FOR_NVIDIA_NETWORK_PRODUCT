@@ -80,7 +80,8 @@ const KnowledgeGraph: React.FC = () => {
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
-  const [layoutMode, setLayoutMode] = useState<'force' | 'hierarchy'>('force'); // 新增：布局模式
+  const [viewMode, setViewMode] = useState<'all' | 'vendor-function'>('vendor-function'); // 新增：视图模式，默认为 Vendor-Function 视图
+  const [layoutMode, setLayoutMode] = useState<'force' | 'hierarchy'>('hierarchy'); // 修改：默认使用分层布局
   const [kgStatus, setKgStatus] = useState<'idle' | 'active' | 'error'>('idle');
   const [kgMessage, setKgMessage] = useState('');
   const [kgLastUpdated, setKgLastUpdated] = useState<Date | null>(null);
@@ -200,8 +201,16 @@ const KnowledgeGraph: React.FC = () => {
     setError('');
 
     try {
+      // 根据视图模式构建 API URL
+      let apiUrl = `${getApiServerUrl()}/api/knowledge-graph/export`;
+
+      if (viewMode === 'vendor-function') {
+        // Vendor-Function 视图：只加载 Vendor 和 Function 节点及其关系
+        apiUrl += '?nodeTypes=Vendor,Function&relationshipTypes=HAS_FUNCTION';
+      }
+
       // 导出图谱数据
-      const response = await fetch(`${getApiServerUrl()}/api/knowledge-graph/export`);
+      const response = await fetch(apiUrl);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -242,19 +251,35 @@ const KnowledgeGraph: React.FC = () => {
       if (cyRef.current) {
         cyRef.current.elements().remove();
         cyRef.current.add(elements);
-        // 重新运行布局 - 优化参数以提高性能
-        (cyRef.current.layout({
-          name: 'cose-bilkent',
-          animate: elements.length < 100, // 节点多时禁用动画
-          animationDuration: 800,
-          nodeDimensionsIncludeLabels: true,
-          idealEdgeLength: 100,
-          edgeElasticity: 0.45,
-          gravity: 0.25,
-          numIter: Math.min(2500, elements.length * 10), // 根据节点数量调整迭代次数
-          tile: true,
-          randomize: false
-        } as any) as any).run();
+
+        // 根据视图模式选择布局
+        if (viewMode === 'vendor-function') {
+          // Vendor-Function 视图：使用分层布局
+          (cyRef.current.layout({
+            name: 'breadthfirst',
+            directed: true,
+            spacingFactor: 2,
+            animate: true,
+            animationDuration: 800,
+            avoidOverlap: true,
+            nodeDimensionsIncludeLabels: true,
+            roots: cyRef.current.nodes().filter((node: any) => node.data('type') === 'Vendor').map(node => node.id())
+          } as any) as any).run();
+        } else {
+          // 完整视图：使用力导向布局
+          (cyRef.current.layout({
+            name: 'cose-bilkent',
+            animate: elements.length < 100,
+            animationDuration: 800,
+            nodeDimensionsIncludeLabels: true,
+            idealEdgeLength: 100,
+            edgeElasticity: 0.45,
+            gravity: 0.25,
+            numIter: Math.min(2500, elements.length * 10),
+            tile: true,
+            randomize: false
+          } as any) as any).run();
+        }
       } else {
         initCytoscape(elements);
       }
@@ -268,8 +293,7 @@ const KnowledgeGraph: React.FC = () => {
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchStats]);
+  }, [viewMode]); // 添加 viewMode 依赖
 
   /**
    * 初始化 Cytoscape 实例
@@ -661,6 +685,37 @@ const KnowledgeGraph: React.FC = () => {
       {/* 搜索和过滤工具栏 */}
       <div className="bg-white border-b border-gray-200 p-4">
         <div className="flex items-center gap-3 flex-wrap">
+          {/* 视图模式切换 */}
+          <div className="flex items-center gap-2 border-r pr-3 border-gray-300">
+            <span className="text-sm font-medium text-gray-700 whitespace-nowrap">视图:</span>
+            <div className="flex rounded-lg border border-gray-300 overflow-hidden">
+              <button
+                onClick={() => {
+                  setViewMode('vendor-function');
+                  setLayoutMode('hierarchy');
+                }}
+                className={`px-3 py-1.5 text-sm transition-colors ${viewMode === 'vendor-function'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                  }`}
+              >
+                Vendor-Function
+              </button>
+              <button
+                onClick={() => {
+                  setViewMode('all');
+                  setLayoutMode('force');
+                }}
+                className={`px-3 py-1.5 text-sm border-l border-gray-300 transition-colors ${viewMode === 'all'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                  }`}
+              >
+                完整视图
+              </button>
+            </div>
+          </div>
+
           <div className="flex-1 flex items-center gap-2 min-w-[300px]">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -681,20 +736,22 @@ const KnowledgeGraph: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-gray-500" />
-            <select
-              value={filterType}
-              onChange={(e) => handleFilter(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="all">全部类型</option>
-              <option value="Vendor">厂商</option>
-              <option value="Function">功能</option>
-              <option value="Command">命令</option>
-              <option value="Parameter">参数</option>
-            </select>
-          </div>
+          {viewMode === 'all' && (
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-gray-500" />
+              <select
+                value={filterType}
+                onChange={(e) => handleFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="all">全部类型</option>
+                <option value="Vendor">厂商</option>
+                <option value="Function">功能</option>
+                <option value="Command">命令</option>
+                <option value="Parameter">参数</option>
+              </select>
+            </div>
+          )}
 
           {/* 布局模式切换 */}
           <div className="flex items-center gap-2 border-l pl-3 border-gray-300">
