@@ -441,6 +441,7 @@ async function handleTopologyRestoreV2(file, params) {
 
     // 结束响应
     res.end();
+    return; // Don't return result to prevent double response
   }
 
   return result;
