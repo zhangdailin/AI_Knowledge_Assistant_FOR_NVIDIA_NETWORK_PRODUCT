@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](package.json)
 [![License](https://img.shields.io/badge/license-Private-gray.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](doc/PUSH_GUIDE.md)
