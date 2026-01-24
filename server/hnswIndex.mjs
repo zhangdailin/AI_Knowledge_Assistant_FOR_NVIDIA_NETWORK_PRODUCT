@@ -7,6 +7,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 
 // 动态导入 hnswlib-node (可能在某些环境不可用)
 let HierarchicalNSW;
@@ -25,6 +26,8 @@ try {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
+
 // 默认配置
 const DEFAULT_CONFIG = {
     dimensions: 1024,           // BGE-M3 embedding 维度
@@ -33,12 +36,65 @@ const DEFAULT_CONFIG = {
     M: 16,                      // 每层连接数 (越大精度越高，内存越大)
     efSearch: 100,              // 搜索时的 ef 参数 (越大精度越高，搜索越慢)
     autoSaveInterval: 60000,    // 自动保存间隔 (ms)
-    dataDir: path.join(__dirname, '..', 'data')
+    dataDir: DEFAULT_DATA_DIR
 };
 
 // 索引文件路径
 const HNSW_INDEX_FILE = 'hnsw_index.bin';
 const HNSW_MAPPING_FILE = 'hnsw_mapping.json';
+const DB_PATH = path.join(DEFAULT_DATA_DIR, 'knowledge.db');
+
+let mappingDb = null;
+
+function getMappingDb() {
+    if (!mappingDb) {
+        mappingDb = new Database(DB_PATH);
+        mappingDb.pragma('journal_mode = WAL');
+        mappingDb.pragma('foreign_keys = ON');
+    }
+    return mappingDb;
+}
+
+function ensureMappingTable(db) {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS hnsw_mapping (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      payload TEXT NOT NULL,
+      updated_at TEXT
+    );
+  `);
+}
+
+async function loadMappingFromDb() {
+    try {
+        const db = getMappingDb();
+        ensureMappingTable(db);
+        const row = db.prepare('SELECT payload FROM hnsw_mapping WHERE id = 1').get();
+        if (!row?.payload) return null;
+        return JSON.parse(row.payload);
+    } catch (error) {
+        console.warn('[HnswIndex] SQLite 映射读取失败:', error.message);
+        return null;
+    }
+}
+
+async function saveMappingToDb(mappingData) {
+    try {
+        const db = getMappingDb();
+        ensureMappingTable(db);
+        db.prepare(`
+      INSERT INTO hnsw_mapping (id, payload, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+    `).run(JSON.stringify(mappingData), new Date().toISOString());
+        return true;
+    } catch (error) {
+        console.warn('[HnswIndex] SQLite 映射保存失败:', error.message);
+        return false;
+    }
+}
 
 /**
  * HNSW 索引管理类
@@ -54,6 +110,16 @@ class HnswIndex {
         this.isDirty = false;           // 是否有未保存的更改
         this.autoSaveTimer = null;
         this.pendingOperations = Promise.resolve();
+    }
+
+    applyMappingData(mappingData) {
+        this.idToLabel = new Map(
+            Object.entries(mappingData.idToLabel || {}).map(([k, v]) => [k, Number(v)])
+        );
+        this.labelToId = new Map(
+            Object.entries(mappingData.labelToId || {}).map(([k, v]) => [parseInt(k, 10), v])
+        );
+        this.nextLabel = Number(mappingData.nextLabel) || 0;
     }
 
     /**
@@ -78,17 +144,34 @@ class HnswIndex {
             // 尝试加载现有索引
             try {
                 await fs.access(indexPath);
-                await fs.access(mappingPath);
-
-                // 加载映射
-                const mappingData = JSON.parse(await fs.readFile(mappingPath, 'utf-8'));
-                this.idToLabel = new Map(Object.entries(mappingData.idToLabel || {}));
-                this.labelToId = new Map(Object.entries(mappingData.labelToId || {}).map(([k, v]) => [parseInt(k), v]));
-                this.nextLabel = mappingData.nextLabel || 0;
 
                 // 加载索引
                 this.index.readIndexSync(indexPath);
-                console.log(`[HnswIndex] 索引加载成功，包含 ${this.idToLabel.size} 个向量`);
+
+                // 加载映射（优先 SQLite，兼容旧文件）
+                let mappingData = await loadMappingFromDb();
+                if (!mappingData) {
+                    try {
+                        await fs.access(mappingPath);
+                        mappingData = JSON.parse(await fs.readFile(mappingPath, 'utf-8'));
+                        await saveMappingToDb(mappingData);
+                        console.log('[HnswIndex] 已从 hnsw_mapping.json 迁移映射到 SQLite');
+                    } catch (mappingError) {
+                        // 继续回退
+                    }
+                }
+
+                if (mappingData) {
+                    this.applyMappingData(mappingData);
+                    console.log(`[HnswIndex] 索引加载成功，包含 ${this.idToLabel.size} 个向量`);
+                } else {
+                    console.warn('[HnswIndex] 映射缺失，重建索引映射');
+                    this.index.initIndex(this.config.maxElements, this.config.M, this.config.efConstruction);
+                    this.idToLabel.clear();
+                    this.labelToId.clear();
+                    this.nextLabel = 0;
+                    await saveMappingToDb({ idToLabel: {}, labelToId: {}, nextLabel: 0 });
+                }
             } catch (loadError) {
                 // 索引不存在或损坏，创建新索引
                 console.log('[HnswIndex] 创建新索引...');
@@ -96,6 +179,7 @@ class HnswIndex {
                 this.idToLabel.clear();
                 this.labelToId.clear();
                 this.nextLabel = 0;
+                await saveMappingToDb({ idToLabel: {}, labelToId: {}, nextLabel: 0 });
             }
 
             // 设置搜索参数
@@ -296,7 +380,6 @@ class HnswIndex {
 
         try {
             const indexPath = path.join(this.config.dataDir, HNSW_INDEX_FILE);
-            const mappingPath = path.join(this.config.dataDir, HNSW_MAPPING_FILE);
 
             // 保存索引
             this.index.writeIndexSync(indexPath);
@@ -308,7 +391,7 @@ class HnswIndex {
                 nextLabel: this.nextLabel,
                 savedAt: new Date().toISOString()
             };
-            await fs.writeFile(mappingPath, JSON.stringify(mappingData, null, 2));
+            await saveMappingToDb(mappingData);
 
             this.isDirty = false;
             console.log(`[HnswIndex] 索引已保存，包含 ${this.idToLabel.size} 个向量`);

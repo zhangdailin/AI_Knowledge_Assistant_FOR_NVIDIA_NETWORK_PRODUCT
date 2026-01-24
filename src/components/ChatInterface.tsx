@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, Bot, User, Trash2, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard, ShieldCheck, AlertTriangle, ThumbsUp, ThumbsDown, Info } from 'lucide-react';
+import { Send, Bot, User, Trash2, Brain, Square, BookOpen, Settings, Plus, MessageSquare, LayoutDashboard, ShieldCheck, AlertTriangle, ThumbsUp, ThumbsDown, Info, Search, Wrench, CheckCircle2 } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import MessageContent from './MessageContent';
@@ -788,11 +788,59 @@ const ChatInterface: React.FC = () => {
                     </div>
 
                     {/* 占位气泡 */}
-                    <div className="bg-white border border-gray-100 rounded-3xl rounded-tl-lg p-6 shadow-soft-lg min-h-[80px] flex items-center">
-                      <div className="flex space-x-2">
-                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
-                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                        <div className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                    <div className="bg-white border border-gray-100 rounded-3xl rounded-tl-lg shadow-soft-lg overflow-hidden">
+                      <div className="grid md:grid-cols-[1.1fr_0.9fr]">
+                        <div className="p-6">
+                          <div className="flex items-center gap-2 text-sm text-gray-600">
+                            <span className="thinking-spinner" aria-hidden="true" />
+                            <span className="font-medium">{deepThinking ? '深度思考中...' : '思考中...'}</span>
+                          </div>
+                          <div className="mt-4 space-y-3">
+                            <div className="skeleton h-3 w-full" />
+                            <div className="skeleton h-3 w-11/12" />
+                            <div className="skeleton h-3 w-9/12" />
+                            <div className="skeleton h-3 w-10/12" />
+                          </div>
+                          <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-400">
+                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">检索中</span>
+                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">整理答案</span>
+                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">校验引用</span>
+                          </div>
+                        </div>
+
+                        <div className="relative hidden md:flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-indigo-50/60 p-6">
+                          <div className="absolute inset-0" aria-hidden="true">
+                            <div className="thinking-path" style={{ top: '38%', left: '22%', width: '46%', transform: 'rotate(10deg)' }} />
+                            <div className="thinking-path" style={{ top: '56%', left: '35%', width: '38%', transform: 'rotate(-18deg)' }} />
+                            <div className="thinking-path" style={{ top: '28%', left: '44%', width: '40%', transform: 'rotate(42deg)' }} />
+                            <span className="thinking-spark" style={{ top: '22%', left: '70%', animationDelay: '0.4s' }} />
+                            <span className="thinking-spark" style={{ top: '68%', left: '20%', animationDelay: '1.2s' }} />
+                            <span className="thinking-spark" style={{ top: '78%', left: '72%', animationDelay: '0.9s' }} />
+                          </div>
+
+                          <div className="thinking-orbit" aria-hidden="true" />
+
+                          <div className="absolute left-8 top-10 flex flex-col items-center gap-2">
+                            <div className="thinking-node">
+                              <Search className="w-4 h-4 text-indigo-500" />
+                            </div>
+                            <span className="text-[11px] text-gray-500">分析问题</span>
+                          </div>
+
+                          <div className="absolute right-8 top-16 flex flex-col items-center gap-2">
+                            <div className="thinking-node thinking-node-delay">
+                              <Wrench className="w-4 h-4 text-sky-500" />
+                            </div>
+                            <span className="text-[11px] text-gray-500">工具调用</span>
+                          </div>
+
+                          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+                            <div className="thinking-node thinking-node-delay-2">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                            </div>
+                            <span className="text-[11px] text-gray-500">组织答案</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>

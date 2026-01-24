@@ -41,6 +41,8 @@ export const getFeedbackMetrics = storage.getFeedbackMetrics;
 export const getAllFeedback = storage.getAllFeedback;
 
 export const getNegativePenalty = storage.getNegativePenalty;
+export const addNegativeFeedbackSample = storage.addNegativeFeedbackSample;
+export const getNegativeFeedbackStats = storage.getNegativeFeedbackStats;
 
 export const getCategories = storage.getCategories;
 export const saveCategories = storage.saveCategories;
@@ -48,6 +50,14 @@ export const addCategory = storage.addCategory;
 export const updateCategory = storage.updateCategory;
 export const deleteCategory = storage.deleteCategory;
 export const getCategoryAndChildrenIds = storage.getCategoryAndChildrenIds;
+
+export const saveAbExperiment = storage.saveAbExperiment;
+export const getAbExperiment = storage.getAbExperiment;
+export const listAbExperiments = storage.listAbExperiments;
+export const setActiveAbExperiment = storage.setActiveAbExperiment;
+export const getActiveAbExperiment = storage.getActiveAbExperiment;
+export const addAbResult = storage.addAbResult;
+export const getAbResults = storage.getAbResults;
 
 export const setSearchCacheInvalidator = storage.setSearchCacheInvalidator;
 export const reloadCacheConfig = storage.reloadCacheConfig;

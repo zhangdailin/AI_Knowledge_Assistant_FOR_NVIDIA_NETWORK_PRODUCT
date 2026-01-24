@@ -3,15 +3,7 @@
  * 支持多种检索策略和模型配置的对比实验
  */
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as storage from './storage-adapter.mjs';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const EXPERIMENTS_FILE = path.join(__dirname, '..', 'data', 'ab_experiments.json');
-const RESULTS_FILE = path.join(__dirname, '..', 'data', 'ab_results.json');
 
 // 默认实验配置
 const DEFAULT_EXPERIMENTS = {
@@ -20,42 +12,12 @@ const DEFAULT_EXPERIMENTS = {
     activeExperiment: null
 };
 
-/**
- * 加载实验配置
- */
 async function loadExperiments() {
     try {
-        const content = await fs.readFile(EXPERIMENTS_FILE, 'utf-8');
-        return JSON.parse(content);
+        return await storage.listAbExperiments();
     } catch (e) {
         return { ...DEFAULT_EXPERIMENTS };
     }
-}
-
-/**
- * 保存实验配置
- */
-async function saveExperiments(data) {
-    await fs.writeFile(EXPERIMENTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-/**
- * 加载实验结果
- */
-async function loadResults() {
-    try {
-        const content = await fs.readFile(RESULTS_FILE, 'utf-8');
-        return JSON.parse(content);
-    } catch (e) {
-        return { results: [] };
-    }
-}
-
-/**
- * 保存实验结果
- */
-async function saveResults(data) {
-    await fs.writeFile(RESULTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 /**
@@ -99,9 +61,7 @@ export async function createExperiment(config) {
         createdAt: new Date().toISOString()
     };
 
-    const data = await loadExperiments();
-    data.experiments.push(experiment);
-    await saveExperiments(data);
+    await storage.saveAbExperiment(experiment);
 
     console.log(`[A/B Testing] 创建实验: ${name} (${variants.length} 个变体)`);
     return experiment;
@@ -111,8 +71,7 @@ export async function createExperiment(config) {
  * 启动实验
  */
 export async function startExperiment(experimentId) {
-    const data = await loadExperiments();
-    const experiment = data.experiments.find(e => e.id === experimentId);
+    const experiment = await storage.getAbExperiment(experimentId);
 
     if (!experiment) {
         throw new Error(`实验 ${experimentId} 不存在`);
@@ -120,9 +79,8 @@ export async function startExperiment(experimentId) {
 
     experiment.status = 'running';
     experiment.startDate = new Date().toISOString();
-    data.activeExperiment = experimentId;
-
-    await saveExperiments(data);
+    await storage.saveAbExperiment(experiment);
+    await storage.setActiveAbExperiment(experimentId);
     console.log(`[A/B Testing] 启动实验: ${experiment.name}`);
     return experiment;
 }
@@ -131,8 +89,7 @@ export async function startExperiment(experimentId) {
  * 停止实验
  */
 export async function stopExperiment(experimentId) {
-    const data = await loadExperiments();
-    const experiment = data.experiments.find(e => e.id === experimentId);
+    const experiment = await storage.getAbExperiment(experimentId);
 
     if (!experiment) {
         throw new Error(`实验 ${experimentId} 不存在`);
@@ -141,11 +98,11 @@ export async function stopExperiment(experimentId) {
     experiment.status = 'completed';
     experiment.endDate = new Date().toISOString();
 
-    if (data.activeExperiment === experimentId) {
-        data.activeExperiment = null;
+    await storage.saveAbExperiment(experiment);
+    const activeExperiment = await storage.getActiveAbExperiment();
+    if (activeExperiment?.id === experimentId) {
+        await storage.setActiveAbExperiment(null);
     }
-
-    await saveExperiments(data);
     console.log(`[A/B Testing] 停止实验: ${experiment.name}`);
     return experiment;
 }
@@ -156,13 +113,7 @@ export async function stopExperiment(experimentId) {
  * @returns {Object|null} 分配的变体，null 表示无活跃实验
  */
 export async function assignVariant(userId = null) {
-    const data = await loadExperiments();
-
-    if (!data.activeExperiment) {
-        return null;
-    }
-
-    const experiment = data.experiments.find(e => e.id === data.activeExperiment);
+    const experiment = await storage.getActiveAbExperiment();
     if (!experiment || experiment.status !== 'running') {
         return null;
     }
@@ -221,21 +172,13 @@ export async function recordResult(result) {
         timestamp = new Date().toISOString()
     } = result;
 
-    const data = await loadResults();
-    data.results.push({
+    await storage.addAbResult({
         experimentId,
         variantId,
-        query: query?.substring(0, 100), // 截断查询
+        query: query?.substring(0, 100),
         metrics,
         timestamp
     });
-
-    // 限制结果数量（保留最近 10000 条）
-    if (data.results.length > 10000) {
-        data.results = data.results.slice(-10000);
-    }
-
-    await saveResults(data);
 }
 
 /**
@@ -244,15 +187,13 @@ export async function recordResult(result) {
  * @returns {Object} 分析结果
  */
 export async function analyzeExperiment(experimentId) {
-    const expData = await loadExperiments();
-    const experiment = expData.experiments.find(e => e.id === experimentId);
+    const experiment = await storage.getAbExperiment(experimentId);
 
     if (!experiment) {
         throw new Error(`实验 ${experimentId} 不存在`);
     }
 
-    const resultsData = await loadResults();
-    const expResults = resultsData.results.filter(r => r.experimentId === experimentId);
+    const expResults = await storage.getAbResults(experimentId);
 
     // 按变体分组
     const byVariant = {};
@@ -349,20 +290,14 @@ export async function analyzeExperiment(experimentId) {
  * 获取所有实验
  */
 export async function listExperiments() {
-    const data = await loadExperiments();
-    return {
-        experiments: data.experiments,
-        activeExperiment: data.activeExperiment
-    };
+    return await loadExperiments();
 }
 
 /**
  * 获取当前活跃实验
  */
 export async function getActiveExperiment() {
-    const data = await loadExperiments();
-    if (!data.activeExperiment) return null;
-    return data.experiments.find(e => e.id === data.activeExperiment) || null;
+    return await storage.getActiveAbExperiment();
 }
 
 // 预置实验模板

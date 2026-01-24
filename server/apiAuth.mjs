@@ -6,9 +6,6 @@
 import crypto from 'crypto';
 import * as storage from './storage-adapter.mjs';
 
-// API Key 存储文件
-const API_KEYS_FILE = 'data/api_keys.json';
-
 /**
  * 生成安全的 API Key
  */

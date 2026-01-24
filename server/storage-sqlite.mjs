@@ -22,6 +22,149 @@ let isInitialized = false;
 let searchCacheInvalidator = null;
 let hnswRebuildPromise = null;
 
+const LEGACY_JSON_FILES = {
+    categories: path.join(DATA_DIR, 'categories.json'),
+    abExperiments: path.join(DATA_DIR, 'ab_experiments.json'),
+    abResults: path.join(DATA_DIR, 'ab_results.json'),
+    negativeSamples: path.join(DATA_DIR, 'negative_samples.json')
+};
+
+async function fileExists(filePath) {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function migrateCategoriesFromJson() {
+    const database = getDatabase();
+    const count = database.prepare('SELECT COUNT(*) as count FROM categories').get().count || 0;
+    if (count > 0) return false;
+    if (!await fileExists(LEGACY_JSON_FILES.categories)) return false;
+
+    try {
+        const raw = await fs.readFile(LEGACY_JSON_FILES.categories, 'utf-8');
+        const data = JSON.parse(raw);
+        if (Array.isArray(data?.tree) && data.tree.length > 0) {
+            await saveCategories(data);
+            console.log('[SQLite] 已迁移 categories.json');
+            return true;
+        }
+    } catch (error) {
+        console.warn('[SQLite] categories.json 迁移失败:', error.message);
+    }
+    return false;
+}
+
+async function migrateAbExperimentsFromJson() {
+    const database = getDatabase();
+    const count = database.prepare('SELECT COUNT(*) as count FROM ab_experiments').get().count || 0;
+    if (count > 0) return false;
+    if (!await fileExists(LEGACY_JSON_FILES.abExperiments)) return false;
+
+    try {
+        const raw = await fs.readFile(LEGACY_JSON_FILES.abExperiments, 'utf-8');
+        const data = JSON.parse(raw);
+        const experiments = Array.isArray(data?.experiments) ? data.experiments : [];
+        for (const experiment of experiments) {
+            await saveAbExperiment(experiment);
+        }
+        if (data?.activeExperiment) {
+            await setActiveAbExperiment(data.activeExperiment);
+        }
+        console.log('[SQLite] 已迁移 ab_experiments.json');
+        return experiments.length > 0;
+    } catch (error) {
+        console.warn('[SQLite] ab_experiments.json 迁移失败:', error.message);
+    }
+    return false;
+}
+
+async function migrateAbResultsFromJson() {
+    const database = getDatabase();
+    const count = database.prepare('SELECT COUNT(*) as count FROM ab_results').get().count || 0;
+    if (count > 0) return false;
+    if (!await fileExists(LEGACY_JSON_FILES.abResults)) return false;
+
+    try {
+        const raw = await fs.readFile(LEGACY_JSON_FILES.abResults, 'utf-8');
+        const data = JSON.parse(raw);
+        const results = Array.isArray(data?.results) ? data.results : [];
+        if (results.length === 0) return false;
+
+        const insert = database.prepare(`
+      INSERT INTO ab_results (experiment_id, variant_id, query, metrics, timestamp)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+        const tx = database.transaction((rows) => {
+            for (const row of rows) {
+                insert.run(
+                    row.experimentId,
+                    row.variantId,
+                    row.query || null,
+                    row.metrics ? JSON.stringify(row.metrics) : null,
+                    row.timestamp || new Date().toISOString()
+                );
+            }
+        });
+        tx(results);
+        console.log('[SQLite] 已迁移 ab_results.json');
+        return true;
+    } catch (error) {
+        console.warn('[SQLite] ab_results.json 迁移失败:', error.message);
+    }
+    return false;
+}
+
+async function migrateNegativeSamplesFromJson() {
+    const database = getDatabase();
+    const count = database.prepare('SELECT COUNT(*) as count FROM negative_feedback_samples').get().count || 0;
+    if (count > 0) return false;
+    if (!await fileExists(LEGACY_JSON_FILES.negativeSamples)) return false;
+
+    try {
+        const raw = await fs.readFile(LEGACY_JSON_FILES.negativeSamples, 'utf-8');
+        const data = JSON.parse(raw);
+        const samples = Array.isArray(data?.samples) ? data.samples : [];
+        if (samples.length === 0) return false;
+
+        const insert = database.prepare(`
+      INSERT OR IGNORE INTO negative_feedback_samples (
+        id, query_id, query, feedback_type, timestamp, retrieved_chunks, user_comment, expected_topic
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+        const tx = database.transaction((rows) => {
+            for (const sample of rows) {
+                insert.run(
+                    sample.id,
+                    sample.queryId || null,
+                    sample.query,
+                    sample.feedbackType,
+                    sample.timestamp || new Date().toISOString(),
+                    sample.retrievedChunks ? JSON.stringify(sample.retrievedChunks) : null,
+                    sample.userComment || null,
+                    sample.expectedTopic || null
+                );
+            }
+        });
+        tx(samples);
+        console.log('[SQLite] 已迁移 negative_samples.json');
+        return true;
+    } catch (error) {
+        console.warn('[SQLite] negative_samples.json 迁移失败:', error.message);
+    }
+    return false;
+}
+
+async function migrateLegacyJsonData() {
+    await migrateCategoriesFromJson();
+    await migrateAbExperimentsFromJson();
+    await migrateAbResultsFromJson();
+    await migrateNegativeSamplesFromJson();
+}
+
 function deserializeEmbedding(raw) {
     if (!raw || raw.length % 4 !== 0) return null;
     const floatArray = new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4);
@@ -217,6 +360,42 @@ export async function initStorage() {
       UNIQUE(query, document_id)
     );
     CREATE INDEX IF NOT EXISTS idx_negative_query ON negative_samples(query);
+
+    -- 负面反馈样本表 (用于检索反馈分析)
+    CREATE TABLE IF NOT EXISTS negative_feedback_samples (
+      id TEXT PRIMARY KEY,
+      query_id TEXT,
+      query TEXT NOT NULL,
+      feedback_type TEXT NOT NULL,
+      timestamp TEXT,
+      retrieved_chunks TEXT,
+      user_comment TEXT,
+      expected_topic TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_neg_feedback_type ON negative_feedback_samples(feedback_type);
+    CREATE INDEX IF NOT EXISTS idx_neg_feedback_time ON negative_feedback_samples(timestamp);
+
+    -- A/B 实验配置
+    CREATE TABLE IF NOT EXISTS ab_experiments (
+      id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      status TEXT,
+      created_at TEXT,
+      start_date TEXT,
+      end_date TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ab_experiments_status ON ab_experiments(status);
+
+    -- A/B 实验结果
+    CREATE TABLE IF NOT EXISTS ab_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      experiment_id TEXT NOT NULL,
+      variant_id TEXT NOT NULL,
+      query TEXT,
+      metrics TEXT,
+      timestamp TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ab_results_experiment ON ab_results(experiment_id);
   `);
 
     // 创建 FTS5 全文搜索虚拟表（如果不存在）
@@ -236,6 +415,7 @@ export async function initStorage() {
 
     isInitialized = true;
     console.log('[SQLite] 数据库初始化完成');
+    await migrateLegacyJsonData();
     void rebuildHnswIndexIfNeeded('startup');
 }
 
@@ -1036,6 +1216,195 @@ export async function getNegativePenalty(query, documentId) {
     }
 
     return 0;
+}
+
+// ========== 负面反馈样本（检索反馈分析） ==========
+
+export async function addNegativeFeedbackSample(sample) {
+    if (!sample?.id || !sample?.query || !sample?.feedbackType) return false;
+    await initStorage();
+    const database = getDatabase();
+
+    database.prepare(`
+    INSERT INTO negative_feedback_samples (
+      id, query_id, query, feedback_type, timestamp, retrieved_chunks, user_comment, expected_topic
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+        sample.id,
+        sample.queryId || null,
+        sample.query,
+        sample.feedbackType,
+        sample.timestamp || new Date().toISOString(),
+        sample.retrievedChunks ? JSON.stringify(sample.retrievedChunks) : null,
+        sample.userComment || null,
+        sample.expectedTopic || null
+    );
+
+    return true;
+}
+
+export async function getNegativeFeedbackStats() {
+    await initStorage();
+    const database = getDatabase();
+
+    const totalRow = database.prepare('SELECT COUNT(*) as total FROM negative_feedback_samples').get();
+    const byTypeRows = database.prepare(`
+    SELECT feedback_type as feedbackType, COUNT(*) as count
+    FROM negative_feedback_samples
+    GROUP BY feedback_type
+  `).all();
+
+    const lastUpdatedRow = database.prepare(`
+    SELECT MAX(timestamp) as lastUpdated
+    FROM negative_feedback_samples
+  `).get();
+
+    const recentSamples = database.prepare(`
+    SELECT id, query, feedback_type as feedbackType, timestamp
+    FROM negative_feedback_samples
+    ORDER BY timestamp DESC
+    LIMIT 5
+  `).all();
+
+    const recentQueries = database.prepare(`
+    SELECT query
+    FROM negative_feedback_samples
+    ORDER BY timestamp DESC
+    LIMIT 100
+  `).all().map(row => row.query);
+
+    const stats = {
+        totalSamples: totalRow?.total || 0,
+        byFeedbackType: {}
+    };
+
+    for (const row of byTypeRows) {
+        stats.byFeedbackType[row.feedbackType] = row.count;
+    }
+
+    return {
+        stats,
+        lastUpdated: lastUpdatedRow?.lastUpdated || null,
+        recentSamples,
+        recentQueries
+    };
+}
+
+// ========== A/B 测试 ==========
+
+export async function saveAbExperiment(experiment) {
+    if (!experiment?.id) return false;
+    await initStorage();
+    const database = getDatabase();
+    const payload = JSON.stringify(experiment);
+
+    database.prepare(`
+    INSERT INTO ab_experiments (id, payload, status, created_at, start_date, end_date)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      payload = excluded.payload,
+      status = excluded.status,
+      start_date = excluded.start_date,
+      end_date = excluded.end_date
+  `).run(
+        experiment.id,
+        payload,
+        experiment.status || null,
+        experiment.createdAt || null,
+        experiment.startDate || null,
+        experiment.endDate || null
+    );
+
+    return true;
+}
+
+export async function getAbExperiment(experimentId) {
+    if (!experimentId) return null;
+    await initStorage();
+    const database = getDatabase();
+    const row = database.prepare('SELECT payload FROM ab_experiments WHERE id = ?').get(experimentId);
+    if (!row?.payload) return null;
+    try {
+        return JSON.parse(row.payload);
+    } catch {
+        return null;
+    }
+}
+
+export async function listAbExperiments() {
+    await initStorage();
+    const database = getDatabase();
+    const rows = database.prepare('SELECT payload FROM ab_experiments ORDER BY created_at DESC').all();
+    const experiments = [];
+    for (const row of rows) {
+        try {
+            experiments.push(JSON.parse(row.payload));
+        } catch {
+            // ignore malformed rows
+        }
+    }
+
+    const settings = await getSettings();
+    return {
+        experiments,
+        activeExperiment: settings.abActiveExperiment || null
+    };
+}
+
+export async function setActiveAbExperiment(experimentId) {
+    await updateSettings({ abActiveExperiment: experimentId });
+}
+
+export async function getActiveAbExperiment() {
+    const settings = await getSettings();
+    const activeId = settings.abActiveExperiment;
+    if (!activeId) return null;
+    return await getAbExperiment(activeId);
+}
+
+export async function addAbResult(result) {
+    if (!result?.experimentId || !result?.variantId) return false;
+    await initStorage();
+    const database = getDatabase();
+
+    database.prepare(`
+    INSERT INTO ab_results (experiment_id, variant_id, query, metrics, timestamp)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+        result.experimentId,
+        result.variantId,
+        result.query || null,
+        result.metrics ? JSON.stringify(result.metrics) : null,
+        result.timestamp || new Date().toISOString()
+    );
+
+    database.prepare(`
+    DELETE FROM ab_results
+    WHERE id NOT IN (
+      SELECT id FROM ab_results ORDER BY id DESC LIMIT 10000
+    )
+  `).run();
+
+    return true;
+}
+
+export async function getAbResults(experimentId) {
+    if (!experimentId) return [];
+    await initStorage();
+    const database = getDatabase();
+    const rows = database.prepare(`
+    SELECT variant_id as variantId, query, metrics, timestamp
+    FROM ab_results
+    WHERE experiment_id = ?
+  `).all(experimentId);
+
+    return rows.map(row => ({
+        experimentId,
+        variantId: row.variantId,
+        query: row.query,
+        metrics: row.metrics ? JSON.parse(row.metrics) : {},
+        timestamp: row.timestamp
+    }));
 }
 
 // ========== 分类管理 ==========

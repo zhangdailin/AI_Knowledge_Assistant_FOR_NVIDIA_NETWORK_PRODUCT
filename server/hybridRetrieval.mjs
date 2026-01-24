@@ -8,9 +8,6 @@
  * - 复杂查询检测与多跳支持
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import * as knowledgeGraph from './knowledgeGraph.mjs';
 import { embedText } from './embedding.mjs';
 import * as storage from './storage-adapter.mjs';
@@ -23,14 +20,13 @@ import {
   EXTENDED_TECHNICAL_KEYWORDS
 } from './constants.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const CATEGORIES_FILE = path.join(__dirname, '..', 'data', 'categories.json');
 const DEFAULT_CATEGORY_NAMES = new Set(['default', '默认分类']);
 const DEFAULT_VENDOR_NAME = process.env.DEFAULT_VENDOR || 'NVIDIA';
 
 let cachedVendorNames = null;
-let cachedVendorMtime = 0;
+let cachedVendorLoadedAt = 0;
+let vendorRefreshPromise = null;
+const VENDOR_CACHE_TTL = 60000;
 
 // 反馈指标缓存（避免频繁数据库查询）
 let cachedFeedbackMetrics = null;
@@ -120,26 +116,32 @@ function collectVendorNames(nodes, names) {
   }
 }
 
-function loadVendorNamesFromCategories() {
+async function refreshVendorNames() {
   try {
-    const stats = fs.statSync(CATEGORIES_FILE);
-    if (cachedVendorNames && stats.mtimeMs === cachedVendorMtime) {
-      return cachedVendorNames;
-    }
-    const raw = fs.readFileSync(CATEGORIES_FILE, 'utf-8');
-    const data = JSON.parse(raw);
+    const data = await storage.getCategories();
     const names = [];
     collectVendorNames(data?.tree || [], names);
     cachedVendorNames = names;
-    cachedVendorMtime = stats.mtimeMs;
-    return names;
+    cachedVendorLoadedAt = Date.now();
   } catch (error) {
     if (!cachedVendorNames) {
       cachedVendorNames = [];
     }
-    return cachedVendorNames;
   }
 }
+
+function loadVendorNamesFromCategories() {
+  const now = Date.now();
+  if (!cachedVendorNames) cachedVendorNames = [];
+  if ((now - cachedVendorLoadedAt) > VENDOR_CACHE_TTL && !vendorRefreshPromise) {
+    vendorRefreshPromise = refreshVendorNames().finally(() => {
+      vendorRefreshPromise = null;
+    });
+  }
+  return cachedVendorNames;
+}
+
+void refreshVendorNames();
 
 /**
  * 计算数组方差

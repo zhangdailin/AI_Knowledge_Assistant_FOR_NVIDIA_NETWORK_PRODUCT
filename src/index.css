@@ -354,4 +354,115 @@
     animation: shimmer 1.5s infinite;
     border-radius: 12px;
   }
+
+  @keyframes thinkingSpin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes thinkingOrbit {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes thinkingPulse {
+    0%, 100% {
+      transform: scale(1);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+    50% {
+      transform: scale(1.08);
+      box-shadow: 0 14px 30px rgba(79, 70, 229, 0.18);
+    }
+  }
+
+  @keyframes thinkingFloat {
+    0%, 100% {
+      transform: translateY(0);
+      opacity: 0.5;
+    }
+    50% {
+      transform: translateY(-6px);
+      opacity: 0.9;
+    }
+  }
+
+  @keyframes thinkingDash {
+    0%, 100% {
+      opacity: 0.2;
+    }
+    50% {
+      opacity: 0.75;
+    }
+  }
+
+  .thinking-spinner {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 2px solid rgba(99, 102, 241, 0.2);
+    border-top-color: #6366f1;
+    animation: thinkingSpin 0.9s linear infinite;
+  }
+
+  .thinking-orbit {
+    position: absolute;
+    width: 180px;
+    height: 180px;
+    border-radius: 999px;
+    border: 1px dashed rgba(99, 102, 241, 0.35);
+    animation: thinkingOrbit 16s linear infinite;
+  }
+
+  .thinking-orbit::after {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    transform: translateX(-50%);
+    background: radial-gradient(circle at 30% 30%, #f59e0b 0%, #ec4899 70%);
+    box-shadow: 0 0 10px rgba(236, 72, 153, 0.45);
+  }
+
+  .thinking-node {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    background: #ffffff;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: thinkingPulse 2.8s ease-in-out infinite;
+  }
+
+  .thinking-node-delay {
+    animation-delay: 0.7s;
+  }
+
+  .thinking-node-delay-2 {
+    animation-delay: 1.4s;
+  }
+
+  .thinking-path {
+    position: absolute;
+    height: 1px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0), rgba(99, 102, 241, 0.55), rgba(14, 165, 233, 0));
+    animation: thinkingDash 3s ease-in-out infinite;
+  }
+
+  .thinking-spark {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.35);
+    animation: thinkingFloat 3s ease-in-out infinite;
+  }
 }
