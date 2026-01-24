@@ -2493,7 +2493,7 @@ const SILICONFLOW_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.SILICONFL
   : 45000;
 const GEMINI_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.GEMINI_CHAT_TIMEOUT_MS))
   ? Number(process.env.GEMINI_CHAT_TIMEOUT_MS)
-  : 30000;
+  : 90000;
 const FALLBACK_LLM_MODEL = process.env.SILICONFLOW_FALLBACK_LLM_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
 const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'claude-sonnet-4-5-20250929';
 
@@ -2527,14 +2527,18 @@ app.post('/api/chat/stream', async (req, res) => {
           throw new Error('未配置 Gemini API Key');
         }
 
-        const response = await fetchWithTimeout(`${geminiConfig.baseUrl}/v1/chat/completions`, {
+        const apiUrl = `${geminiConfig.baseUrl}/v1/chat/completions`;
+        const requestModel = model || await getGeminiModel();
+        console.log(`[Chat] Gemini request: url=${apiUrl}, model=${requestModel}, timeout=${GEMINI_CHAT_TIMEOUT_MS}ms`);
+
+        const response = await fetchWithTimeout(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${geminiConfig.apiKey}`
           },
           body: JSON.stringify({
-            model: model || await getGeminiModel(),
+            model: requestModel,
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
@@ -2542,9 +2546,11 @@ app.post('/api/chat/stream', async (req, res) => {
           })
         }, GEMINI_CHAT_TIMEOUT_MS);
 
+        console.log(`[Chat] Gemini response status: ${response.status}`);
+
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          console.error('[Chat] Gemini API error:', response.status, errorData);
+          console.error('[Chat] Gemini API error:', response.status, JSON.stringify(errorData));
           res.write(`data: ${JSON.stringify({ error: `Gemini API 请求失败: ${response.status}` })}\n\n`);
           res.end();
           return;
@@ -2697,23 +2703,29 @@ app.post('/api/chat', async (req, res) => {
           throw new Error('未配置 Gemini API Key');
         }
 
-        const response = await fetchWithTimeout(`${geminiConfig.baseUrl}/v1/chat/completions`, {
+        const apiUrl = `${geminiConfig.baseUrl}/v1/chat/completions`;
+        const requestModel = model || await getGeminiModel();
+        console.log(`[Chat] Gemini request (non-stream): url=${apiUrl}, model=${requestModel}, timeout=${GEMINI_CHAT_TIMEOUT_MS}ms`);
+
+        const response = await fetchWithTimeout(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${geminiConfig.apiKey}`
           },
           body: JSON.stringify({
-            model: model || await getGeminiModel(),
+            model: requestModel,
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7
           })
         }, GEMINI_CHAT_TIMEOUT_MS);
 
+        console.log(`[Chat] Gemini response status (non-stream): ${response.status}`);
+
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          console.error('[Chat] Gemini API error:', response.status, errorData);
+          console.error('[Chat] Gemini API error (non-stream):', response.status, JSON.stringify(errorData));
           throw new Error(`Gemini API 请求失败: ${response.status}`);
         }
 
