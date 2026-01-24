@@ -194,6 +194,23 @@ class LocalStorageManager {
     return messages ? JSON.parse(messages) : [];
   }
 
+  updateMessage(messageId: string, updates: Partial<Message>) {
+    const messages = this.getAllMessages();
+    const index = messages.findIndex((msg: Message) => msg.id === messageId);
+    if (index === -1) return null;
+    const updated: Message = {
+      ...messages[index],
+      ...updates,
+      metadata: updates.metadata ? {
+        ...messages[index].metadata,
+        ...updates.metadata
+      } : messages[index].metadata
+    };
+    messages[index] = updated;
+    localStorage.setItem(this.MESSAGES_KEY, JSON.stringify(messages));
+    return updated;
+  }
+
   updateMessageMetadata(messageId: string, updates: Partial<MessageMetadata>) {
     const messages = this.getAllMessages();
     const index = messages.findIndex((msg: Message) => msg.id === messageId);
