@@ -2538,8 +2538,7 @@ app.post('/api/chat/stream', async (req, res) => {
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
-            stream: true,
-            tools: [{ type: 'google_search' }]
+            stream: true
           })
         }, GEMINI_CHAT_TIMEOUT_MS);
 
@@ -2708,9 +2707,7 @@ app.post('/api/chat', async (req, res) => {
             model: model || await getGeminiModel(),
             messages,
             max_tokens: max_tokens || 8192,
-            temperature: temperature || 0.7,
-            // 启用 Google Search grounding（联网搜索）
-            tools: [{ type: 'google_search' }]
+            temperature: temperature || 0.7
           })
         }, GEMINI_CHAT_TIMEOUT_MS);
 
