@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-01-24
+
+### Added
+- 🌐 为 Gemini 增加服务端联网搜索（Serper/Bing/Brave）
+- 📚 文档索引与合并后的工程/测试/知识图谱说明
+
+### Changed
+- 📝 更新 README 配置示例与模块说明
+- ⚙️ 统一 Web Search 配置入口
+
+### Fixed
+- 🔁 修复流式输出中重复片段的拼接问题
+
 ## [2.0.1] - 2026-01-24
 
 ### Added
@@ -80,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Minor (x.Y.0)**: New features, backward compatible
 - **Patch (x.y.Z)**: Bug fixes, performance improvements
 
+[2.0.2]: https://github.com/zhangdailin/AI_Knowledge_Assistant_FOR_NVIDIA_NETWORK_PRODUCT/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/zhangdailin/AI_Knowledge_Assistant_FOR_NVIDIA_NETWORK_PRODUCT/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/zhangdailin/AI_Knowledge_Assistant_FOR_NVIDIA_NETWORK_PRODUCT/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/zhangdailin/AI_Knowledge_Assistant_FOR_NVIDIA_NETWORK_PRODUCT/releases/tag/v1.0.0

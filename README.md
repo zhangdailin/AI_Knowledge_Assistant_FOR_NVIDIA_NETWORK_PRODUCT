@@ -2,10 +2,10 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](package.json)
 [![License](https://img.shields.io/badge/license-Private-gray.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](doc/PUSH_GUIDE.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](doc/ENGINEERING_NOTES.md)
 
 **面向 NVIDIA/Mellanox InfiniBand & RoCE 网络设备的智能知识库系统**
 
@@ -24,6 +24,14 @@ AI Knowledge Assistant 是一个基于 **RAG (Retrieval-Augmented Generation)** 
 - 🕸️ **网络拓扑还原**：从 UFM/NetQ 导入数据，可视化分析
 - 📊 **性能监控**：实时指标、A/B 测试、质量评估
 - 🔌 **RESTful API**：支持系统集成和自动化
+
+---
+
+## 🆕 2.0.2 更新要点
+
+- 🌐 Gemini 追加服务端联网搜索（Serper/Bing/Brave）并注入上下文
+- 🔁 修复流式输出重复片段（增量归一化）
+- 📚 文档收敛：合并知识图谱/测试/工程说明
 
 ---
 
@@ -52,10 +60,13 @@ graph LR
   - 命令/参数一致性校验
   - 引用来源可追溯（文档 + 页码）
   - 负样本学习（自动识别低质量答案）
+- **联网增强（可选）**：
+  - Gemini 触发时自动调用 Web Search API
+  - 搜索结果注入上下文，保留可追溯链接
 - **缓存优化**：
-  - 精确缓存：查询字符串完全匹配
-  - 语义缓存：向量相似度 > 0.95 复用结果
-  - LRU + TTL：1000 条 / 1 小时过期
+  - 精确缓存：LRU 默认 500 条
+  - 语义缓存：相似度阈值默认 0.85
+  - TTL：默认 1 小时
 
 #### 性能指标
 | 指标 | 数值 | 说明 |
@@ -110,7 +121,7 @@ graph LR
 | 参数相关 | 30% | 8 | "vlan100 配置方法" |
 | 通用查询 | 20% | 12 | "网络优化建议" |
 
-📚 详细文档：[知识图谱集成指南](doc/KNOWLEDGE_GRAPH_GUIDE.md)
+📚 详细文档：[知识图谱与检索指南](doc/KNOWLEDGE_GRAPH.md)
 
 ---
 
@@ -154,7 +165,7 @@ Leaf Layer (Tier 2)
 - 🔎 **搜索过滤**：按节点名、层级、POD 筛选
 - 📐 **布局优化**：分层布局 / 力导向图自适应
 
-📚 快速开始：[网络拓扑可视化指南](doc/KNOWLEDGE_GRAPH_QUICKSTART.md)
+📚 相关文档：[文档索引](doc/README.md)
 
 ---
 
@@ -202,7 +213,8 @@ Leaf Layer (Tier 2)
                      │
 ┌────────────────────▼────────────────────────────────┐
 │                  External Services                   │
-│  Neo4j (图数据库) + Ollama (嵌入/生成) + Redis      │
+│  Neo4j (图数据库，可选) + SiliconFlow/Gemini (LLM)  │
+│  Web Search API (Serper/Bing/Brave，可选)            │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -210,12 +222,14 @@ Leaf Layer (Tier 2)
 
 | 模块 | 文件路径 | 职责 |
 |------|---------|------|
+| **搜索管道** | `server/utils/searchPipeline.mjs` | 统一检索与融合流程 |
 | **混合检索** | `server/hybridRetrieval.mjs` | BM25 + 向量检索 + RRF |
 | **查询扩展** | `server/queryExpansion.mjs` | 同义词、缩写、翻译 |
-| **知识图谱** | `server/graphRAG.mjs` | Neo4j 集成、实体抽取 |
-| **负样本学习** | `server/negativeSampleLearning.mjs` | 低质量答案识别 |
-| **缓存管理** | `server/cache-manager.mjs` | LRU + 语义缓存 |
+| **知识图谱** | `server/knowledgeGraph.mjs` | Neo4j 集成、实体抽取 |
+| **答案校验** | `server/answerValidation.mjs` | 命令/参数一致性校验 |
+| **存储与索引** | `server/storage-sqlite.mjs` | SQLite + FTS5 + HNSW |
 | **任务队列** | `server/taskQueue.mjs` | 批量任务调度 |
+| **Web 搜索** | `server/webSearch.mjs` | Serper/Bing/Brave 接入 |
 
 ---
 
@@ -225,7 +239,9 @@ Leaf Layer (Tier 2)
 
 - **Node.js**: >= 20.0.0
 - **Docker**: >= 24.0 (可选，用于 Neo4j)
-- **Ollama**: 本地部署（或远程 API）
+- **SiliconFlow API Key**: 必需（用于 embedding 与 rerank）
+- **Gemini API Key**: 可选（用于 Gemini 回退或联网搜索）
+- **Web Search API Key**: 可选（Serper/Bing/Brave）
 
 ### 1. 克隆项目
 
@@ -246,18 +262,44 @@ npm install
 
 ```json
 {
-  "ollama": {
-    "baseUrl": "http://localhost:11434",
-    "embeddingModel": "bge-m3:latest",
-    "chatModel": "qwen2.5:32b"
+  "providers": {
+    "siliconflow": {
+      "baseUrl": "https://api.siliconflow.cn",
+      "apiKey": "your-siliconflow-key"
+    },
+    "gemini": {
+      "baseUrl": "https://api.chinablog.xyz",
+      "apiKey": "your-gemini-key",
+      "model": "claude-sonnet-4-5-20250929"
+    },
+    "search": {
+      "provider": "serper",
+      "serperApiKey": "your-serper-key"
+    }
   },
-  "neo4j": {
-    "enabled": true,
-    "uri": "bolt://localhost:7687",
-    "username": "neo4j",
-    "password": "your-password"
+  "modelSelection": {
+    "llm": "Qwen/Qwen3-32B",
+    "embedding": "BAAI/bge-m3",
+    "reranking": "BAAI/bge-reranker-v2-m3"
+  },
+  "retrieval": {
+    "enableKnowledgeGraph": true
   }
 }
+```
+
+未配置 Gemini 时默认只走 SiliconFlow。
+
+也可以用环境变量覆盖（示例）：
+
+```bash
+SILICONFLOW_API_KEY=your-siliconflow-key
+SILICONFLOW_BASE_URL=https://api.siliconflow.cn
+GEMINI_API_KEY=your-gemini-key
+GEMINI_BASE_URL=https://api.chinablog.xyz
+GEMINI_MODEL=claude-sonnet-4-5-20250929
+SEARCH_PROVIDER=serper
+SERPER_API_KEY=your-serper-key
 ```
 
 ### 4. 启动服务
@@ -279,6 +321,11 @@ docker-compose up -d
 - **API Server**: http://localhost:8787
 - **API 文档**: [doc/API.md](doc/API.md)
 
+### 6. （可选）Web 搜索
+
+当使用 Gemini 时，后端会尝试调用 Serper/Bing/Brave 并把结果注入到上下文。
+未配置搜索 API Key 时不会联网搜索。
+
 ---
 
 ## 📚 API 使用示例
@@ -286,7 +333,7 @@ docker-compose up -d
 ### 1. 上传文档
 
 ```bash
-curl -X POST http://localhost:8787/api/upload \
+curl -X POST http://localhost:8787/api/documents/upload \
   -F "file=@./manual.pdf" \
   -F "category=network_config"
 ```
@@ -294,24 +341,21 @@ curl -X POST http://localhost:8787/api/upload \
 ### 2. 智能问答
 
 ```bash
-curl -X POST http://localhost:8787/api/chat/message \
+curl -X POST http://localhost:8787/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "conversationId": "conv-123",
-    "message": "如何配置 EVPN?",
-    "options": {
-      "useGraphRAG": true,
-      "maxResults": 10
-    }
+    "messages": [
+      {"role": "user", "content": "如何配置 EVPN?"}
+    ]
   }'
 ```
 
 ### 3. 导入网络拓扑
 
 ```bash
-curl -X POST http://localhost:8787/api/topology/import \
+curl -X POST http://localhost:8787/api/topology/restore \
   -F "file=@./ufm_topology.csv" \
-  -F "type=ufm"
+  -F "networkType=ib"
 ```
 
 📚 完整 API 文档：[doc/API.md](doc/API.md)
@@ -363,7 +407,7 @@ npm run test:benchmark
 │   ├── index.mjs       # 主入口
 │   ├── hybridRetrieval.mjs
 │   ├── queryExpansion.mjs
-│   ├── graphRAG.mjs
+│   ├── knowledgeGraph.mjs
 │   └── storage-sqlite.mjs
 ├── src/                # 前端代码
 │   ├── components/     # React 组件
@@ -378,7 +422,10 @@ npm run test:benchmark
 │   └── *.db          # SQLite 数据库
 └── doc/              # 文档
     ├── API.md
-    ├── KNOWLEDGE_GRAPH_GUIDE.md
+    ├── KNOWLEDGE_GRAPH.md
+    ├── ENGINEERING_NOTES.md
+    ├── TESTING.md
+    ├── README.md
     └── ...
 ```
 
@@ -404,7 +451,7 @@ npm run test:benchmark
    git push origin feature/your-feature
    ```
 
-📚 详细指南：[doc/PUSH_GUIDE.md](doc/PUSH_GUIDE.md)
+📚 详细指南：[doc/ENGINEERING_NOTES.md](doc/ENGINEERING_NOTES.md)
 
 ---
 
@@ -414,11 +461,11 @@ npm run test:benchmark
 
 | 优化项 | 效果 | 文档 |
 |--------|------|------|
-| 移除未使用依赖 | 减少 2.5MB 包体积 | [OPTIMIZATION_SUMMARY](doc/OPTIMIZATION_SUMMARY_2026-01-23.md) |
-| 添加数据库索引 | 查询性能提升 2-5x | [PERFORMANCE_IMPROVEMENTS](doc/PERFORMANCE_IMPROVEMENTS.md) |
-| 优化缓存配置 | 缓存命中率提升 30-50% | [OPTIMIZATION_SUMMARY](doc/OPTIMIZATION_SUMMARY_2026-01-23.md) |
-| 结构化日志系统 | 提升可观测性和安全性 | [LOGGER_MIGRATION_GUIDE](doc/LOGGER_MIGRATION_GUIDE.md) |
-| 查询扩展优化 | 检索准确率提升 12% | [QUERY_OPTIMIZATION_FIX](doc/QUERY_OPTIMIZATION_FIX.md) |
+| 移除未使用依赖 | 减少 2.5MB 包体积 | [ENGINEERING_NOTES](doc/ENGINEERING_NOTES.md) |
+| 添加数据库索引 | 查询性能提升 2-5x | [ENGINEERING_NOTES](doc/ENGINEERING_NOTES.md) |
+| 优化缓存配置 | 缓存命中率提升 30-50% | [ENGINEERING_NOTES](doc/ENGINEERING_NOTES.md) |
+| 结构化日志系统 | 提升可观测性和安全性 | [ENGINEERING_NOTES](doc/ENGINEERING_NOTES.md) |
+| 查询扩展优化 | 检索准确率提升 12% | [ENGINEERING_NOTES](doc/ENGINEERING_NOTES.md) |
 
 ---
 
@@ -430,7 +477,7 @@ npm run test:benchmark
 - ✅ 敏感信息脱敏（日志/错误报告）
 - ✅ CORS 配置
 
-📄 安全审计报告：[doc/SECURITY_REPORT_2026-01-23.md](doc/SECURITY_REPORT_2026-01-23.md)
+📄 安全与风险说明：[doc/ENGINEERING_NOTES.md](doc/ENGINEERING_NOTES.md)
 
 ---
 
@@ -438,12 +485,11 @@ npm run test:benchmark
 
 | 文档 | 描述 |
 |------|------|
+| [README.md](doc/README.md) | 文档索引与仓库规范摘要 |
 | [API.md](doc/API.md) | 完整 API 参考 |
-| [KNOWLEDGE_GRAPH_GUIDE.md](doc/KNOWLEDGE_GRAPH_GUIDE.md) | 知识图谱集成指南 |
-| [KNOWLEDGE_GRAPH_QUICKSTART.md](doc/KNOWLEDGE_GRAPH_QUICKSTART.md) | 知识图谱快速开始 |
-| [TEST_ARCHITECTURE.md](doc/TEST_ARCHITECTURE.md) | 测试架构设计 |
-| [AGENTS.md](doc/AGENTS.md) | 多 Agent 协作机制 |
-| [PUSH_GUIDE.md](doc/PUSH_GUIDE.md) | 代码提交规范 |
+| [KNOWLEDGE_GRAPH.md](doc/KNOWLEDGE_GRAPH.md) | 知识图谱与检索指南 |
+| [TESTING.md](doc/TESTING.md) | 测试与质量保障 |
+| [ENGINEERING_NOTES.md](doc/ENGINEERING_NOTES.md) | 工程与运维说明 |
 | [WORK_HISTORY.md](doc/WORK_HISTORY.md) | 开发历史记录 |
 
 ---
@@ -471,7 +517,7 @@ Private - All Rights Reserved
 
 - **前端**: React, TypeScript, TailwindCSS, Cytoscape.js
 - **后端**: Node.js, Express, SQLite, Neo4j
-- **AI**: Ollama, BGE-M3, Qwen2.5
+- **AI**: SiliconFlow, Gemini, BGE-M3
 - **工具**: Vitest, Playwright, Docker
 
 ---

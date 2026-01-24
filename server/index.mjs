@@ -50,6 +50,7 @@ import { recordSearchRequest, recordRetrievalMetrics, recordNegativePenalty, get
 import * as apiAuth from './apiAuth.mjs';
 import * as apiBatch from './apiBatch.mjs';
 import * as apiWebhook from './apiWebhook.mjs';
+import { runWebSearch, buildSearchContext } from './webSearch.mjs';
 
 // 精确匹配缓存（快速路径）
 const searchCache = new SimpleLRUCache(CACHE.SEARCH_CACHE_SIZE);
@@ -2539,6 +2540,57 @@ const GEMINI_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.GEMINI_CHAT_TI
   : 90000;
 const FALLBACK_LLM_MODEL = process.env.SILICONFLOW_FALLBACK_LLM_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
 const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'claude-sonnet-4-5-20250929';
+const MAX_WEB_SEARCH_CHARS = 4000;
+const MAX_WEB_SEARCH_RESULTS = 5;
+
+const MAX_STREAM_OVERLAP = 2000;
+
+function findStreamOverlap(prev, next, maxOverlap = MAX_STREAM_OVERLAP) {
+  if (!prev || !next) return 0;
+  const max = Math.min(prev.length, next.length, maxOverlap);
+  for (let size = max; size > 0; size -= 1) {
+    if (prev.slice(prev.length - size) === next.slice(0, size)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function deriveStreamDelta(cumulative, fullContent) {
+  if (!cumulative) return '';
+  if (!fullContent) return cumulative;
+  if (cumulative === fullContent) return '';
+  if (cumulative.startsWith(fullContent)) {
+    return cumulative.slice(fullContent.length);
+  }
+  const overlap = findStreamOverlap(fullContent, cumulative);
+  if (overlap > 0) {
+    return cumulative.slice(overlap);
+  }
+  if (fullContent.includes(cumulative)) return '';
+  return cumulative;
+}
+
+function normalizeStreamDelta(parsed, fullContent) {
+  const delta = parsed?.choices?.[0]?.delta?.content;
+  if (typeof delta === 'string' && delta.length > 0) {
+    return delta;
+  }
+  const cumulative = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.content;
+  if (typeof cumulative !== 'string' || cumulative.length === 0) {
+    return '';
+  }
+  return deriveStreamDelta(cumulative, fullContent);
+}
+
+function injectSearchContext(messages, searchContext) {
+  if (!searchContext || !Array.isArray(messages)) return messages;
+  const injected = [...messages];
+  const lastUserIndex = [...messages].reverse().findIndex(msg => msg?.role === 'user');
+  const insertAt = lastUserIndex === -1 ? injected.length : injected.length - lastUserIndex - 1;
+  injected.splice(insertAt, 0, { role: 'system', content: searchContext });
+  return injected;
+}
 
 // 流式响应接口
 app.post('/api/chat/stream', async (req, res) => {
@@ -2576,6 +2628,15 @@ app.post('/api/chat/stream', async (req, res) => {
         const requestModel = model || await getGeminiModel();
         console.log(`[Chat] Gemini request: url=${apiUrl}, model=${requestModel}, timeout=${GEMINI_CHAT_TIMEOUT_MS}ms`);
 
+        const settings = await storage.getSettings();
+        const webSearch = await runWebSearch(latestUserMessage, settings, { maxResults: MAX_WEB_SEARCH_RESULTS });
+        const searchContext = buildSearchContext(webSearch, MAX_WEB_SEARCH_CHARS);
+        const geminiMessages = searchContext ? injectSearchContext(messages, searchContext) : messages;
+
+        if (webSearch?.provider) {
+          console.log(`[Chat] Web search enabled: provider=${webSearch.provider}, results=${webSearch.results.length}`);
+        }
+
         const response = await fetchWithTimeout(apiUrl, {
           method: 'POST',
           headers: {
@@ -2584,7 +2645,7 @@ app.post('/api/chat/stream', async (req, res) => {
           },
           body: JSON.stringify({
             model: requestModel,
-            messages,
+            messages: geminiMessages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
             stream: true
@@ -2622,10 +2683,10 @@ app.post('/api/chat/stream', async (req, res) => {
 
               try {
                 const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content || '';
-                if (content) {
-                  fullContent += content;
-                  res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
+                const delta = normalizeStreamDelta(parsed, fullContent);
+                if (delta) {
+                  fullContent += delta;
+                  res.write(`data: ${JSON.stringify({ content: delta, done: false })}\n\n`);
                 }
               } catch (e) {
                 // 忽略解析错误
@@ -2701,10 +2762,10 @@ app.post('/api/chat/stream', async (req, res) => {
 
           try {
             const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || '';
-            if (content) {
-              fullContent += content;
-              res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
+            const delta = normalizeStreamDelta(parsed, fullContent);
+            if (delta) {
+              fullContent += delta;
+              res.write(`data: ${JSON.stringify({ content: delta, done: false })}\n\n`);
             }
           } catch (e) {
             // 忽略解析错误
@@ -2741,7 +2802,7 @@ app.post('/api/chat', async (req, res) => {
 
     // 如果指定使用 Gemini 或知识库无内容
     if (useGemini) {
-      console.log('[Chat] Using Gemini API with Google Search');
+      console.log('[Chat] Using Gemini API with web search');
       try {
         const geminiConfig = await getProviderConfig('gemini');
         if (!geminiConfig.apiKey) {
@@ -2752,6 +2813,15 @@ app.post('/api/chat', async (req, res) => {
         const requestModel = model || await getGeminiModel();
         console.log(`[Chat] Gemini request (non-stream): url=${apiUrl}, model=${requestModel}, timeout=${GEMINI_CHAT_TIMEOUT_MS}ms`);
 
+        const settings = await storage.getSettings();
+        const webSearch = await runWebSearch(latestUserMessage, settings, { maxResults: MAX_WEB_SEARCH_RESULTS });
+        const searchContext = buildSearchContext(webSearch, MAX_WEB_SEARCH_CHARS);
+        const geminiMessages = searchContext ? injectSearchContext(messages, searchContext) : messages;
+
+        if (webSearch?.provider) {
+          console.log(`[Chat] Web search enabled: provider=${webSearch.provider}, results=${webSearch.results.length}`);
+        }
+
         const response = await fetchWithTimeout(apiUrl, {
           method: 'POST',
           headers: {
@@ -2760,7 +2830,7 @@ app.post('/api/chat', async (req, res) => {
           },
           body: JSON.stringify({
             model: requestModel,
-            messages,
+            messages: geminiMessages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7
           })
