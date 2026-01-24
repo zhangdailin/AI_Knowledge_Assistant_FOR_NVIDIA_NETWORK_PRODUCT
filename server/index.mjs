@@ -2202,7 +2202,7 @@ async function getProviderConfig(provider) {
   // 默认配置
   const defaults = {
     siliconflow: { baseUrl: 'https://api.siliconflow.cn', apiKey: '' },
-    gemini: { baseUrl: 'https://www.chinablog.xyz/v1beta', apiKey: '' }
+    gemini: { baseUrl: 'https://www.chinablog.xyz', apiKey: '' }
   };
 
   const envOverrides = {
@@ -2495,7 +2495,7 @@ const GEMINI_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.GEMINI_CHAT_TI
   ? Number(process.env.GEMINI_CHAT_TIMEOUT_MS)
   : 30000;
 const FALLBACK_LLM_MODEL = process.env.SILICONFLOW_FALLBACK_LLM_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'claude-sonnet-4-5-20250929';
 
 // 流式响应接口
 app.post('/api/chat/stream', async (req, res) => {
