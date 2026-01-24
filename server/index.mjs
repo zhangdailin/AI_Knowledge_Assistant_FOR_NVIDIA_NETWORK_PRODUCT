@@ -1375,17 +1375,6 @@ app.post('/api/feedback', async (req, res) => {
       });
     }
 
-    // 读取现有负面样本
-    const negativeSamplesPath = path.join(__dirname, '..', 'data', 'negative_samples.json');
-    let data = { version: '1.0.0', samples: [], stats: { totalSamples: 0, byFeedbackType: {} } };
-
-    try {
-      const existing = await fs.promises.readFile(negativeSamplesPath, 'utf-8');
-      data = JSON.parse(existing);
-    } catch (e) {
-      // 文件不存在，使用默认值
-    }
-
     // 添加新样本
     const sample = {
       id: `feedback-${Date.now()}`,
@@ -1401,16 +1390,7 @@ app.post('/api/feedback', async (req, res) => {
       userComment: userComment || null,
       expectedTopic: expectedTopic || null
     };
-
-    data.samples.push(sample);
-    data.lastUpdated = sample.timestamp;
-
-    // 更新统计
-    data.stats.totalSamples = data.samples.length;
-    data.stats.byFeedbackType[feedbackType] = (data.stats.byFeedbackType[feedbackType] || 0) + 1;
-
-    // 保存
-    await fs.promises.writeFile(negativeSamplesPath, JSON.stringify(data, null, 2), 'utf-8');
+    await storage.addNegativeFeedbackSample(sample);
 
     console.log(`[Feedback] 收到反馈: ${feedbackType} - "${query.substring(0, 50)}..."`);
     res.json({ ok: true, sampleId: sample.id });
@@ -1423,20 +1403,12 @@ app.post('/api/feedback', async (req, res) => {
 // 获取反馈统计
 app.get('/api/feedback/stats', async (req, res) => {
   try {
-    const negativeSamplesPath = path.join(__dirname, '..', 'data', 'negative_samples.json');
-    let data = { version: '1.0.0', samples: [], stats: { totalSamples: 0, byFeedbackType: {} } };
-
-    try {
-      const existing = await fs.promises.readFile(negativeSamplesPath, 'utf-8');
-      data = JSON.parse(existing);
-    } catch (e) {
-      // 文件不存在
-    }
+    const summary = await storage.getNegativeFeedbackStats();
 
     // 分析常见问题模式
     const queryPatterns = {};
-    for (const sample of data.samples.slice(-100)) {
-      const words = sample.query.split(/\s+/).filter(w => w.length >= 2);
+    for (const query of summary.recentQueries) {
+      const words = query.split(/\s+/).filter(w => w.length >= 2);
       for (const word of words) {
         queryPatterns[word] = (queryPatterns[word] || 0) + 1;
       }
@@ -1448,14 +1420,9 @@ app.get('/api/feedback/stats', async (req, res) => {
 
     res.json({
       ok: true,
-      stats: data.stats,
-      lastUpdated: data.lastUpdated || null,
-      recentSamples: data.samples.slice(-5).map(s => ({
-        id: s.id,
-        query: s.query,
-        feedbackType: s.feedbackType,
-        timestamp: s.timestamp
-      })),
+      stats: summary.stats,
+      lastUpdated: summary.lastUpdated || null,
+      recentSamples: summary.recentSamples,
       topPatterns
     });
   } catch (error) {
@@ -2268,6 +2235,21 @@ async function getLLMModel() {
   }
 }
 
+async function getGeminiModel() {
+  try {
+    const settings = await storage.getSettings();
+    const providerModel = settings?.providers?.gemini?.model;
+    if (providerModel) return providerModel;
+    const selection = settings?.modelSelection?.llm;
+    if (selection && selection.toLowerCase().includes('gemini')) {
+      return selection;
+    }
+    return DEFAULT_GEMINI_MODEL;
+  } catch (e) {
+    return DEFAULT_GEMINI_MODEL;
+  }
+}
+
 // ========== NVIDIA 文档转 PDF ==========
 const NVIDIA_PDF_CSS = `
 @page { size: A4; margin: 12mm 12mm 20mm 12mm; }
@@ -2513,7 +2495,7 @@ const GEMINI_CHAT_TIMEOUT_MS = Number.isFinite(Number(process.env.GEMINI_CHAT_TI
   ? Number(process.env.GEMINI_CHAT_TIMEOUT_MS)
   : 30000;
 const FALLBACK_LLM_MODEL = process.env.SILICONFLOW_FALLBACK_LLM_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
 // 流式响应接口
 app.post('/api/chat/stream', async (req, res) => {
@@ -2552,7 +2534,7 @@ app.post('/api/chat/stream', async (req, res) => {
             'Authorization': `Bearer ${geminiConfig.apiKey}`
           },
           body: JSON.stringify({
-            model: model || 'gemini-3-flash-preview',
+            model: model || await getGeminiModel(),
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
@@ -2723,7 +2705,7 @@ app.post('/api/chat', async (req, res) => {
             'Authorization': `Bearer ${geminiConfig.apiKey}`
           },
           body: JSON.stringify({
-            model: model || 'gemini-3-flash-preview',
+            model: model || await getGeminiModel(),
             messages,
             max_tokens: max_tokens || 8192,
             temperature: temperature || 0.7,
