@@ -2202,7 +2202,7 @@ async function getProviderConfig(provider) {
   // 默认配置
   const defaults = {
     siliconflow: { baseUrl: 'https://api.siliconflow.cn', apiKey: '' },
-    gemini: { baseUrl: 'https://www.chinablog.xyz', apiKey: '' }
+    gemini: { baseUrl: 'https://api.chinablog.xyz', apiKey: '' }
   };
 
   const envOverrides = {
