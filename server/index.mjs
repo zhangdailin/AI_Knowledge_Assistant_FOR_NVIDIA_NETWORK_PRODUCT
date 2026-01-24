@@ -419,6 +419,27 @@ function findCategoryByName(nodes, name) {
   return findByName(nodes, name);
 }
 
+function isDefaultCategoryName(name) {
+  if (!name) return true;
+  const lowered = String(name).toLowerCase();
+  return lowered === 'default' || name === '默认分类';
+}
+
+function collectVendorNames(nodes, names) {
+  for (const node of nodes || []) {
+    if (node?.name && !isDefaultCategoryName(node.name)) {
+      names.push(node.name);
+    }
+    if (node.children) collectVendorNames(node.children, names);
+  }
+}
+
+function resolveVendorCategoryId(categoryTree, vendorName) {
+  if (!vendorName) return null;
+  const found = findCategoryByName(categoryTree, vendorName);
+  return found?.id || null;
+}
+
 function resolveCategoryInfo(categoryValue, categoryTree) {
   const nodes = Array.isArray(categoryTree) ? categoryTree : [];
   const defaultNode = findCategoryById(nodes, 'default');
@@ -991,6 +1012,13 @@ app.delete('/api/documents/:id', asyncHandler(async (req, res) => {
   console.log(`[API] 删除文档请求: ${req.params.id}`);
   const deleted = await storage.deleteDocument(req.params.id);
   invalidateStatsCache(); // 清除统计缓存
+  if (deleted) {
+    try {
+      await knowledgeGraph.deleteDocumentFromGraph(req.params.id);
+    } catch (error) {
+      console.warn(`[KnowledgeGraph] 删除文档图谱数据失败: ${req.params.id}`, error.message);
+    }
+  }
   console.log(`[API] 删除文档成功: ${req.params.id}, deleted=${deleted}`);
   res.json({ ok: true, deleted });
 }, '删除文档'));
@@ -1104,10 +1132,25 @@ app.get('/api/chunks/search', async (req, res) => {
 
     // 展开分类：如果指定了 categoryId，获取该分类及其子分类的所有 ID
     let categoryIds = null;
+    let effectiveCategoryId = categoryId || null;
+    const categoriesData = await storage.getCategories();
+    const categoryTree = categoriesData.tree || [];
+
     if (categoryId) {
-      const categoriesData = await storage.getCategories();
-      const categoryTree = categoriesData.tree || [];
       categoryIds = storage.getCategoryAndChildrenIds(categoryId, categoryTree);
+    } else {
+      const vendorNames = [];
+      collectVendorNames(categoryTree, vendorNames);
+      const defaultVendor = retrievalConfig.defaultVendor || 'NVIDIA';
+      const vendorDetection = knowledgeGraph.detectPreferredVendors(query, vendorNames, {
+        defaultVendor
+      });
+      const preferredVendor = vendorDetection.preferredVendors?.[0] || null;
+      const vendorCategoryId = resolveVendorCategoryId(categoryTree, preferredVendor);
+      if (vendorCategoryId) {
+        effectiveCategoryId = vendorCategoryId;
+        categoryIds = storage.getCategoryAndChildrenIds(vendorCategoryId, categoryTree);
+      }
     }
 
     // A/B 测试：分配变体
@@ -1118,7 +1161,7 @@ app.get('/api/chunks/search', async (req, res) => {
     const cacheKey = createHash('md5')
       .update(JSON.stringify({
         q: query,
-        cat: categoryId || 'all',
+        cat: effectiveCategoryId || 'all',
         // 只保留关键配置，其他配置变化不频繁，不影响缓存
         ab: abVariant ? `${abVariant.experimentId}-${abVariant.variantId}` : null
       }))
@@ -2515,8 +2558,10 @@ app.post('/api/chat/stream', async (req, res) => {
 
     // 设置 SSE 响应头
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
 
     // 如果指定使用 Gemini
     if (useGemini) {
@@ -4120,6 +4165,8 @@ const server = app.listen(port, async () => {
     console.log('[Server] 开始恢复中断的任务...');
     taskQueue.restoreInterruptedTasks().then(() => {
       console.log('[Server] 任务恢复完成');
+      taskQueue.startAutoMaintenance();
+      console.log('[Server] 自动修复扫描已启动');
     }).catch(err => {
       console.error('[Server] 任务恢复失败:', err);
     });
@@ -4181,6 +4228,7 @@ server.on('close', () => {
   console.log('[Server] 服务器正在关闭...');
   clearInterval(wsHeartbeatInterval);
   clearInterval(heartbeat);
+  taskQueue.stopAutoMaintenance();
 });
 
 // 广播文档更新

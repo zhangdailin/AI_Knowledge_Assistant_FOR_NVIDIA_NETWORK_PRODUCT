@@ -465,4 +465,70 @@
     background: rgba(99, 102, 241, 0.35);
     animation: thinkingFloat 3s ease-in-out infinite;
   }
+
+  .thinking-panel {
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 18px;
+    background: linear-gradient(135deg, rgba(248, 250, 252, 0.95) 0%, rgba(255, 255, 255, 0.95) 100%);
+    padding: 16px 18px;
+    margin-bottom: 12px;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-6px);
+    transition: max-height 0.4s ease, opacity 0.3s ease, transform 0.3s ease;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  }
+
+  .thinking-panel-active {
+    max-height: 320px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .thinking-panel-deep {
+    border-color: rgba(79, 70, 229, 0.25);
+    background: linear-gradient(135deg, rgba(238, 242, 255, 0.9) 0%, rgba(255, 255, 255, 0.98) 100%);
+  }
+
+  .thinking-step-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.6);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+    flex-shrink: 0;
+  }
+
+  .thinking-visual {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    flex-shrink: 0;
+  }
+
+  .thinking-orbit-mini {
+    width: 110px;
+    height: 110px;
+  }
+
+  .thinking-node-mini {
+    position: absolute;
+    width: 36px;
+    height: 36px;
+    top: 18%;
+    left: 58%;
+  }
+
+  .thinking-path-mini {
+    width: 72px;
+    top: 50%;
+    left: 18%;
+    opacity: 0.6;
+  }
+
+  .thinking-spark-mini {
+    width: 5px;
+    height: 5px;
+  }
 }

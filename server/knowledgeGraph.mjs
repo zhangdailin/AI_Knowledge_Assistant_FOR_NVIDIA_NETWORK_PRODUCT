@@ -2453,6 +2453,70 @@ export async function processDocument(documentId) {
 }
 
 /**
+ * 删除文档对应的知识图谱数据
+ * @param {string} documentId - 文档 ID
+ */
+export async function deleteDocumentFromGraph(documentId) {
+  if (!documentId) return { ok: false, error: 'missing documentId' };
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    await session.run(`
+      MATCH (ch:Chunk {documentId: $documentId})
+      DETACH DELETE ch
+    `, { documentId });
+
+    await session.run(`
+      MATCH (n)
+      WHERE (n:Vendor OR n:Function OR n:Command OR n:Parameter)
+        AND $documentId IN coalesce(n.sources, [])
+      SET n.sources = [s IN n.sources WHERE s <> $documentId]
+      WITH n
+      WHERE size(coalesce(n.sources, [])) = 0
+      DETACH DELETE n
+    `, { documentId });
+
+    return { ok: true };
+  } catch (error) {
+    console.error(`[KnowledgeGraph] 删除文档 ${documentId} 失败:`, error.message);
+    return { ok: false, error: error.message };
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 检查文档是否已存在于知识图谱中
+ * @param {string} documentId - 文档 ID
+ * @returns {boolean} 是否存在
+ */
+export async function hasDocumentInGraph(documentId) {
+  if (!documentId) return false;
+  if (!isConnected) {
+    await initNeo4j();
+  }
+
+  const session = driver.session();
+  try {
+    const result = await session.run(`
+      MATCH (ch:Chunk {documentId: $documentId})
+      RETURN ch.id as id
+      LIMIT 1
+    `, { documentId });
+
+    return result.records.length > 0;
+  } catch (error) {
+    console.error(`[KnowledgeGraph] 检查文档 ${documentId} 是否存在失败:`, error.message);
+    throw error;
+  } finally {
+    await session.close();
+  }
+}
+
+/**
  * 获取知识图谱统计信息
  */
 export async function getGraphStats() {

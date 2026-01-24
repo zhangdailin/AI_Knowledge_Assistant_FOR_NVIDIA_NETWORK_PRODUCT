@@ -19,6 +19,7 @@ interface ChatState {
   messages: Message[];
   isLoading: boolean;
   deepThinking: boolean;
+  thinkingTrace: string[];
   abortController: AbortController | null;
 
   loadConversations: (userId: string) => void;
@@ -48,6 +49,20 @@ type KnowledgeSearchResult = {
   rerankScore?: number;
   isTruncated?: boolean;
   [key: string]: any;
+};
+
+const MAX_REFERENCE_CONTENT_CHARS = 1500;
+const MAX_ACTIVE_MESSAGES = 200;
+
+const trimReferenceContent = (content: string) => {
+  if (!content) return '';
+  if (content.length <= MAX_REFERENCE_CONTENT_CHARS) return content;
+  return `${content.slice(0, MAX_REFERENCE_CONTENT_CHARS)}...`;
+};
+
+const trimMessageList = (messages: Message[]) => {
+  if (messages.length <= MAX_ACTIVE_MESSAGES) return messages;
+  return messages.slice(-MAX_ACTIVE_MESSAGES);
 };
 
 async function searchKnowledgeBase(
@@ -386,6 +401,39 @@ function selectReferencesWithBudget(
   // 然后用 token 预算进行最终筛选
   const minRefs = TOKEN_BUDGET_CONFIG?.MIN_REFERENCES || 3;
   return tokenBudgetManager.selectReferencesWithinBudget(mmrSelected, tokenBudget, minRefs);
+}
+
+const NETWORK_DOMAIN_HINTS = /(\bnv\s+(set|show|config|unset|action)\b|nvidia|mellanox|cumulus|spectrum|bluefield|connectx|netq|nvue|roce|rdma|infiniband|\bib\b|vxlan|evpn|bgp|ospf|mlag|vlan|acl|qos|pfc|ecn|交换机|路由器|路由|接口|端口|链路|网络|带内|带外)/i;
+
+function hasNetworkSignals(query: string): boolean {
+  if (!query) return false;
+  if (NETWORK_DOMAIN_HINTS.test(query)) return true;
+  const extracted = enhancedNetworkKeywordExtractor.extractKeywords(query);
+  return (extracted.techTerms?.length || 0) > 0;
+}
+
+function getSearchRelevance(results: KnowledgeSearchResult[]) {
+  let maxScore = 0;
+  let maxRerank = 0;
+  results.forEach(result => {
+    if (typeof result.score === 'number') {
+      maxScore = Math.max(maxScore, result.score);
+    }
+    if (typeof result.rerankScore === 'number') {
+      maxRerank = Math.max(maxRerank, result.rerankScore);
+    }
+  });
+  return { maxScore, maxRerank };
+}
+
+function shouldFallbackToGemini(query: string, searchLevel: number, results: KnowledgeSearchResult[]) {
+  const networkSignals = hasNetworkSignals(query);
+  const { maxScore, maxRerank } = getSearchRelevance(results);
+  const weakMatch = maxRerank >= 0.35 || maxScore >= 0.015;
+  if (!networkSignals) return { useGemini: true, reason: 'non_network' };
+  if (results.length === 0) return { useGemini: true, reason: 'no_results' };
+  if (searchLevel >= 4 && !weakMatch) return { useGemini: true, reason: 'low_relevance' };
+  return { useGemini: false, reason: null };
 }
 
 function selectReferencesForQuery(
@@ -812,9 +860,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isLoading: false,
   deepThinking: false,
+  thinkingTrace: [],
   abortController: null,
 
   loadConversations: (userId: string) => {
+    localStorageManager.compactMessagesForUser(userId);
     const conversations = localStorageManager.getConversations(userId);
     set({ conversations });
   },
@@ -830,7 +880,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   selectConversation: (conversation: Conversation) => {
-    const messages = localStorageManager.getMessages(conversation.id);
+    const messages = localStorageManager.getMessages(conversation.id, { limit: MAX_ACTIVE_MESSAGES });
     set({ currentConversation: conversation, messages });
   },
 
@@ -863,7 +913,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { abortController } = get();
     if (abortController) {
       abortController.abort();
-      set({ abortController: null, isLoading: false });
+      set({ abortController: null, isLoading: false, thinkingTrace: [] });
     }
   },
 
@@ -888,29 +938,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const abortController = new AbortController();
     set({
-      messages: [...messages, userMessage],
+      messages: trimMessageList([...messages, userMessage]),
       isLoading: true,
-      abortController
+      abortController,
+      thinkingTrace: []
     });
+
+    const pushThinking = (step: string) => {
+      if (!deepThinking) return;
+      set(state => {
+        const current = state.thinkingTrace;
+        if (current[current.length - 1] === step) {
+          return {};
+        }
+        return { thinkingTrace: [...current, step] };
+      });
+    };
 
     const startTime = Date.now(); // 记录开始时间
 
     try {
+      pushThinking('收到问题，开始分析');
+
       // 检测是否需要调用 SN-IBLF 工具
       let snIblfResult = null;
       let queriedSNs: string[] = [];
       if (isToolEnabled('sn-iblf')) {
         queriedSNs = extractSNs(content);
         if (queriedSNs.length > 0) {
+          pushThinking(`检测到设备序列号，调用 SN-IBLF 工具（${queriedSNs.length} 个）`);
           console.log('[Chat] 检测到SN号码:', queriedSNs);
           snIblfResult = await callSnIblfTool(queriedSNs);
+          pushThinking(snIblfResult ? 'SN-IBLF 查询完成' : 'SN-IBLF 未返回有效结果');
         }
       }
 
       // 使用多级检索策略搜索知识库
+      pushThinking('开始知识库检索');
       const searchResult = await multiLevelSearch(content);
       const knowledgeResults = searchResult.results;
       const searchLevel = searchResult.searchLevel;
+      pushThinking(`检索完成：第${searchLevel}级，命中 ${knowledgeResults.length} 条`);
 
       console.log('[Chat] 检索级别:', searchLevel, '结果数量:', knowledgeResults.length);
       if (knowledgeResults.length > 0) {
@@ -941,9 +1009,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? selectReferencesWithBudget(knowledgeResults, content, intent, referenceTokenBudget)
         : [];
 
-      // 关键修复：只要有检索结果，就提供给LLM，让LLM自己判断是否相关
-      // 不再依赖阈值来决定是否使用知识库内容
-      if (knowledgeResults.length > 0 && topReferences.length > 0) {
+      const referencePayload = topReferences.map((r, idx) => ({
+        id: r.id ?? `ref-${idx}`,
+        title: r.title ?? `参考文档 #${idx + 1}`,
+        content: r.content,
+        documentId: r.documentId ?? undefined
+      }));
+
+      const referenceMetadata = topReferences.map((r, idx) => {
+        const trimmedContent = trimReferenceContent(r.content);
+        return {
+          id: r.id ?? `ref-${idx}`,
+          documentId: r.documentId ?? undefined,
+          title: r.title ?? `参考文档 #${idx + 1}`,
+          content: trimmedContent,
+          score: r.score,
+          isTruncated: trimmedContent.length < r.content.length,
+          mergedHeaders: (r as any).mergedHeaders,
+          mergedIds: (r as any).mergedIds,
+          isOptimized: (r as any).isOptimized
+        };
+      });
+      if (knowledgeResults.length > 0) {
+        pushThinking(`筛选参考文档：${topReferences.length} 条`);
+      }
+
+      const geminiDecision = shouldFallbackToGemini(content, searchLevel, knowledgeResults);
+      if (geminiDecision.useGemini) {
+        useGemini = true;
+        const reasonLabel = geminiDecision.reason === 'non_network'
+          ? '检测为非网络问题，切换到 Gemini'
+          : geminiDecision.reason === 'low_relevance'
+            ? '检索相关性不足，切换到 Gemini'
+            : '知识库无匹配，切换到 Gemini';
+        pushThinking(reasonLabel);
+        console.log('[Chat] Gemini 决策:', geminiDecision.reason);
+      }
+
+      if (!useGemini && knowledgeResults.length > 0 && topReferences.length > 0) {
         // 取前8-14条最相关的内容，提供更丰富的上下文
         const contextPrefix = searchLevel === 1
           ? '相关知识库内容：'
@@ -964,16 +1067,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 计算 token 使用情况
         const refTokensUsed = tokenBudgetManager.estimateTokens(knowledgeContext);
         console.log(`[TokenBudget] 参考文档使用: ${refTokensUsed} tokens (预算: ${referenceTokenBudget})`);
-      } else {
-        // 真的没有任何检索结果，使用 Gemini
-        useGemini = true;
-        console.log('[Chat] 知识库无检索结果，使用 Gemini');
-      }
-
-      // 额外检查：如果检索级别为4且最高分为0，也使用 Gemini
-      if (searchLevel === 4 && knowledgeResults.length > 0 && knowledgeResults[0].score === 0) {
-        useGemini = true;
-        console.log('[Chat] 知识库检索结果不相关（分数为0），使用 Gemini');
       }
 
       // Build conversation history - 使用 Token 预算管理
@@ -1043,12 +1136,7 @@ ${knowledgeContext}`;
         useGemini,
         question: content,
         // 传递前8-14条参考文档用于验证，与上下文保持一致
-        references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
-          id: r.id ?? `ref-${idx}`,
-          title: r.title ?? `参考文档 #${idx + 1}`,
-          content: r.content,
-          documentId: r.documentId ?? undefined
-        })) : []
+        references: referencePayload
       };
 
       let assistantContent = '';
@@ -1057,6 +1145,7 @@ ${knowledgeContext}`;
 
       if (useStreaming) {
         // 流式响应处理
+        pushThinking('发送模型请求，准备生成回复');
         const response = await fetch(`${getApiServerUrl()}${apiEndpoint}`, {
           method: 'POST',
           headers: {
@@ -1070,6 +1159,7 @@ ${knowledgeContext}`;
           const errorData = await response.json().catch(() => ({}));
           throw new Error(errorData.error || `API 请求失败: ${response.status}`);
         }
+        pushThinking('模型已响应，开始流式输出');
 
         // 创建临时助手消息用于实时更新
         const tempAssistantMessage = localStorageManager.addMessage({
@@ -1079,16 +1169,7 @@ ${knowledgeContext}`;
           metadata: {
             model: '生成中...',
             deepThinking,
-            references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
-              id: r.id ?? `ref-${idx}`,
-              documentId: r.documentId ?? undefined,
-              title: r.title ?? `参考文档 #${idx + 1}`,
-              content: r.content,
-              score: r.score,
-              mergedHeaders: (r as any).mergedHeaders,
-              mergedIds: (r as any).mergedIds,
-              isOptimized: (r as any).isOptimized
-            })) : [],
+            references: referenceMetadata,
             relatedMessageId: userMessage.id,
             toolResults: snIblfResult ? {
               snIblf: {
@@ -1100,13 +1181,14 @@ ${knowledgeContext}`;
         });
 
         set(state => ({
-          messages: [...state.messages, tempAssistantMessage]
+          messages: trimMessageList([...state.messages, tempAssistantMessage])
         }));
 
         // 处理 SSE 流
         const reader = response.body?.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let hasStartedStreaming = false;
 
         if (reader) {
           while (true) {
@@ -1128,6 +1210,10 @@ ${knowledgeContext}`;
                   }
 
                   if (parsed.content) {
+                    if (!hasStartedStreaming) {
+                      hasStartedStreaming = true;
+                      pushThinking('正在生成回复');
+                    }
                     assistantContent += parsed.content;
 
                     // 实时更新消息内容
@@ -1147,6 +1233,7 @@ ${knowledgeContext}`;
                   if (parsed.done) {
                     validation = parsed.validation;
                     modelUsed = parsed.source === 'gemini' ? 'Gemini' : (parsed.model || '已配置模型');
+                    pushThinking('生成完成');
                   }
                 } catch (e) {
                   console.error('[Chat] SSE parse error:', e);
@@ -1181,7 +1268,8 @@ ${knowledgeContext}`;
               : msg
           ),
           isLoading: false,
-          abortController: null
+          abortController: null,
+          thinkingTrace: []
         }));
       } else {
         // 非流式响应处理（保留原有逻辑）
@@ -1212,17 +1300,7 @@ ${knowledgeContext}`;
             model: modelUsed,
             deepThinking,
             // 保存前8-14条参考文档，提供更完整的来源信息
-            references: topReferences.length > 0 ? topReferences.map((r, idx) => ({
-              id: r.id ?? `ref-${idx}`,
-              documentId: r.documentId ?? undefined,
-              title: r.title ?? `参考文档 #${idx + 1}`,
-              content: r.content,
-              score: r.score,
-              // 传递合并元数据
-              mergedHeaders: (r as any).mergedHeaders,
-              mergedIds: (r as any).mergedIds,
-              isOptimized: (r as any).isOptimized
-            })) : [],
+            references: referenceMetadata,
             validation,
             relatedMessageId: userMessage.id,
             // 添加工具调用结果
@@ -1236,9 +1314,10 @@ ${knowledgeContext}`;
         });
 
         set(state => ({
-          messages: [...state.messages, assistantMessage],
+          messages: trimMessageList([...state.messages, assistantMessage]),
           isLoading: false,
-          abortController: null
+          abortController: null,
+          thinkingTrace: []
         }));
       }
 
@@ -1262,10 +1341,10 @@ ${knowledgeContext}`;
           metadata: { error: true, errorMessage: error.message }
         });
         set(state => ({
-          messages: [...state.messages, errorMessage]
+          messages: trimMessageList([...state.messages, errorMessage])
         }));
       }
-      set({ isLoading: false, abortController: null });
+      set({ isLoading: false, abortController: null, thinkingTrace: [] });
     }
   },
 

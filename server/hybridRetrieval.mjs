@@ -21,7 +21,11 @@ import {
 } from './constants.mjs';
 
 const DEFAULT_CATEGORY_NAMES = new Set(['default', '默认分类']);
-const DEFAULT_VENDOR_NAME = process.env.DEFAULT_VENDOR || 'NVIDIA';
+const DEFAULT_VENDOR_NAME = 'NVIDIA';
+
+let cachedDefaultVendor = process.env.DEFAULT_VENDOR || DEFAULT_VENDOR_NAME;
+let defaultVendorLoadedAt = 0;
+const DEFAULT_VENDOR_TTL = 60000;
 
 let cachedVendorNames = null;
 let cachedVendorLoadedAt = 0;
@@ -142,6 +146,31 @@ function loadVendorNamesFromCategories() {
 }
 
 void refreshVendorNames();
+
+async function refreshDefaultVendor() {
+  try {
+    const settings = await storage.getSettings();
+    const configured = settings?.retrieval?.defaultVendor;
+    if (typeof configured === 'string' && configured.trim()) {
+      cachedDefaultVendor = configured.trim();
+    }
+    defaultVendorLoadedAt = Date.now();
+  } catch (error) {
+    if (!cachedDefaultVendor) {
+      cachedDefaultVendor = DEFAULT_VENDOR_NAME;
+    }
+  }
+}
+
+function getDefaultVendorName() {
+  const now = Date.now();
+  if ((now - defaultVendorLoadedAt) > DEFAULT_VENDOR_TTL) {
+    void refreshDefaultVendor();
+  }
+  return cachedDefaultVendor || DEFAULT_VENDOR_NAME;
+}
+
+void refreshDefaultVendor();
 
 /**
  * 计算数组方差
@@ -900,7 +929,7 @@ export function determineRetrievalStrategy(query) {
 
   const vendorNames = loadVendorNamesFromCategories();
   const vendorDetection = knowledgeGraph.detectPreferredVendors(safeQuery, vendorNames, {
-    defaultVendor: DEFAULT_VENDOR_NAME
+    defaultVendor: getDefaultVendorName()
   });
   const queryEntities = knowledgeGraph.extractEntities(safeQuery, {
     vendorNames,
@@ -939,7 +968,7 @@ export function determineRetrievalStrategy(query) {
     strategy: 'balanced',
     ...defaultConfig,
     preferredVendors: vendorDetection.preferredVendors,
-    defaultVendor: DEFAULT_VENDOR_NAME,
+    defaultVendor: getDefaultVendorName(),
     complexity,
     signals
   };

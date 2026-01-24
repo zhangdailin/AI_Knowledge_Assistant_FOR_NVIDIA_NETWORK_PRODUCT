@@ -29,6 +29,7 @@ export interface ReferenceMetadata {
   title: string;
   content: string;
   score: number;
+  isTruncated?: boolean;
 }
 
 export interface ValidationCommandMatch {

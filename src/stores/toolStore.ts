@@ -56,10 +56,24 @@ export const useToolStore = create<ToolState>((set, get) => ({
   }
 }));
 
-// SN号码检测正则
-export const SN_PATTERN = /\b[A-Z]{3}[A-Z0-9]{2}[A-Z0-9]{6,10}\b/gi;
+// SN号码检测正则（先匹配候选，再做严格过滤）
+export const SN_PATTERN = /\b[A-Z0-9]{10,16}\b/gi;
+
+const isLikelySn = (value: string): boolean => {
+  if (!value) return false;
+  const upper = value.toUpperCase();
+  const digits = upper.match(/\d/g) || [];
+  const letters = upper.match(/[A-Z]/g) || [];
+  if (digits.length < 2) return false;
+  if (letters.length < 3) return false;
+  if (/^[A-Z]+$/.test(upper)) return false;
+  return true;
+};
 
 export function extractSNs(text: string): string[] {
   const matches = text.match(SN_PATTERN) || [];
-  return [...new Set(matches)];
+  const normalized = matches
+    .map(match => match.toUpperCase())
+    .filter(isLikelySn);
+  return [...new Set(normalized)];
 }

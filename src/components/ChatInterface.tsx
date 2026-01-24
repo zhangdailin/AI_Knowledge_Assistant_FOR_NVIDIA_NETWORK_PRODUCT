@@ -126,7 +126,9 @@ const ChatInterface: React.FC = () => {
   const [isSending, setIsSending] = useState(false); // 新增：发送状态
   const [validationDetailModal, setValidationDetailModal] = useState<any>(null); // 验证详情弹窗
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const detailVerifiedCommands = validationDetailModal
     ? normalizeCommandMatches(validationDetailModal.verifiedCommands)
@@ -143,6 +145,7 @@ const ChatInterface: React.FC = () => {
     currentConversation,
     messages,
     isLoading,
+    thinkingTrace,
     sendMessage,
     createConversation,
     deepThinking,
@@ -188,11 +191,17 @@ const ChatInterface: React.FC = () => {
   }, [user, conversations, currentConversation, selectConversation]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (!isAtBottom) return;
+    const behavior = isLoading ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, [messages, isAtBottom, isLoading]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const handleScroll = () => {
+    const container = chatScrollRef.current;
+    if (!container) return;
+    const threshold = 120;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    setIsAtBottom(atBottom);
   };
 
   // 修改：优化发送处理
@@ -262,6 +271,11 @@ const ChatInterface: React.FC = () => {
     );
   }, [conversations]);
 
+  const conversationPreviews = React.useMemo(() => {
+    if (!user) return {};
+    return localStorageManager.getConversationPreviews(user.id);
+  }, [user, conversations]);
+
   if (!user) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -274,11 +288,7 @@ const ChatInterface: React.FC = () => {
   }
 
   const getConversationPreview = (conversation: any) => {
-    const convMessages = localStorageManager.getMessages(conversation.id);
-    if (convMessages.length === 0) return '';
-
-    const lastMessage = convMessages[convMessages.length - 1];
-    return lastMessage.content.substring(0, 50) + (lastMessage.content.length > 50 ? '...' : '');
+    return conversationPreviews[conversation.id] || '';
   };
 
   const handleDeleteConversation = async (e: React.MouseEvent, conversationId: string) => {
@@ -574,7 +584,11 @@ const ChatInterface: React.FC = () => {
         </div>
 
         {/* 对话内容区 */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 custom-scrollbar">
+        <div
+          ref={chatScrollRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto px-6 py-4 custom-scrollbar"
+        >
           {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto">
               <div className="w-20 h-20 bg-gradient-to-br from-primary-500 to-accent-600 rounded-3xl flex items-center justify-center shadow-xl shadow-primary-500/40 mb-6 animate-bounce-subtle ring-4 ring-white">
@@ -620,6 +634,80 @@ const ChatInterface: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-6 max-w-4xl mx-auto">
+              {(() => {
+                const streamingMessage = messages.find(msg =>
+                  msg.role === 'assistant' && msg.metadata?.model === '生成中...'
+                );
+                  const showThinkingPanel = isLoading;
+                  const thinkingMode = streamingMessage?.metadata?.deepThinking ?? deepThinking;
+                  const fallbackSteps = thinkingMode
+                    ? ['提取关键实体与约束', '检索文档并比对上下文', '形成可执行方案与校验步骤']
+                    : ['识别问题核心', '检索相关内容', '生成结构化回答'];
+                  const thinkingSteps = thinkingMode && thinkingTrace.length > 0
+                    ? thinkingTrace
+                    : fallbackSteps;
+                  const thinkingSummary = thinkingMode && thinkingTrace.length > 0
+                    ? thinkingTrace[thinkingTrace.length - 1]
+                    : thinkingMode
+                      ? '正在进行多步骤推理，并结合知识库给出可执行方案。'
+                      : '正在分析问题并整理答案。';
+
+                if (!showThinkingPanel) return null;
+
+                return (
+                  <div className="sticky top-3 z-10">
+                    <div className={`thinking-panel thinking-panel-active ${thinkingMode ? 'thinking-panel-deep' : ''}`}>
+                      <div className="flex items-start justify-between gap-6">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 text-sm text-gray-700">
+                              <span className="thinking-spinner" aria-hidden="true" />
+                              <span className="font-medium">
+                                {thinkingMode ? '深度思考中...' : '思考中...'}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleStop}
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs text-gray-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-all"
+                            >
+                              <Square className="w-3 h-3 fill-current" />
+                              停止
+                            </button>
+                          </div>
+                            <p className="mt-2 text-xs text-gray-500">
+                              {thinkingSummary}
+                            </p>
+                          <div className="mt-3 grid gap-2 text-xs text-gray-500">
+                            {thinkingSteps.map(step => (
+                              <div key={step} className="flex items-center gap-2">
+                                <span className="thinking-step-dot" />
+                                <span className="truncate">{step}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="thinking-visual" aria-hidden="true">
+                          <div className="thinking-orbit thinking-orbit-mini" />
+                          <div className="thinking-path thinking-path-mini" />
+                          <div className="thinking-node thinking-node-mini">
+                            <Search className="w-3.5 h-3.5 text-indigo-500" />
+                          </div>
+                          <div className="thinking-node thinking-node-mini thinking-node-delay" style={{ top: '62%', left: '68%' }}>
+                            <Wrench className="w-3.5 h-3.5 text-sky-500" />
+                          </div>
+                          <div className="thinking-node thinking-node-mini thinking-node-delay-2" style={{ top: '72%', left: '24%' }}>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                          </div>
+                          <span className="thinking-spark thinking-spark-mini" style={{ top: '18%', left: '74%' }} />
+                          <span className="thinking-spark thinking-spark-mini" style={{ top: '78%', left: '18%' }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
               {messages.map((message) => {
                 const validationData = message.metadata?.validation;
                 const referenceDocuments = (message.metadata?.references || []) as ReferenceMetadata[];
@@ -763,89 +851,6 @@ const ChatInterface: React.FC = () => {
                 </div>
                 );
               })}
-
-              {/* 加载状态 - 优化版 */}
-              {isLoading && (
-                <div className="flex items-start gap-4 animate-slide-up">
-                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary-500/30 mt-1 ring-2 ring-white">
-                    <Bot className="w-5 h-5 text-white animate-pulse" />
-                  </div>
-                  <div className="flex flex-col gap-2 max-w-[85%] w-full">
-                    {/* 状态栏 */}
-                    <div className="flex items-center gap-3 text-sm text-gray-500 pl-1">
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-primary-50 to-accent-50 text-primary-700 rounded-full border border-primary-100 shadow-soft">
-                      <Brain className="w-4 h-4 animate-pulse" />
-                      <span className="font-medium text-sm">{deepThinking ? '深度思考中...' : '思考中...'}</span>
-                    </div>
-                      <button
-                        onClick={handleStop}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all border border-transparent hover:border-red-200 shadow-soft"
-                        title="停止响应"
-                      >
-                        <Square className="w-3 h-3 fill-current" />
-                        <span className="text-xs font-medium">停止</span>
-                      </button>
-                    </div>
-
-                    {/* 占位气泡 */}
-                    <div className="bg-white border border-gray-100 rounded-3xl rounded-tl-lg shadow-soft-lg overflow-hidden">
-                      <div className="grid md:grid-cols-[1.1fr_0.9fr]">
-                        <div className="p-6">
-                          <div className="flex items-center gap-2 text-sm text-gray-600">
-                            <span className="thinking-spinner" aria-hidden="true" />
-                            <span className="font-medium">{deepThinking ? '深度思考中...' : '思考中...'}</span>
-                          </div>
-                          <div className="mt-4 space-y-3">
-                            <div className="skeleton h-3 w-full" />
-                            <div className="skeleton h-3 w-11/12" />
-                            <div className="skeleton h-3 w-9/12" />
-                            <div className="skeleton h-3 w-10/12" />
-                          </div>
-                          <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-400">
-                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">检索中</span>
-                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">整理答案</span>
-                            <span className="px-2 py-1 bg-gray-50 border border-gray-100 rounded-full">校验引用</span>
-                          </div>
-                        </div>
-
-                        <div className="relative hidden md:flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-indigo-50/60 p-6">
-                          <div className="absolute inset-0" aria-hidden="true">
-                            <div className="thinking-path" style={{ top: '38%', left: '22%', width: '46%', transform: 'rotate(10deg)' }} />
-                            <div className="thinking-path" style={{ top: '56%', left: '35%', width: '38%', transform: 'rotate(-18deg)' }} />
-                            <div className="thinking-path" style={{ top: '28%', left: '44%', width: '40%', transform: 'rotate(42deg)' }} />
-                            <span className="thinking-spark" style={{ top: '22%', left: '70%', animationDelay: '0.4s' }} />
-                            <span className="thinking-spark" style={{ top: '68%', left: '20%', animationDelay: '1.2s' }} />
-                            <span className="thinking-spark" style={{ top: '78%', left: '72%', animationDelay: '0.9s' }} />
-                          </div>
-
-                          <div className="thinking-orbit" aria-hidden="true" />
-
-                          <div className="absolute left-8 top-10 flex flex-col items-center gap-2">
-                            <div className="thinking-node">
-                              <Search className="w-4 h-4 text-indigo-500" />
-                            </div>
-                            <span className="text-[11px] text-gray-500">分析问题</span>
-                          </div>
-
-                          <div className="absolute right-8 top-16 flex flex-col items-center gap-2">
-                            <div className="thinking-node thinking-node-delay">
-                              <Wrench className="w-4 h-4 text-sky-500" />
-                            </div>
-                            <span className="text-[11px] text-gray-500">工具调用</span>
-                          </div>
-
-                          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
-                            <div className="thinking-node thinking-node-delay-2">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                            </div>
-                            <span className="text-[11px] text-gray-500">组织答案</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div ref={messagesEndRef} />
             </div>

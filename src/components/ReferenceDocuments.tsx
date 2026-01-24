@@ -7,6 +7,7 @@ interface Reference {
   title: string;
   content: string;
   score: number;
+  isTruncated?: boolean;
   mergedHeaders?: string[];
   mergedIds?: string[];
   isOptimized?: boolean;
@@ -182,6 +183,11 @@ const ReferenceDocuments: React.FC<ReferenceDocumentsProps> = ({ references, hig
                     <div className="bg-gray-50 rounded p-2.5 border border-gray-200 text-[11px] text-gray-800 leading-relaxed font-mono whitespace-pre-wrap max-h-[300px] overflow-y-auto">
                       {ref.content}
                     </div>
+                    {ref.isTruncated && (
+                      <p className="mt-1 text-[10px] text-gray-400">
+                        内容已截断以避免占用过多内存。
+                      </p>
+                    )}
                   </div>
                 </div>
               )}

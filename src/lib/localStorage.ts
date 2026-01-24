@@ -19,6 +19,8 @@ class LocalStorageManager {
   // 对话相关
   private readonly CONVERSATIONS_KEY = this.PREFIX + 'conversations';
   private readonly MESSAGES_KEY = this.PREFIX + 'messages';
+  private readonly COMPACTION_KEY = this.PREFIX + 'compaction_state';
+  private readonly COMPACTION_VERSION = 1;
 
   // 用户设置相关
   private readonly USER_SETTINGS_KEY = this.PREFIX + 'user_settings';
@@ -48,6 +50,15 @@ class LocalStorageManager {
 
   constructor() {
     this.initializeDefaultUsers();
+  }
+
+  private getCompactionState(): Record<string, number> {
+    const state = localStorage.getItem(this.COMPACTION_KEY);
+    return state ? JSON.parse(state) : {};
+  }
+
+  private setCompactionState(state: Record<string, number>) {
+    localStorage.setItem(this.COMPACTION_KEY, JSON.stringify(state));
   }
 
   setCurrentUser(user: User | null) {
@@ -136,10 +147,91 @@ class LocalStorageManager {
   }
 
   // 消息管理
-  getMessages(conversationId: string): Message[] {
+  getMessages(conversationId: string, options?: { limit?: number }): Message[] {
     const messages = localStorage.getItem(this.MESSAGES_KEY);
     const allMessages = messages ? JSON.parse(messages) : [];
-    return allMessages.filter((msg: Message) => msg.conversationId === conversationId);
+    const filtered = allMessages.filter((msg: Message) => msg.conversationId === conversationId);
+    if (options?.limit && filtered.length > options.limit) {
+      return filtered.slice(-options.limit);
+    }
+    return filtered;
+  }
+
+  getConversationPreviews(userId: string, maxLength: number = 50): Record<string, string> {
+    const conversations = this.getConversations(userId);
+    const conversationIds = new Set(conversations.map(conv => conv.id));
+    const messages = this.getAllMessages();
+    const latestMap = new Map<string, { content: string; createdAt: string }>();
+
+    for (const message of messages) {
+      if (!conversationIds.has(message.conversationId)) continue;
+      const existing = latestMap.get(message.conversationId);
+      if (!existing || new Date(message.createdAt).getTime() >= new Date(existing.createdAt).getTime()) {
+        latestMap.set(message.conversationId, {
+          content: message.content || '',
+          createdAt: message.createdAt
+        });
+      }
+    }
+
+    const previews: Record<string, string> = {};
+    for (const [conversationId, payload] of latestMap.entries()) {
+      const trimmed = payload.content.substring(0, maxLength);
+      previews[conversationId] = trimmed.length < payload.content.length ? `${trimmed}...` : trimmed;
+    }
+    return previews;
+  }
+
+  compactMessagesForUser(userId: string, maxReferenceChars: number = 1500): boolean {
+    const state = this.getCompactionState();
+    if (state[userId] >= this.COMPACTION_VERSION) {
+      return false;
+    }
+
+    const conversations = this.getConversations(userId);
+    const conversationIds = new Set(conversations.map(conv => conv.id));
+    if (conversationIds.size === 0) {
+      state[userId] = this.COMPACTION_VERSION;
+      this.setCompactionState(state);
+      return false;
+    }
+
+    const messages = this.getAllMessages();
+    let changed = false;
+
+    for (const message of messages) {
+      if (!conversationIds.has(message.conversationId)) continue;
+      const refs = message.metadata?.references;
+      if (!Array.isArray(refs)) continue;
+
+      let messageChanged = false;
+      const trimmedRefs = refs.map((ref: any) => {
+        if (!ref || typeof ref.content !== 'string') return ref;
+        if (ref.content.length <= maxReferenceChars) return ref;
+        changed = true;
+        messageChanged = true;
+        return {
+          ...ref,
+          content: `${ref.content.slice(0, maxReferenceChars)}...`,
+          isTruncated: true
+        };
+      });
+
+      if (messageChanged) {
+        message.metadata = {
+          ...message.metadata,
+          references: trimmedRefs
+        };
+      }
+    }
+
+    if (changed) {
+      localStorage.setItem(this.MESSAGES_KEY, JSON.stringify(messages));
+    }
+
+    state[userId] = this.COMPACTION_VERSION;
+    this.setCompactionState(state);
+    return changed;
   }
 
   addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message {

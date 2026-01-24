@@ -4,6 +4,7 @@
  */
 
 import * as storage from './storage-adapter.mjs';
+import * as knowledgeGraph from './knowledgeGraph.mjs';
 import { embedTexts } from './embedding.mjs';
 import { enhancedParentChildChunking } from './chunking.mjs';
 import fs from 'fs/promises';
@@ -93,6 +94,11 @@ export async function batchDeleteDocuments(documentIds) {
     try {
       const deleted = await storage.deleteDocument(docId);
       if (deleted) {
+        try {
+          await knowledgeGraph.deleteDocumentFromGraph(docId);
+        } catch (error) {
+          console.warn(`[KnowledgeGraph] 批量删除文档图谱清理失败: ${docId}`, error.message);
+        }
         results.success.push(docId);
       } else {
         results.failed.push({
