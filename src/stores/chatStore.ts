@@ -970,6 +970,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.log('[Chat] 知识库无检索结果，使用 Gemini');
       }
 
+      // 额外检查：如果检索级别为4且最高分为0，也使用 Gemini
+      if (searchLevel === 4 && knowledgeResults.length > 0 && knowledgeResults[0].score === 0) {
+        useGemini = true;
+        console.log('[Chat] 知识库检索结果不相关（分数为0），使用 Gemini');
+      }
+
       // Build conversation history - 使用 Token 预算管理
       const recentMessages = messages.slice(-CONVERSATION_CONFIG.MAX_HISTORY_MESSAGES);
       const historyForBudget = recentMessages.map(m => ({
