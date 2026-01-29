@@ -13,7 +13,9 @@ module.exports = {
       node_args: '--max-old-space-size=4096',
       env: {
         NODE_ENV: 'production',
-        PORT: 8787
+        PORT: 8787,
+        CORS_ORIGINS: 'http://172.17.200.222:5173',
+        NEO4J_URI: 'bolt://127.0.0.1:7687'
       },
       error_file: path.join(__dirname, 'logs', 'server-err.log'),
       out_file: path.join(__dirname, 'logs', 'server-out.log'),

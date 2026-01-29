@@ -336,13 +336,15 @@ searchPipeline = new SearchPipeline({
 const app = express();
 
 // CORS 白名单配置
-const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
-  : [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'http://127.0.0.1:5173'
-  ];
+const DEFAULT_CORS_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173'
+];
+const ENV_CORS_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+  : [];
+const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_CORS_ORIGINS, ...ENV_CORS_ORIGINS]));
 
 // 在开发环境中只有明确配置时才允许额外的源
 if (process.env.NODE_ENV === 'development' && process.env.CORS_ALLOW_ANY === 'true') {
